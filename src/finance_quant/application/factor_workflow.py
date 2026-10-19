@@ -31,7 +31,8 @@ def load_configured_snapshot(config):
     snapshot = load_market(config.data.root)
     manifest = snapshot[3]
     if (set(manifest["codes"]) != set(config.data.codes) or manifest["start"] != config.data.start
-        or manifest["end"] != config.data.end or manifest.get("benchmark", "000300.SH") != config.data.benchmark):
+        or manifest["end"] != config.data.end or manifest.get("benchmark", "000300.SH") != config.data.benchmark
+        or manifest.get('cross_validation', {}).get('mode', 'off') != config.data.validation.mode):
         raise ValueError("Published snapshot differs from configured data range, stock pool or benchmark; run download with this config first")
     return snapshot
 
@@ -54,6 +55,13 @@ def publish_factor_run(market, manifest: dict, runs_dir: Path, config: FactorCon
                 return existing
             result = market_factors(market, manifest["id"], config)
             result["metadata"].update(id=run_id, provenance=provenance, created_at=datetime.now(timezone.utc).isoformat())
+            result['metadata']['source'] = manifest.get('source', 'third_party_tushare_compatible')
+            if manifest.get('cross_validation'):
+                result['metadata']['cross_validation'] = {
+                    'policy': manifest['cross_validation']['policy'], 'status': manifest['cross_validation']['status'],
+                    'stocks': [{k: row[k] for k in ['code','status','price_source','adjustment_source']} for row in manifest['cross_validation']['stocks']],
+                }
+                result['metadata']['notes'] += ['联合数据：回退股票的整段行情与复权来自BaoStock；估值仍取自Tushare，详见数据管理中的来源报告']
             store.publish("factors", run_id, result)
             return result
     except Timeout:

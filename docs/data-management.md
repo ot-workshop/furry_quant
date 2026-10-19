@@ -1,5 +1,7 @@
 # 数据管理与可配置回测
 
+已增加可选`data.validation.mode`（off/verify/fallback）和BaoStock联合核验。当前推荐`configs/research.joint.json`；已有按日缓存也会先复用，主源异常时按整只股票区间切换，未解决冲突不发布。命令、边界和实测见[联合数据核验](joint-data-validation.md)。
+
 本轮将固定三股示例扩展为配置驱动的数据获取与研究流程。配置文件不含密钥，数据更新与离线回测分开执行；网页新增“数据管理”只读页面。
 
 ## 配置与使用

@@ -183,6 +183,7 @@ export interface StockCoverage {
 }
 
 export interface Coverage {
+  cross_validation?: CrossValidationReport;
   adjustment_anomalies?: Array<{instrument: string; date: string; previous_date: string; adjusted_return: number; reported_change: number | null}>;
   status: CoverageStatus;
   expected_sessions: number;
@@ -190,6 +191,30 @@ export interface Coverage {
   stocks: StockCoverage[];
   benchmark: StockCoverage;
   note: string;
+}
+
+export interface CrossValidationStock {
+  code: string;
+  status: string;
+  primary_issues: string[];
+  reason?: string;
+  price_source: string;
+  adjustment_source: string;
+  raw_price_differences: string[];
+  return_differences: Array<{ date: string; primary_return: number | null; secondary_return: number; absolute_difference: number | null }>;
+  corporate_action_differences: Array<{ date: string; primary_return: number | null; secondary_return: number; absolute_difference: number | null }>;
+}
+
+export interface CrossValidationReport {
+  policy: string;
+  mode: string;
+  status: string;
+  price_absolute_tolerance_cny: number;
+  return_absolute_tolerance: number;
+  fallback_codes: string[];
+  conflict_codes: string[];
+  stocks: CrossValidationStock[];
+  notes: string[];
 }
 
 export interface DataSnapshot {

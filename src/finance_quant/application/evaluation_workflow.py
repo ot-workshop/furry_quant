@@ -39,6 +39,9 @@ def evaluate_configured(config) -> dict:
                                       "evaluation": config.evaluation.as_dict(), "start": config.backtest.start,
                                       "end": config.backtest.end, "sample_size": int(market["instrument"].nunique()),
                                       "provenance": provenance}
+                result['metadata']['source'] = manifest.get('source', 'third_party_tushare_compatible')
+                if manifest.get('cross_validation'):
+                    result['metadata']['cross_validation'] = manifest['cross_validation']
                 store.publish("evaluations", run_id, result)
             report = store.publish_report(run_id, evaluation_markdown(result))
             return {"reused": reused, "run_id": run_id, "factor_run_id": factors["metadata"]["id"],

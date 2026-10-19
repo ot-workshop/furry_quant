@@ -21,7 +21,7 @@ class ResultStore:
         self.root = (root or runs_root()).resolve()
 
     def path(self, category: str, run_id: str) -> Path:
-        if category not in {"backtests", "factors", "evaluations"} or not ID_PATTERN.fullmatch(run_id):
+        if category not in {"backtests", "factors", "evaluations", "experiments"} or not ID_PATTERN.fullmatch(run_id):
             raise ValueError("Invalid artifact identifier")
         result = (self.root / category / run_id / "result.json").resolve()
         if not result.is_relative_to(self.root):
@@ -51,8 +51,14 @@ class ResultStore:
         encoded = json.dumps(document, ensure_ascii=False, allow_nan=False, indent=2)
         return self._publish_text(destination, encoded, json_document=True)
 
-    def publish_report(self, run_id: str, markdown: str) -> Path:
-        return self._publish_text(self.path("evaluations", run_id).with_name("report.md"), markdown)
+    def publish_report(self, run_id: str, markdown: str, *, category: str = "evaluations") -> Path:
+        return self._publish_text(self.path(category, run_id).with_name("report.md"), markdown)
+
+    def publish_experiment_record(self, run_id: str, name: str, document: dict[str, Any]) -> Path:
+        if name not in {"plan", "selection"}:
+            raise ValueError("Unsupported experiment record")
+        destination = self.path("experiments", run_id).with_name(name + ".json")
+        return self._publish_text(destination, json.dumps(document, ensure_ascii=False, allow_nan=False, indent=2), json_document=True)
 
     def _publish_text(self, destination: Path, encoded: str, *, json_document: bool = False) -> Path:
         def matches() -> bool:

@@ -82,7 +82,7 @@ def run_real(snapshot_dir: Path, runs_dir: Path = Path("runs"), start: str = "20
                       open_cost=open_cost, close_cost=close_cost, min_cost=min_cost)
     result["summary"].update(id=run_id, name=f"真实行情：{len(names)}股多因子轮换", is_synthetic=False)
     result["metadata"].update(data_version=manifest["id"], provenance=provenance, factor_run_id=factor_id,
-                              data_snapshot=manifest["snapshot_dir"], source="third_party_tushare_compatible",
+                              data_snapshot=manifest["snapshot_dir"], source=manifest.get('source', 'third_party_tushare_compatible'),
                               benchmark_name=f"{'沪深300价格指数' if benchmark_code == '000300.SH' else '价格指数'}（{benchmark_code}）",
                               position_note="Qlib复权口径的等效持股数量；发生现金分红时不等同于券商逐笔分红与实有股数账本",
                               limitations=[
@@ -94,6 +94,12 @@ def run_real(snapshot_dir: Path, runs_dir: Path = Path("runs"), start: str = "20
                                   "费用是示例参数，未按具体券商、历史税费拆分；当前只接受完整无停牌的数据区间",
                                   "未使用财报；每日估值的历史修订与实际发布时间仍待审计",
                               ])
+    if manifest.get('cross_validation'):
+        result['metadata']['cross_validation'] = manifest['cross_validation']
+        result['metadata']['limitations'] += [
+            '部分股票可能使用BaoStock整段行情和涨跌幅复权序列；估值、限制价及指数仍来自Tushare兼容服务',
+            '两源验证的范围是未复权OHLC和复权收益，不代表全部估值、财报和历史交易规则均获认证',
+        ]
     result["metadata"]["config"]["adjustment"] = "price * (adj_factor / first_adj_factor); volume divided by same factor"
     # Strict JSON serialization before either artifact becomes visible.
     json.dumps(result, allow_nan=False)

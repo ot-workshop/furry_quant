@@ -31,6 +31,7 @@ def main() -> None:
             command.add_argument("--benchmark")
         if name == "download":
             command.add_argument("--refresh", action="store_true", help="重新请求全部分片，保留旧快照")
+            command.add_argument("--primary-cache-from", type=Path, help="只读复用另一数据目录中同源、同参数且校验和正确的原始分片")
     real = commands.add_parser("real", help="从本地冻结快照计算因子并运行Qlib，不联网")
     real.add_argument("--config", type=Path)
     real.add_argument("--data-dir", type=Path)
@@ -43,6 +44,9 @@ def main() -> None:
         real.add_argument(f"--{field}", type=float)
     evaluate = commands.add_parser("evaluate", help="离线评估因子IC、分组收益与相关性，保存JSON和报告")
     evaluate.add_argument("--config", type=Path, required=True)
+    experiment = commands.add_parser("experiment", help="冻结候选与区间，按验证集选方案后运行独立测试区间")
+    experiment.add_argument("--config", type=Path, required=True)
+    experiment.add_argument("--plan", type=Path, required=True)
     serve = commands.add_parser("serve", help="启动本机只读API和前端")
     serve.add_argument("--config", type=Path)
     serve.add_argument("--port", type=int, default=8000)
@@ -82,9 +86,10 @@ def main() -> None:
                 calendar_end = (pd.Timestamp(data.end) + pd.Timedelta(days=20)).strftime("%Y%m%d")
                 output({"data": {**asdict(data), "root": str(data.root)},
                         "max_requests_without_cache": len(month_ranges(data.start, calendar_end)) + len(data.codes) * (1 + 4 * partitions) + partitions,
+                        "secondary_history_queries_without_cache": 2 * len(data.codes) if data.validation.mode != 'off' else 0,
                         "note": "仅预览，不联网；请求上限不含缺失记录补抓与重试。行情按年分片、按月校验；已完成分片复用，边界年份变化需重新获取。固定池并非历史成分。"})
             else:
-                result = download_dataset(data, refresh=args.refresh)
+                result = download_dataset(data, refresh=args.refresh, cache_from=args.primary_cache_from)
                 manifest = result["manifest"]
                 output({"job_id": result["job_id"], **{key: manifest[key] for key in ["id", "rows", "trading_days", "codes", "benchmark"]}})
         elif args.command == "real":
@@ -102,6 +107,10 @@ def main() -> None:
         elif args.command == "evaluate":
             from finance_quant.application.evaluation_workflow import evaluate_configured
             output(evaluate_configured(config))
+        elif args.command == "experiment":
+            from finance_quant.application.experiment_workflow import run_experiment
+            from finance_quant.research.experiments import load_experiment_plan
+            output(run_experiment(config, load_experiment_plan(args.plan)))
         elif args.command == "serve":
             import uvicorn
             from finance_quant.api import create_app

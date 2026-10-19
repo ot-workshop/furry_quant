@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../api/client";
 import { EmptyPanel, ErrorPanel, LoadingPanel } from "../components/StatePanels";
+import { CrossValidationPanel } from "../components/CrossValidationPanel";
 import { useApiResource } from "../hooks/useApiResource";
 import type {
   Coverage,
@@ -510,6 +511,7 @@ export function DataStatusPage() {
               {coverage.note ? (
                 <p className="hint-callout">{coverage.note}</p>
               ) : null}
+              <CrossValidationPanel report={coverage.cross_validation} />
               <p className="warning-callout">
                 缺失估值仅作提示，不代表行情数据错误；本页不会补零。
               </p>
@@ -697,6 +699,7 @@ function JobCoverageReport({ report }: { report: Coverage }) {
         <span>股票数 {formatNumber(report.stock_count, 0)}</span>
       </div>
       {report.note ? <p className="job-reason">{report.note}</p> : null}
+      <CrossValidationPanel report={report.cross_validation} />
       {report.adjustment_anomalies?.length ? (
         <div className="table-wrap">
           <table>

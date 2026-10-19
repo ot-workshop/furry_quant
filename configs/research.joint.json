@@ -1,0 +1,28 @@
+{
+  "data": {
+    "root": "../data/managed-joint",
+    "start": "20250101",
+    "end": "20260930",
+    "codes": ["600000.SH", "000001.SZ", "600519.SH", "600036.SH", "000858.SZ"],
+    "benchmark": "000300.SH",
+    "validation": {"mode": "fallback"}
+  },
+  "backtest": {
+    "start": "2025-03-03",
+    "end": "2026-09-30",
+    "initial_cash": 100000,
+    "topk": 3,
+    "n_drop": 1,
+    "risk_degree": 0.9,
+    "open_cost": 0.001,
+    "close_cost": 0.001,
+    "min_cost": 5.0
+  },
+  "runs_dir": "../runs",
+  "factors": [
+    {"name": "momentum", "weight": 0.4, "window": 20},
+    {"name": "value", "weight": 0.3},
+    {"name": "volatility", "weight": 0.3, "window": 10}
+  ],
+  "evaluation": {"horizons": [1, 5, 10], "groups": 3, "min_cross_section": 3}
+}

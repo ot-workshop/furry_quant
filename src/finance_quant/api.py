@@ -151,6 +151,27 @@ def create_app(root: Path | None = None, frontend_dist: Path | None = None, data
         return PlainTextResponse(evaluation_markdown(artifact("evaluations", run_id)), media_type="text/markdown",
                                  headers={"Content-Disposition": f'attachment; filename="{run_id}.md"'})
 
+    @app.get("/api/v1/experiments")
+    def experiments():
+        items = [result["metadata"] for result in store.list("experiments")]
+        items.sort(key=lambda row: row["created_at"], reverse=True)
+        return {"items": items, "total": len(items)}
+
+    @app.get("/api/v1/experiments/{run_id}")
+    def experiment(run_id: str):
+        return artifact("experiments", run_id)
+
+    @app.get("/api/v1/experiments/{run_id}/download")
+    def download_experiment(run_id: str):
+        return JSONResponse(artifact("experiments", run_id),
+                            headers={"Content-Disposition": f'attachment; filename="{run_id}.json"'})
+
+    @app.get("/api/v1/experiments/{run_id}/report")
+    def download_experiment_report(run_id: str):
+        from finance_quant.research.experiments import experiment_markdown
+        return PlainTextResponse(experiment_markdown(artifact("experiments", run_id)), media_type="text/markdown",
+                                 headers={"Content-Disposition": f'attachment; filename="{run_id}.md"'})
+
     @app.get("/api/{unknown:path}")
     def unknown_api(unknown: str):
         raise HTTPException(404, "接口不存在")

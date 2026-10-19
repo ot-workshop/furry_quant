@@ -22,6 +22,14 @@ def evaluation_markdown(result: dict) -> str:
              "## 因子设置", "", "| 因子 | 权重 | 窗口（交易日） |", "| --- | ---: | ---: |"]
     for spec in meta["factor_config"]:
         lines.append(f"| {spec['name']} | {spec['weight']:.1%} | {spec['window'] or '—'} |")
+    if meta.get('cross_validation'):
+        lines += ['', '## 联合数据来源', '', '| 股票 | 核验结果 | 价格来源 | 复权来源 |', '| --- | --- | --- | --- |']
+        for stock in meta['cross_validation']['stocks']:
+            status = {'verified': '核验通过', 'fallback': '整段回退', 'conflict': '存在冲突'}.get(stock['status'], stock['status'])
+            lines.append(f"| {stock['code']} | {status} | {stock['price_source']} | {stock['adjustment_source']} |")
+        lines += ['', '估值、涨跌停与指数仍来自Tushare兼容服务；两源核验范围为未复权开高低收及复权收益。',
+                  '回退股票使用BaoStock后复权行情推导的相对因子，属于涨跌幅复权法；不等同于实际现金分红账本。',
+                  '不直接拼接两家绝对复权因子；源间冲突未解决时不发布。该核验不代表估值和财报已获独立认证。']
     lines += ["", "## 标签覆盖", "", "| 持有期 | 有效股票标签 | 排除标签 |", "| ---: | ---: | ---: |"]
     for horizon, labels in result["labels"].items():
         lines.append(f"| {horizon} | {labels['valid_observations']} | {labels['excluded_observations']} |")

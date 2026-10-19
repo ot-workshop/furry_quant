@@ -16,6 +16,7 @@ dependencies = [
   "tushare>=1.4,<2",
   "python-dotenv>=1,<2",
   "filelock>=3,<5",
+  "baostock>=0.9.4,<0.10",
 ]
 
 [project.optional-dependencies]

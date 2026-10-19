@@ -6,6 +6,7 @@ import { useApiResource } from "./hooks/useApiResource";
 import { BacktestPage } from "./pages/BacktestPage";
 import { DataStatusPage } from "./pages/DataStatusPage";
 import { EvaluationPage } from "./pages/EvaluationPage";
+import { ExperimentPage } from "./pages/ExperimentPage";
 import { FactorRankingPage } from "./pages/FactorRankingPage";
 import { StockFactorsPage } from "./pages/StockFactorsPage";
 import type { Instrument } from "./types";
@@ -31,6 +32,12 @@ const PAGE_META: Record<
     title: "回测结果",
     subtitle:
       "查看已保存回测的净值、回撤、持仓、成交、运行参数与已知限制。",
+  },
+  experiments: {
+    eyebrow: "STRATEGY COMPARISON",
+    title: "方案比较",
+    subtitle:
+      "只读比较历史分段验证的方案结果；测试分段仅复核选定候选，不据此重新选择。",
   },
   data: {
     eyebrow: "数据覆盖",
@@ -126,6 +133,8 @@ export default function App() {
               onSelectBacktest={setSelectedBacktestId}
             />
           ) : null}
+
+          {activeTab === "experiments" ? <ExperimentPage /> : null}
 
           {activeTab === "data" ? <DataStatusPage /> : null}
 

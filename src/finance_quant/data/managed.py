@@ -7,6 +7,9 @@ import json
 import tempfile
 import uuid
 import time
+import shutil
+import sqlite3
+from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -97,7 +100,7 @@ def normalize_response(api: str, raw: pd.DataFrame, params: dict) -> pd.DataFram
 
 
 class ManagedFetcher:
-    def __init__(self, provider, root: Path, catalog: Catalog, job_id: str, refresh: bool, scope: dict):
+    def __init__(self, provider, root: Path, catalog: Catalog, job_id: str, refresh: bool, scope: dict, cache_from: Path | None = None):
         self.provider, self.root, self.catalog, self.job_id, self.refresh = provider, root, catalog, job_id, refresh
         settings = getattr(provider, "settings", None)
         origin = settings.http_url if settings else f"offline:{type(provider).__module__}.{type(provider).__qualname__}"
@@ -118,7 +121,22 @@ class ManagedFetcher:
                 self.generation = uuid.uuid4().hex
                 atomic_json(pending_path, {'provider_id': self.provider_id, 'scope': scope_hash, 'generation': self.generation})
         self.requests, self.errors = [], []
+        self.cache_from = cache_from.resolve() if cache_from is not None else None
+        self.fallback_apis = {"daily", "adj_factor"} if scope.get("validation", {}).get("mode") == "fallback" else set()
         (root / "raw").mkdir(exist_ok=True)
+
+    def cached_partition(self, key: str):
+        previous = self.catalog.partition(key)
+        if previous and previous['status'] == 'succeeded':
+            return previous, self.root
+        if self.cache_from is not None:
+            uri = (self.cache_from / 'catalog.sqlite3').as_uri() + '?mode=ro'
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                row = connection.execute("SELECT * FROM partitions WHERE key=? AND status='succeeded'", (key,)).fetchone()
+            if row is not None:
+                return dict(row), self.cache_from
+        return previous, self.root
 
     def key(self, api: str, params: dict) -> tuple[dict, str]:
         if api not in {"trade_cal", "daily", "adj_factor", "daily_basic", "stk_limit", "stock_basic", "index_daily"}:
@@ -136,7 +154,7 @@ class ManagedFetcher:
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = []
             for api, params in requests:
-                previous = self.catalog.partition(self.key(api, params)[1])
+                previous, _ = self.cached_partition(self.key(api, params)[1])
                 cached = previous and previous["status"] == "succeeded"
                 futures.append(None if cached else executor.submit(self.request, api, params))
             return [self.get(api, _future=future, **params) for (api, params), future in zip(requests, futures)]
@@ -154,7 +172,7 @@ class ManagedFetcher:
 
     def get(self, api: str, *, _future=None, **params) -> pd.DataFrame | None:
         specification, key = self.key(api, params)
-        previous = self.catalog.partition(key)
+        previous, cache_root = self.cached_partition(key)
         attempts = previous["attempts"] if previous else 0
         cached = previous and previous["status"] == "succeeded"
         metadata = None
@@ -162,11 +180,21 @@ class ManagedFetcher:
         try:
             if cached:
                 stage = "cache_corrupt"
-                path = (self.root / previous["raw_path"]).resolve()
-                if not path.is_relative_to(self.root.resolve()) or hashlib.sha256(path.read_bytes()).hexdigest() != previous["sha256"]:
+                path = (cache_root / previous["raw_path"]).resolve()
+                if not path.is_relative_to(cache_root.resolve()) or hashlib.sha256(path.read_bytes()).hexdigest() != previous["sha256"]:
                     raise ValueError("Raw cache checksum mismatch")
                 raw = pd.read_parquet(path)
                 metadata = {field: previous[field] for field in ["rows", "fetched_at", "sha256", "raw_path"]}
+                if cache_root != self.root:
+                    target = self.root / 'raw' / path.name
+                    if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest() != metadata['sha256']:
+                        raise ValueError('Imported cache conflicts with existing capture')
+                    if not target.exists():
+                        temporary = target.with_suffix('.importing')
+                        shutil.copyfile(path, temporary)
+                        temporary.replace(target)
+                    metadata['raw_path'] = str(target.relative_to(self.root)).replace('\\', '/')
+                    atomic_json(target.with_suffix('.json'), {**specification, **metadata})
             else:
                 attempts += 1
                 raw = _future.result() if _future is not None else self.request(api, params)
@@ -213,8 +241,13 @@ def repair_missing_dates(fetch: ManagedFetcher, api: str, code: str, start: str,
         return frame
     # Monthly responses have at most 31 dates. Large gaps need human/source diagnosis.
     if len(missing) <= 31:
-        fetch.catalog.add_total(fetch.job_id, len(missing))
-        repairs = fetch.get_many([(api, {"ts_code": code, "trade_date": date.strftime("%Y%m%d")}) for date in missing])
+        requests = [(api, {"ts_code": code, "trade_date": date.strftime("%Y%m%d")}) for date in missing]
+        if api in fetch.fallback_apis:
+            # Reuse prior independently captured daily records, but do not issue
+            # more primary network calls before the secondary fallback.
+            requests = [(name, params) for name, params in requests if (cached := fetch.cached_partition(fetch.key(name, params)[1])[0]) and cached['status'] == 'succeeded']
+        fetch.catalog.add_total(fetch.job_id, len(requests))
+        repairs = fetch.get_many(requests)
         frame = pd.concat([frame, *[part for part in repairs if part is not None]], ignore_index=True).sort_values("date")
     remaining = expected.difference(pd.DatetimeIndex(frame["date"]))
     if len(remaining):
@@ -224,13 +257,15 @@ def repair_missing_dates(fetch: ManagedFetcher, api: str, code: str, start: str,
 
 
 def abort_failed(fetch: ManagedFetcher, *, final: bool = False):
-    if not fetch.errors:
+    recoverable = {'request_failed', 'network_failed', 'missing_sessions', 'invalid_response'}
+    failures = [error for error in fetch.errors if not (error['api'] in fetch.fallback_apis and error['error'] in recoverable)]
+    if not failures:
         return
     transient = {'request_failed', 'network_failed', 'missing_sessions'}
-    if not final and all(error['error'] in transient for error in fetch.errors):
+    if not final and all(error['error'] in transient for error in failures):
         return
-    status = "partial" if any(error["error"] in {"missing_sessions", "extra_sessions"} for error in fetch.errors) else "failed"
-    report = {"status": status, "reason": "request_partitions_failed", "failures": fetch.errors}
+    status = "partial" if any(error["error"] in {"missing_sessions", "extra_sessions"} for error in failures) else "failed"
+    report = {"status": status, "reason": "request_partitions_failed", "failures": failures}
     fetch.catalog.finish(fetch.job_id, status, report)
     raise DatasetDownloadError(f"Download {fetch.job_id} incomplete; run status to inspect failed partitions and missing dates, then retry")
 
@@ -291,8 +326,16 @@ def publish_snapshot(root: Path, config: DataConfig, market: pd.DataFrame, bench
                     "coverage": coverage, "units": {"volume": "shares", "amount": "CNY", "total_mv": "CNY", "change": "fraction"},
                     "notes": ["用户固定股票池，不是历史指数成分；可能存在选股与幸存者偏差", "名称和行业来自当前资料，仅展示",
                               "第三方历史数据与估值发布时间/修订未经独立核实；不使用财报因子"]}
+        if config.validation.mode != 'off':
+            manifest.update(schema_version='market-v3', source='tushare_baostock', cross_validation=coverage['cross_validation'])
+            sources = [Path(__file__), Path(__file__).with_name('reconciliation.py'), Path(__file__).with_name('quality.py'),
+                       Path(__file__).parent / 'providers/baostock.py', Path(__file__).parent / 'providers/baostock_worker.py',
+                       Path(__file__).parent / 'providers/tushare.py']
+            manifest['validation_code_sha256'] = hashlib.sha256(b''.join(path.read_bytes() for path in sources)).hexdigest()
+            manifest['notes'] += ['联合核验未复权OHLC与复权收益，保留逐股来源；不是对估值或财报的独立认证']
         version = hashlib.sha256(json.dumps(manifest, sort_keys=True, allow_nan=False).encode()).hexdigest()[:16]
-        manifest.update(id=f"tushare-{version}", snapshot_path=f"snapshots/{version}")
+        prefix = 'joint' if config.validation.mode != 'off' else 'tushare'
+        manifest.update(id=f"{prefix}-{version}", snapshot_path=f"snapshots/{version}")
         atomic_json(staging / "manifest.json", manifest)
         target = directory / version
         if target.exists():
@@ -310,29 +353,37 @@ def publish_snapshot(root: Path, config: DataConfig, market: pd.DataFrame, bench
             staging.rmdir()
 
 
-def download_dataset(config: DataConfig, *, provider=None, refresh: bool = False) -> dict:
+def download_dataset(config: DataConfig, *, provider=None, refresh: bool = False, secondary_provider=None, cache_from: Path | None = None) -> dict:
+    if cache_from is not None:
+        cache_from = Path(cache_from).resolve()
+        if refresh:
+            raise ValueError('A fresh download cannot reuse a different primary cache')
+        if not (cache_from / 'catalog.sqlite3').is_file():
+            raise ValueError('Primary cache catalog does not exist')
     root = config.root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     try:
         with FileLock(root / ".download.lock", timeout=0):
-            return _download_locked(config, provider, refresh)
+            return _download_locked(config, provider, refresh, secondary_provider, cache_from)
     except Timeout:
         raise DatasetDownloadError("Another download is running in this data directory") from None
 
 
-def _download_locked(config: DataConfig, provider, refresh: bool) -> dict:
+def _download_locked(config: DataConfig, provider, refresh: bool, secondary_provider=None, cache_from=None) -> dict:
     root = config.root.resolve()
     provider = provider or TushareProvider(TushareSettings.from_env())
     catalog = Catalog(root)
     job_id = f"download-{uuid.uuid4().hex[:12]}"
     specification = {"start": config.start, "end": config.end, "codes": list(config.codes), "benchmark": config.benchmark, "refresh": refresh, "partition": "year"}
+    if config.validation.mode != 'off':
+        specification['validation'] = config.validation.as_dict()
     calendar_end = (pd.Timestamp(config.end) + pd.Timedelta(days=20)).strftime("%Y%m%d")
     calendar_ranges = month_ranges(config.start, calendar_end)
     ranges = year_ranges(config.start, config.end)
     catalog.begin_job(job_id, specification, len(calendar_ranges) + len(config.codes) * (1 + 4 * len(ranges)) + len(ranges))
     fetch = None
     try:
-        fetch = ManagedFetcher(provider, root, catalog, job_id, refresh, specification)
+        fetch = ManagedFetcher(provider, root, catalog, job_id, refresh, specification, cache_from)
         calendar_parts = fetch.get_many([("trade_cal", {"exchange": "SSE", "start_date": start, "end_date": end}) for start, end in calendar_ranges])
         if any(part is None for part in calendar_parts):
             raise DatasetDownloadError("Calendar download incomplete")
@@ -365,11 +416,20 @@ def _download_locked(config: DataConfig, provider, refresh: bool) -> dict:
                         frame = pd.concat(checked, ignore_index=True)
                         parts[api].append(frame)
                 abort_failed(fetch)
-            if name is None or any(not rows for rows in parts.values()):
+            if name is None or any(not rows for api, rows in parts.items() if api not in fetch.fallback_apis):
                 continue
-            joined = pd.concat(parts["daily"], ignore_index=True)
-            for api in ["adj_factor", "daily_basic", "stk_limit"]:
-                joined = joined.merge(pd.concat(parts[api], ignore_index=True), on=["instrument", "date"], how="left", validate="one_to_one")
+            if fetch.fallback_apis:
+                joined = pd.DataFrame({'instrument': instrument(code), 'date': expected})
+                for api, rows in parts.items():
+                    if rows:
+                        joined = joined.merge(pd.concat(rows, ignore_index=True), on=['instrument', 'date'], how='left', validate='one_to_one')
+                for column in ['open', 'high', 'low', 'close', 'pre_close', 'volume', 'amount', 'change', 'adj_factor']:
+                    if column not in joined:
+                        joined[column] = np.nan
+            else:
+                joined = pd.concat(parts["daily"], ignore_index=True)
+                for api in ["adj_factor", "daily_basic", "stk_limit"]:
+                    joined = joined.merge(pd.concat(parts[api], ignore_index=True), on=["instrument", "date"], how="left", validate="one_to_one")
             joined["name"], joined["industry"] = str(name.iloc[0]["name"]), str(name.iloc[0].get("industry", "未提供"))
             frames.append(joined)
         for start, end in ranges:
@@ -387,7 +447,18 @@ def _download_locked(config: DataConfig, provider, refresh: bool) -> dict:
         abort_failed(fetch, final=True)
         market = pd.concat(frames, ignore_index=True).sort_values(["instrument", "date"]).reset_index(drop=True)
         benchmark = pd.concat(benchmark_parts, ignore_index=True).sort_values("date").reset_index(drop=True)
+        cross_validation = None
+        if config.validation.mode != 'off':
+            from finance_quant.data.providers.baostock import BaoStockProvider
+            from finance_quant.data.reconciliation import reconcile_market
+            secondary_provider = secondary_provider or BaoStockProvider(root / 'secondary', namespace=fetch.generation)
+            market, cross_validation = reconcile_market(market, expected, config.codes, config.validation.mode, secondary_provider, primary_failures=fetch.errors)
         coverage = coverage_report(market, benchmark, expected, config.codes, config.benchmark)
+        if cross_validation is not None:
+            coverage['cross_validation'] = cross_validation
+            if cross_validation['status'] == 'conflict':
+                coverage['status'] = 'incomplete'
+            coverage['note'] += '；联合核验详情见cross_validation；回退时整只股票区间的价格与复权使用BaoStock，估值与限制价保留Tushare'
         atomic_json(root / "reports" / f"{job_id}.json", coverage)
         if coverage["status"] != "complete":
             catalog.finish(job_id, "partial", coverage)

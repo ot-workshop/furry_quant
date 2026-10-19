@@ -4,16 +4,19 @@
 
 ## 当前可用
 
-- 已验收五股（浦发、平安银行、茅台、招商、五粮液）2026-02-02至2026-09-30的真实行情，共161个交易日、805条股票日线，以及同期沪深300指数。
-- Qlib 0.9.7 实际执行2026-03-16至2026-09-30的回测，共137个交易日，使用前一交易日评分、下一交易日开盘成交。
+- 已联合核验五股（浦发、平安银行、茅台、招商、五粮液）2025-01-01至2026-09-30的行情，共424个交易日、2120条股票日线；四股价格和复权回退至BaoStock，茅台保留Tushare，逐股来源可查。
+- Qlib 0.9.7 实际执行2025-03-03至2026-09-30的回测，共388个交易日，使用前一交易日评分、下一交易日开盘成交。
 - 真实行情使用动量、盈利收益率估值和低波动三个因子；原有合成样本单独保留。支持按日期查看原始值、百分位、综合分和历史变化。
 - 回测净值、明确来源的基准、回撤、费用、逐日持仓、成交、参数及 JSON 下载。
 - 配置化数据与回测、分片缓存续传、数据覆盖与复权连续性检查，以及网页“数据管理”。
 - 因子选择、窗口与权重配置；Qlib IC/Rank IC、分组平均收益、因子相关性和覆盖率评估。网页“因子评估”支持查看结果及下载 JSON/Markdown 报告。
+- 历史开发/验证/测试分段与四方案比较：仅按验证区间选方案，保存选择记录后才运行选中方案的测试区间；网页“方案比较”与独立报告可查。
 - 只读 FastAPI 接口、React 前端；构建后同源访问。
 - 结果不可变保存，代码/依赖/Python 版本指纹防止误用旧结果。
 
-**页面区分真实行情和合成样本；当前五股区间用于工程验收。2025年至2026年的多年候选数据因供应商复权因子尺度异常而被隔离，相关试算已移出查询接口，多年实数验收尚未通过。市场数据库、真实财报因子和网页任务提交尚未接入。**
+**页面区分真实行情和合成样本；当前五股区间用于工程验收。原Tushare跨年候选及异常试算继续隔离，新增联合方案已单独发布；估值、涨跌停和指数仍来自Tushare兼容服务，联合核验不代表财报或全市场已认证。市场数据库、真实财报因子和网页任务提交尚未接入。**
+
+联合规则、证据及配置见[联合数据核验](docs/joint-data-validation.md)。已激活联合配置，现有环境直接运行 `.\start.ps1` 即可查看；原短区间配置和数据保留。
 
 ## 运行
 
@@ -35,12 +38,13 @@ npm.cmd --prefix frontend run build
 
 ```powershell
 .\.venv\Scripts\python.exe -m finance_quant.cli probe
-.\.venv\Scripts\python.exe -m finance_quant.cli plan --config configs\research.verified.json
-.\.venv\Scripts\python.exe -m finance_quant.cli download --config configs\research.verified.json
-.\.venv\Scripts\python.exe -m finance_quant.cli status --config configs\research.verified.json
-.\.venv\Scripts\python.exe -m finance_quant.cli real --config configs\research.verified.json
-.\.venv\Scripts\python.exe -m finance_quant.cli evaluate --config configs\research.verified.json
-.\start.ps1 -Config configs\research.verified.json
+.\.venv\Scripts\python.exe -m finance_quant.cli plan --config configs\research.joint.json
+.\.venv\Scripts\python.exe -m finance_quant.cli download --config configs\research.joint.json
+.\.venv\Scripts\python.exe -m finance_quant.cli status --config configs\research.joint.json
+.\.venv\Scripts\python.exe -m finance_quant.cli real --config configs\research.joint.json
+.\.venv\Scripts\python.exe -m finance_quant.cli evaluate --config configs\research.joint.json
+.\.venv\Scripts\python.exe -m finance_quant.cli experiment --config configs\research.joint.json --plan configs\experiment.historical.json
+.\start.ps1 -Config configs\research.joint.json
 ```
 
 `probe` 与 `download` 访问服务；`plan`、`status`、`real`、`evaluate` 完全离线，`serve` 只读结果。下载按年度边界复用行情分片、逐月校验，漏行可按实际交易日补抓；缺失或复权异常不发布。历史修订可加 `--refresh`，保留旧快照。实际权限不等同于官方积分权益。`configs/research.two-year.json` 保留作多年诊断配置，目前数据质量未通过，不能当作已验收案例。详见 [数据管理](docs/data-management.md) 与 [数据问题证据](docs/provider-data-issues.md)。
@@ -53,7 +57,7 @@ npm.cmd --prefix frontend run build
 
 该脚本优先使用最近一次成功配置回测保存的 `runs/active-research.json`，或用 `-Config` 指定文件；配置模式会生成或复用回测及因子评估，再启动网页。尚无激活配置时保留原真实小样本/合成样本流程。可用 `.\start.ps1 -Demo` 显式运行合成样本。启动时不会自动下载数据。配置路径相对于配置文件解析，禁止混用同类命令行覆盖项。
 
-因子和评估参数的说明见 [因子研究](docs/factor-research.md)。默认方案保持原有三个因子和权重；可选择其中一部分，动量和波动率支持配置历史窗口。网页目前只读，图形化配置与任务提交留待后续。
+因子和评估参数的说明见 [因子研究](docs/factor-research.md)。默认方案保持原有三个因子和权重；可选择其中一部分，动量和波动率支持配置历史窗口。历史分段实验使用本地快照离线运行，规则、报告和限制见 [方案比较](docs/historical-experiments.md)。网页目前只读，图形化配置与任务提交留待后续。
 
 前端开发可在另一个终端运行 `npm.cmd --prefix frontend run dev`，访问其输出的本地地址；`/api` 已代理至 8000 端口。
 
@@ -74,9 +78,11 @@ Qlib 的旧 Gym 依赖和部分数值库会产生兼容性/弃用提示，当前
 - `data/tushare/20260803-20260930/raw/`：真实原始响应 Parquet、无密钥请求元数据、来源标识、时间及校验和。
 - `data/tushare/20260803-20260930/snapshots/{version}/`：不可变标准行情、指数、交易日历及清单；Qlib 特征按代码版本隔离。
 - `data/managed/`：可配置股票池的原始分片、覆盖报告、不可变快照及SQLite下载记录；不是PostgreSQL市场数据库。
+- `data/managed-joint/`：联合数据、逐股核验报告、行级来源，以及`secondary/baostock/`中的原始双口径行情缓存。
 - `runs/factors/{id}/result.json`：一次固定评分批次，含原始值、处理分数、日期、权重及来源。
 - `runs/backtests/{id}/result.json`：Qlib 结果、持仓、成交、原生报告及运行配置。
 - `runs/evaluations/{id}/result.json` 与 `report.md`：逐日 IC、分组收益、标签明细、相关性与可独立阅读的报告。
+- `runs/experiments/{id}/`：冻结计划、验证期选择记录、各段子任务引用、校验和及比较报告。
 - 样本 ID 包含运行指纹；同版本重跑复用已有结果，代码或依赖改变后产生不同 ID。历史查询绑定评分批次，不混合版本。
 - 默认路径相对于运行目录，应从项目根目录启动；CLI 可用 `--runs-dir` 和 `--data-dir` 指定位置。API 工厂也可显式指定结果目录。
 - 每次样本数据导出在 `data/sample-qlib/{运行指纹}/` 下保留独立特征文件；不会覆盖其他版本的快照。

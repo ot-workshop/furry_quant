@@ -16,6 +16,7 @@ from finance_quant.research.registry import (
     FactorConfig,
     FactorSpec,
 )
+from finance_quant.data.validation_config import CrosscheckConfig
 
 __all__ = [
     "DataConfig",
@@ -39,7 +40,7 @@ _BENCHMARKS = frozenset(
     {"000300.SH", "000905.SH", "000852.SH", "000001.SH", "399001.SZ", "399006.SZ"}
 )
 _TOP_LEVEL_FIELDS = frozenset({"data", "backtest", "runs_dir", "factors", "evaluation"})
-_DATA_FIELDS = frozenset({"root", "start", "end", "codes", "benchmark"})
+_DATA_FIELDS = frozenset({"root", "start", "end", "codes", "benchmark", "validation"})
 _FACTOR_FIELDS = frozenset({"name", "weight", "window"})
 _EVALUATION_FIELDS = frozenset({"horizons", "groups", "min_cross_section"})
 _BACKTEST_FIELDS = frozenset(
@@ -144,8 +145,11 @@ class DataConfig:
     end: str
     codes: tuple[str, ...]
     benchmark: str = "000300.SH"
+    validation: CrosscheckConfig = field(default_factory=CrosscheckConfig)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.validation, CrosscheckConfig):
+            raise ValueError("data.validation must be a CrosscheckConfig")
         root = _path(self.root, "data.root")
         start_date = _parse_date(self.start, "data.start")
         end_date = _parse_date(self.end, "data.end")
@@ -262,6 +266,7 @@ class ResearchConfig:
                 "end": self.data.end,
                 "codes": list(self.data.codes),
                 "benchmark": self.data.benchmark,
+                "validation": self.data.validation.as_dict(),
             },
             "backtest": {
                 "start": self.backtest.start,
@@ -390,6 +395,7 @@ def load_config(path: Path) -> ResearchConfig:
         end=data_obj["end"],
         codes=data_obj["codes"],
         benchmark=data_obj.get("benchmark", "000300.SH"),
+        validation=CrosscheckConfig.from_dict(data_obj.get("validation", {})),
     )
     backtest = BacktestConfig(
         start=backtest_obj["start"],
