@@ -1,0 +1,24 @@
+{
+  "data": {
+    "root": "../data/managed",
+    "start": "20260803",
+    "end": "20260930",
+    "codes": [
+      "600000.SH",
+      "000001.SZ",
+      "600519.SH"
+    ],
+    "benchmark": "000300.SH"
+  },
+  "backtest": {
+    "start": "2026-09-01",
+    "end": "2026-09-30"
+  },
+  "runs_dir": "../runs",
+  "factors": [
+    {"name": "momentum", "weight": 0.4, "window": 20},
+    {"name": "value", "weight": 0.3},
+    {"name": "volatility", "weight": 0.3, "window": 10}
+  ],
+  "evaluation": {"horizons": [1, 5, 10], "groups": 3, "min_cross_section": 3}
+}
