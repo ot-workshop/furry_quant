@@ -1,23 +1,31 @@
-"""Explicit commands: remote acquisition, offline research, read-only serving."""
+"""Remote acquisition, offline research, and a local research web service."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from dataclasses import asdict
 from pathlib import Path
+from filelock import Timeout
 
 
 def main() -> None:
-    for variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
-        os.environ.setdefault(variable, "1")
+    from finance_quant.runtime import configure_runtime
+    configure_runtime()
     parser = argparse.ArgumentParser(description="量化研究工作台（Qlib 后端）")
     commands = parser.add_subparsers(dest="command", required=True)
     demo = commands.add_parser("demo", help="运行合成样本，不联网")
     demo.add_argument("--runs-dir", type=Path, default=Path("runs"))
     demo.add_argument("--data-dir", type=Path, default=Path("data/sample-qlib"))
     commands.add_parser("probe", help="验证Tushare服务能力，不回显密钥")
+    for name in ['index-download','index-plan','index-status']:
+        command=commands.add_parser(name,help='沪深300历史成分数据仓：下载续传、准备计划或查看状态')
+        command.add_argument('--data-dir',type=Path,default=Path('data/warehouse/csi300-2020'))
+        if name!='index-status':
+            command.add_argument('--start',default='2020-01-01')
+            command.add_argument('--end')
+            command.add_argument('--warmup-sessions',type=int,default=127)
+            command.add_argument('--limit',type=int,help='本次最多处理的股票数，用于小范围验收')
     for name, help_text in [("download", "分片下载并校验真实行情，失败后重跑可续传"),
                             ("plan", "离线查看下载配置和请求数量上限"),
                             ("status", "离线查看数据覆盖和下载记录")]:
@@ -40,14 +48,17 @@ def main() -> None:
         real.add_argument(f"--{field}")
     for field in ["topk", "n-drop"]:
         real.add_argument(f"--{field}", type=int)
-    for field in ["initial-cash", "risk-degree", "open-cost", "close-cost", "min-cost"]:
+    for field in ["initial-cash", "risk-degree", "open-cost", "close-cost", "min-cost",'commission-rate','stamp-tax-rate','transfer-fee-rate','impact-cost']:
         real.add_argument(f"--{field}", type=float)
+    real.add_argument('--rebalance-frequency',choices=['daily','weekly','monthly'])
+    real.add_argument('--cost-mode',choices=['legacy','itemized'])
+    real.add_argument('--tax-mode',choices=['historical','fixed'])
     evaluate = commands.add_parser("evaluate", help="离线评估因子IC、分组收益与相关性，保存JSON和报告")
     evaluate.add_argument("--config", type=Path, required=True)
     experiment = commands.add_parser("experiment", help="冻结候选与区间，按验证集选方案后运行独立测试区间")
     experiment.add_argument("--config", type=Path, required=True)
     experiment.add_argument("--plan", type=Path, required=True)
-    serve = commands.add_parser("serve", help="启动本机只读API和前端")
+    serve = commands.add_parser("serve", help="启动本机研究工作台、任务队列和结果查询")
     serve.add_argument("--config", type=Path)
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--runs-dir", type=Path)
@@ -62,12 +73,29 @@ def main() -> None:
         config = load_config(args.config) if getattr(args, "config", None) else None
         if config:
             overrides = ["data_dir", "runs_dir", "start", "end", "codes", "benchmark", "topk", "n_drop",
-                         "initial_cash", "risk_degree", "open_cost", "close_cost", "min_cost"]
+                         "initial_cash", "risk_degree", "open_cost", "close_cost", "min_cost",'rebalance_frequency','cost_mode','commission_rate','tax_mode','stamp_tax_rate','transfer_fee_rate','impact_cost']
             if any(getattr(args, field, None) is not None for field in overrides):
                 parser.error("使用 --config 时请在配置文件内修改参数，不要混用同类命令行覆盖项")
         if args.command == "demo":
             from finance_quant.integrations.qlib_demo import run_demo
             output(run_demo(args.runs_dir, args.data_dir))
+        elif args.command in {'index-download','index-plan','index-status'}:
+            from finance_quant.application.index_download import run_index_download,index_download_status
+            if args.command=='index-status':
+                from finance_quant.application.index_download_manager import status
+                output(status(args.data_dir))
+            else:
+                try:
+                    result=run_index_download(args.data_dir,args.start,args.end,args.warmup_sessions,
+                        prepare_only=args.command=='index-plan',limit=args.limit)
+                finally:
+                    if args.command=='index-download' and (args.data_dir/'progress.json').exists():
+                        from finance_quant.application.index_download_reports import refresh_handling_report
+                        try:
+                            refresh_handling_report(args.data_dir)
+                        except (OSError,ValueError,KeyError,Timeout):
+                            print('处理报告暂未生成；下载结果已保留，可在网页重新读取报告。')
+                output({k:v for k,v in result.items() if k not in {'assets','tasks','requests','reference_files'}})
         elif args.command == "probe":
             from finance_quant.data.probe import probe_service
             probe_service()
@@ -101,7 +129,7 @@ def main() -> None:
                 output(result)
             else:
                 defaults = BacktestConfig(args.start or "2026-09-01", args.end or "2026-09-30",
-                    **{key: getattr(args, key) for key in ["initial_cash", "topk", "n_drop", "risk_degree", "open_cost", "close_cost", "min_cost"]
+                    **{key: getattr(args, key) for key in tuple(BacktestConfig.__dataclass_fields__)[2:]
                        if getattr(args, key) is not None})
                 output(run_real(args.data_dir or Path("data/tushare/20260803-20260930"), args.runs_dir or Path("runs"), **asdict(defaults)))
         elif args.command == "evaluate":

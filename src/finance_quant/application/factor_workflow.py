@@ -37,11 +37,18 @@ def load_configured_snapshot(config):
     return snapshot
 
 
-def publish_factor_run(market, manifest: dict, runs_dir: Path, config: FactorConfig | None = None) -> dict:
+def publish_factor_run(market, manifest: dict, runs_dir: Path, config: FactorConfig | None = None, neutralization=None) -> dict:
     config = config or FactorConfig()
+    from finance_quant.research.neutralization import NeutralizationConfig,industry_context
+    neutralization=neutralization or NeutralizationConfig()
+    industry=industry_context(neutralization)
     base = Path(__file__).parents[1]
-    provenance = {**source_provenance([Path(__file__), base / "research/market_factors.py", base / "research/registry.py"]),
+    provenance = {**source_provenance([Path(__file__), base / "research/market_factors.py", base / "research/registry.py", base / 'research/factor_library.py']),
                   "data_version": manifest["id"], "factors": config.as_list()}
+    provenance['neutralization']=neutralization.as_dict()
+    if industry:provenance['industry_version']=industry.manifest['id']
+    provenance['industry_code_sha256']=source_provenance([base/'data/industries.py',base/'research/neutralization.py'])['code_sha256']
+    provenance['temporal_audit_sha256']=source_provenance([base/'data/temporal_audit.py'])['code_sha256']
     run_id = "real-factors-" + fingerprint(provenance)
     store = ResultStore(runs_dir)
     locks = runs_dir / ".locks"
@@ -53,7 +60,7 @@ def publish_factor_run(market, manifest: dict, runs_dir: Path, config: FactorCon
                 if existing["metadata"]["provenance"] != provenance:
                     raise ValueError("Factor artifact provenance conflict")
                 return existing
-            result = market_factors(market, manifest["id"], config)
+            result = market_factors(market, manifest["id"], config, neutralization=neutralization,industry_history=industry)
             result["metadata"].update(id=run_id, provenance=provenance, created_at=datetime.now(timezone.utc).isoformat())
             result['metadata']['source'] = manifest.get('source', 'third_party_tushare_compatible')
             if manifest.get('cross_validation'):

@@ -27,6 +27,28 @@ export interface FactorRun {
   scheme: string;
   data_version: string;
   is_synthetic: boolean;
+  factor_definitions?: Record<string, FactorDescriptor>;
+  factor_config?: Array<{name: string; weight: number; window: number | null; id?: string; skip?: number; baseline_window?: number}>;
+}
+
+export interface FactorDescriptor {
+  id: string;
+  name: string;
+  label: string;
+  family: string;
+  direction: 'higher' | 'lower';
+  required_fields: string[];
+  formula: string;
+  params: Record<string, number>;
+  lookback: number;
+  data_note?: string;
+}
+
+export interface FactorDiagnostic {
+  date: string;
+  instrument: string;
+  raw: NumericRecord;
+  reasons: Record<string, string>;
 }
 
 export interface FactorRunList {
@@ -37,6 +59,8 @@ export interface FactorRunList {
 export type NumericRecord = Record<string, number | null>;
 
 export interface FactorScore {
+  industry_code?:string|null;industry_name?:string|null;industry_status?:string;classification?:string;
+  processed?:NumericRecord;before_scores?:NumericRecord;before_contributions?:NumericRecord;before_composite?:number;before_rank?:number;
   instrument: string;
   name: string;
   industry: string | null;
@@ -45,12 +69,18 @@ export interface FactorScore {
   scores: NumericRecord | null;
   composite: number | null;
   rank: number | null;
+  contributions?: NumericRecord;
+  valuation_asof?: string;
+  is_suspended?: boolean;
 }
 
 export interface ScoreMetadata {
+  temporal_audit?:TemporalAuditData;
   weights?: Record<string, number>;
   score_unit?: string;
   direction?: string;
+  factor_definitions?: Record<string, FactorDescriptor>;
+  coverage?: {universe: number; eligible: number; factors: Record<string, {valid: number; missing: number}>};
   [key: string]: unknown;
 }
 
@@ -63,6 +93,7 @@ export interface Paginated<T> {
 
 export interface FactorScoresResponse extends Paginated<FactorScore> {
   metadata?: ScoreMetadata;
+  diagnostics?: FactorDiagnostic[];
 }
 
 export interface FactorHistoryItem {
@@ -107,6 +138,14 @@ export interface BacktestList {
 }
 
 export interface BacktestDetail {
+  temporal_audit?:TemporalAuditData;
+  benchmark_name?: string;
+  execution_run_id?: string;
+  benchmark?: {code:string;name:string;return_type:string;source:string;start:string;end:string;observations:number;methodology:string};
+  execution_costs?: {cost_mode:'legacy'|'itemized';commission_rate:number;tax_mode:'historical'|'fixed';stamp_tax_rate:number;transfer_fee_rate:number;impact_cost:number;min_cost:number};
+  cost_summary?: CostBreakdown;
+  rebalance_policy?: {frequency:'daily'|'weekly'|'monthly';scheduled_count:number;dates:string[];timing:string;exit_policy:string};
+  execution_summary?:{events:number;blocked_exits:number;pending_exits:Array<{instrument:string;reason:string}>};
   id: string;
   name: string;
   status: BacktestStatus;
@@ -121,6 +160,33 @@ export interface BacktestDetail {
   config?: Record<string, unknown> | null;
   limitations?: string[] | null;
   metrics: BacktestMetrics | null;
+  performance?: BacktestPerformance | null;
+}
+
+export interface TemporalAuditData {
+  version:string;point_in_time_certified:false;valuation_fields_used:string[];note:string;
+  items:Array<{key:string;label:string;status:string;detail:string}>;
+  capacity_diagnostics?:{valid_stock_days:number;missing_lookback_stock_days:number;max_prior_turnover_ratio:number|null;above_ten_percent:number;note:string};
+}
+
+export interface AnnualReturn {
+  year: number;
+  start_date: string;
+  end_date: string;
+  trading_days: number;
+  strategy_return: number | null;
+  benchmark_return: number | null;
+}
+
+export interface BacktestPerformance {
+  version: string;
+  available: boolean;
+  metrics: BacktestMetrics;
+  benchmark_metrics: BacktestMetrics;
+  drawdown: { peak_date: string | null; trough_date: string | null };
+  benchmark_drawdown: { peak_date: string | null; trough_date: string | null };
+  annual_returns: AnnualReturn[];
+  methodology: { trading_days_per_year: number; annual_risk_free_rate: number; std_ddof: number };
 }
 
 export interface EquityPoint {
@@ -148,6 +214,7 @@ export interface Position {
 export type PositionResponse = Paginated<Position>;
 
 export interface Trade {
+  cost_breakdown?:CostBreakdown;
   date: string;
   instrument: string;
   name?: string | null;
@@ -159,6 +226,7 @@ export interface Trade {
 }
 
 export type TradeResponse = Paginated<Trade>;
+export interface CostBreakdown {commission:number;stamp_tax:number;transfer_fee:number;impact:number;legacy_fee:number;total:number;}
 
 /* --------------------------------------------------------------- data status */
 
@@ -288,6 +356,9 @@ export interface EvaluationFactorConfig {
   name: string;
   weight: number;
   window: number | null;
+  id?: string;
+  skip?: number;
+  baseline_window?: number;
 }
 
 export interface EvaluationConfig {
@@ -297,6 +368,7 @@ export interface EvaluationConfig {
 }
 
 export interface EvaluationMetadata {
+  temporal_audit?:TemporalAuditData;
   id: string;
   name: string;
   is_synthetic: boolean;
@@ -309,6 +381,7 @@ export interface EvaluationMetadata {
   end: string;
   sample_size: number;
   provenance: Record<string, unknown>;
+  factor_definitions?: Record<string, FactorDescriptor>;
 }
 
 export interface EvaluationList {
@@ -415,6 +488,7 @@ export interface EvaluationMethodology {
 }
 
 export interface EvaluationResult {
+  tables?:Record<string,{file:string;rows:number;sha256:string}>;
   metadata: EvaluationMetadata;
   methodology: EvaluationMethodology;
   signal_coverage: SignalCoverageRow[];

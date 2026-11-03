@@ -68,6 +68,21 @@ def test_changed_execution_parameters_create_independent_reproducible_runs(resea
     assert (research_config.runs_dir / '.qlib').is_dir()
 
 
+def test_scheduled_itemized_config_roundtrips_and_reaches_real_workflow(research_config):
+    from finance_quant.configuration import load_config
+    from finance_quant.storage import ResultStore
+    configured=replace(research_config,backtest=replace(research_config.backtest,rebalance_frequency='monthly',cost_mode='itemized',
+        commission_rate=.0002,tax_mode='fixed',stamp_tax_rate=.0006,transfer_fee_rate=.00003,impact_cost=.0015))
+    path=research_config.runs_dir.parent/'itemized.json';path.write_text(json.dumps(configured.as_dict()),encoding='utf-8')
+    assert load_config(path)==configured
+    output=run_configured(configured);saved=ResultStore(configured.runs_dir).get('backtests',output['run_id'])
+    assert saved['metadata']['rebalance_policy']['frequency']=='monthly'
+    assert saved['metadata']['execution_costs']['commission_rate']==.0002
+    assert saved['metadata']['config']['exchange_kwargs']['impact_cost']==.0015
+    assert saved['trades'] and all(t['date'] in saved['metadata']['rebalance_policy']['dates'] for t in saved['trades'])
+    assert saved['metadata']['cost_summary']['impact']>0
+
+
 def test_factor_selection_reaches_native_strategy_and_evaluation_settings_do_not_change_execution(research_config):
     from finance_quant.research.registry import FactorConfig, FactorSpec, EvaluationConfig
     from finance_quant.storage import ResultStore

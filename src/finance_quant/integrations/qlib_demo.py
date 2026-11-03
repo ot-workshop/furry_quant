@@ -117,7 +117,7 @@ def run_demo(runs_dir: Path, data_dir: Path) -> dict:
     store = ResultStore(runs_dir)
     package_root = Path(__file__).resolve().parents[1]
     code_hash = hashlib.sha256()
-    for source_file in (Path(__file__), package_root / "sample.py", Path(__file__).with_name("qlib_runner.py")):
+    for source_file in (Path(__file__), package_root / "sample.py", Path(__file__).with_name("qlib_runner.py"), package_root / 'research/performance.py'):
         code_hash.update(source_file.name.encode())
         code_hash.update(source_file.read_bytes())
     project_root = package_root.parents[1]

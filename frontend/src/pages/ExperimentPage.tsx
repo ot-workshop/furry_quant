@@ -237,14 +237,24 @@ function ExperimentOverview({ result }: { result: ExperimentResult }) {
           label="风险度 risk_degree"
           value={formatNumber(shared_parameters.backtest.risk_degree, 4)}
         />
-        <MetaItem
-          label="买入费率"
+        <MetaItem label="调仓频率" value={({daily:'每日',weekly:'每周首个交易日',monthly:'每月首个交易日'})[shared_parameters.backtest.rebalance_frequency ?? 'daily']}/>
+        {shared_parameters.backtest.cost_mode==='itemized' ? <>
+          <MetaItem label="券商综合佣金" value={formatPercent(shared_parameters.backtest.commission_rate,4)}/>
+          <MetaItem label="税费模式" value={shared_parameters.backtest.tax_mode==='fixed' ? '自定义固定费率' : '成交日历史费率'}/>
+          {shared_parameters.backtest.tax_mode==='fixed' ? <>
+            <MetaItem label="卖出印花税" value={formatPercent(shared_parameters.backtest.stamp_tax_rate,4)}/>
+            <MetaItem label="双边过户费" value={formatPercent(shared_parameters.backtest.transfer_fee_rate,4)}/>
+          </> : null}
+        </> : <><MetaItem
+          label="买入综合费率"
           value={formatPercent(shared_parameters.backtest.open_cost, 4)}
         />
         <MetaItem
           label="卖出费率"
           value={formatPercent(shared_parameters.backtest.close_cost, 4)}
         />
+        </>}
+        <MetaItem label="双边冲击成本" value={formatPercent(shared_parameters.backtest.impact_cost ?? 0,4)}/>
         <MetaItem
           label="最低费用（元）"
           value={formatNumber(shared_parameters.backtest.min_cost, 2)}

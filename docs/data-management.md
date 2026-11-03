@@ -22,7 +22,7 @@
 
 回测时配置的股票池、数据区间和基准必须与已发布快照一致；仅改配置不会静默改用另一批行情。数据应包含足够的因子预热期，回测首日前一交易日必须有评分，后续决策日也不能缺评分。回测参数写入运行指纹，修改本金、仓位或费用等会产生独立结果；相同版本重跑复用旧结果。
 
-成功执行带配置的回测后，会在结果目录保存 `active-research.json` 配置副本。默认 `start.ps1` 使用 `runs/active-research.json`；也可用 `-Config` 指定原配置文件。启动时不下载数据；`-Demo` 与 `-Config` 互斥。未建立激活配置时保留原小范围样本的启动方式。脚本保持UTF-8 BOM，以兼容Windows PowerShell 5.1。
+成功执行带配置的回测后，会在结果目录保存 `active-research.json` 配置副本。默认 `start.ps1` 使用 `runs/active-research.json`；也可用 `-Config` 指定原配置文件。默认只启动网页，未建立激活配置时也不自动计算或下载，可在网页配置任务；`-RunResearch` 显式先计算研究，`-Demo` 显式生成合成样本，`-Demo` 与 `-Config`/`-RunResearch` 互斥。脚本保持UTF-8 BOM，以兼容Windows PowerShell 5.1。见[启动说明](startup.md)。
 
 ## 分片、重试与质量检查
 
@@ -53,4 +53,4 @@ Qlib派生特征存放于结果目录 `.qlib/{fingerprint}/`，不写入不可�
 
 复权异常会显示在数据管理的失败任务详情中，包括标的、相邻日期、复权收益和接口涨跌幅。发布与加载均独立检查，超过当前保守阈值需核实公司行动或供应商数据，不自动缩放修复。多年数据失败证据见[供应商问题](provider-data-issues.md)；当前有效结果见[验收记录](real-data-status.md)。启动脚本可用`-Port`指定本机端口。
 
-配置现支持可选 `factors` 与 `evaluation`，用于本地因子选择、窗口、权重以及 IC/分组诊断；不改变数据下载规则。配置模式启动会生成或复用回测与评估，详细字段和报告口径见[因子研究](factor-research.md)。
+配置现支持可选 `factors` 与 `evaluation`，用于本地因子选择、窗口、权重以及IC/分组诊断；不改变数据下载规则。网页任务、CLI计算命令或 `start.ps1 -RunResearch` 会生成或复用回测与评估，默认启动只打开网页。详细字段和报告口径见[因子研究](factor-research.md)。

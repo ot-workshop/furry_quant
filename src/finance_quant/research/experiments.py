@@ -85,7 +85,7 @@ class ExperimentPlan:
                 raise ValueError("Candidate factors must be an array")
             specs = []
             for spec in item["factors"]:
-                if not isinstance(spec, dict) or set(spec) not in ({"name", "weight"}, {"name", "weight", "window"}):
+                if not isinstance(spec, dict) or not {'name','weight'}.issubset(spec) or set(spec) - {'name','weight','window','skip','baseline_window','id'}:
                     raise ValueError("Factor fields must be name, weight and optional window")
                 specs.append(FactorSpec(**spec))
             candidates.append(Candidate(identifier, _name(item["name"], "Candidate name"), FactorConfig(tuple(specs))))

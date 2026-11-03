@@ -136,6 +136,8 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 def _error_category(exc: BaseException) -> str:
+    if isinstance(exc, TushareProviderError):
+        return exc.category
     text = str(exc).lower()
     if any(marker in text for marker in ("频率", "频次", "每分钟", "每秒", "too many", "rate limit", "too frequent")):
         return "rate_limit"
@@ -167,6 +169,9 @@ class TushareProvider:
 
     def _get_client(self):
         if self._client is None:
+            if self.settings.http_url.rstrip('/') == DEFAULT_HTTP_URL:
+                self._client = _OfficialClient(self.settings)
+                return self._client
             try:
                 import tushare as ts
 
@@ -199,6 +204,9 @@ class TushareProvider:
                 raw = client.query(api_name, fields=fields, **params)
                 break
             except Exception as exc:
+                from finance_quant.data.network_budget import DownloadPaused
+                if isinstance(exc, DownloadPaused):
+                    raise
                 category = _error_category(exc)
                 if retries < MAX_RETRIES and category in {"transport", "rate_limit"}:
                     retries += 1
@@ -214,6 +222,31 @@ class TushareProvider:
         if not isinstance(raw, pd.DataFrame):
             raise TushareProviderError("Tushare returned an unexpected response type")
         return raw
+
+
+class _OfficialClient:
+    """Official HTTPS JSON contract, independent of SDK proxy customizations."""
+
+    def __init__(self, settings):
+        self.settings = settings
+
+    def query(self, api_name, fields='', **params):
+        import requests
+        from finance_quant.data.network_budget import reserve_tushare
+        reserve_tushare(api_name)
+        response = requests.post(DEFAULT_HTTP_URL,
+            json={'api_name': api_name, 'token': self.settings.token, 'params': params, 'fields': fields},
+            timeout=20, allow_redirects=False)
+        response.raise_for_status()
+        if response.status_code != 200:
+            raise TushareProviderError('Official endpoint returned an unexpected status')
+        result = response.json()
+        if result.get('code') != 0:
+            # Use provider text only internally to classify the failure; never expose it.
+            category = _error_category(RuntimeError(str(result.get('msg', ''))))
+            raise TushareProviderError('Official API rejected the request', category=category)
+        data = result['data']
+        return pd.DataFrame(data['items'], columns=data['fields'])
 
 
 def _empty_frame(raw, columns: list[str]) -> pd.DataFrame | None:

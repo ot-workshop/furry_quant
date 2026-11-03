@@ -20,6 +20,7 @@ from filelock import FileLock, Timeout
 from finance_quant.configuration import DataConfig
 from finance_quant.data.catalog import Catalog, utc_now
 from finance_quant.data.quality import adjustment_discontinuities
+from finance_quant.data.suspensions import MemoizedSecondary, invalid_halt_rows
 from finance_quant.data.providers import (
     TushareProvider, TushareSettings, TushareProviderError, normalize_adj_factor, normalize_calendar,
     normalize_daily, normalize_daily_basic, normalize_index_daily,
@@ -60,15 +61,27 @@ def atomic_json(path: Path, document: dict):
             file.close()
             temporary.unlink(missing_ok=True)
             raise
-    temporary.replace(path)
+    try:
+        # Windows readers and virus scanners can briefly hold a handle without
+        # FILE_SHARE_DELETE. Keep the previous complete document until replace succeeds.
+        for attempt in range(21):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError:
+                if attempt==20:raise
+                time.sleep(.05)
+    finally:
+        try:temporary.unlink(missing_ok=True)
+        except OSError:pass # Do not hide a persistent replace error with cleanup failure.
 
 
 def instrument(code: str) -> str:
     return code[-2:] + code[:6]
 
 
-def normalize_response(api: str, raw: pd.DataFrame, params: dict) -> pd.DataFrame:
-    if not isinstance(raw, pd.DataFrame) or raw.empty:
+def normalize_response(api: str, raw: pd.DataFrame, params: dict, *, allow_empty=False) -> pd.DataFrame:
+    if not isinstance(raw, pd.DataFrame) or (raw.empty and not allow_empty):
         raise ValueError("Required response is empty")
     normalizers = {"daily": normalize_daily, "adj_factor": normalize_adj_factor,
                    "daily_basic": normalize_daily_basic, "trade_cal": normalize_calendar,
@@ -88,7 +101,7 @@ def normalize_response(api: str, raw: pd.DataFrame, params: dict) -> pd.DataFram
         return raw.copy()
     else:
         raise ValueError("Unsupported managed dataset")
-    if "instrument" in frame and set(frame["instrument"]) != {instrument(params["ts_code"])}:
+    if not frame.empty and "instrument" in frame and set(frame["instrument"]) != {instrument(params["ts_code"])}:
         raise ValueError("Response instrument mismatch")
     if frame["date"].duplicated().any():
         raise ValueError("Duplicate dates in response")
@@ -121,21 +134,27 @@ class ManagedFetcher:
                 self.generation = uuid.uuid4().hex
                 atomic_json(pending_path, {'provider_id': self.provider_id, 'scope': scope_hash, 'generation': self.generation})
         self.requests, self.errors = [], []
-        self.cache_from = cache_from.resolve() if cache_from is not None else None
+        self.cache_sources = tuple(Path(path).resolve() for path in
+                                   (cache_from if isinstance(cache_from, (tuple, list)) else [cache_from]) if path is not None)
         self.fallback_apis = {"daily", "adj_factor"} if scope.get("validation", {}).get("mode") == "fallback" else set()
+        self.allow_empty_stock = scope.get('validation', {}).get('mode') in {'verify', 'fallback'}
         (root / "raw").mkdir(exist_ok=True)
 
     def cached_partition(self, key: str):
         previous = self.catalog.partition(key)
         if previous and previous['status'] == 'succeeded':
             return previous, self.root
-        if self.cache_from is not None:
-            uri = (self.cache_from / 'catalog.sqlite3').as_uri() + '?mode=ro'
-            with closing(sqlite3.connect(uri, uri=True)) as connection:
-                connection.row_factory = sqlite3.Row
-                row = connection.execute("SELECT * FROM partitions WHERE key=? AND status='succeeded'", (key,)).fetchone()
+        for source in self.cache_sources:
+            uri = (source / 'catalog.sqlite3').as_uri() + '?mode=ro'
+            try:
+                with closing(sqlite3.connect(uri, uri=True)) as connection:
+                    connection.row_factory = sqlite3.Row
+                    row = connection.execute("SELECT * FROM partitions WHERE key=? AND status='succeeded'", (key,)).fetchone()
+            except sqlite3.DatabaseError:
+                # An unrelated broken catalog must not disable a new pool.
+                continue
             if row is not None:
-                return dict(row), self.cache_from
+                return dict(row), source
         return previous, self.root
 
     def key(self, api: str, params: dict) -> tuple[dict, str]:
@@ -209,13 +228,21 @@ class ManagedFetcher:
                 metadata = {"rows": len(raw), "fetched_at": utc_now(), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "raw_path": relative}
                 atomic_json(path.with_suffix(".json"), {**specification, **metadata})
             stage = "invalid_response" if not cached else "cache_corrupt"
-            frame = normalize_response(api, raw, params)
+            # An empty capture is not usable market data. It may, however, cover
+            # a wholly suspended partition; the later independent status check
+            # and full-calendar coverage gate must still prove every date.
+            frame = normalize_response(api, raw, params, allow_empty=self.allow_empty_stock and api in {'daily', 'daily_basic', 'adj_factor', 'stk_limit'})
             self.catalog.save_partition(key, api, params, self.provider_id, status="succeeded", attempts=attempts, metadata=metadata)
             self.catalog.record(self.job_id, key, status="succeeded", cached=bool(cached))
             self.requests.append({**specification, **metadata})
             print(f"{api} {params.get('ts_code', 'calendar')} {params.get('start_date', params.get('trade_date', ''))}: {'cache' if cached else 'fetched'} {len(frame)}", flush=True)
             return frame
         except Exception as exc:
+            from finance_quant.data.network_budget import DownloadPaused
+            if isinstance(exc, DownloadPaused):
+                raise
+            if api == 'stock_basic' and stage == 'invalid_response':
+                stage = 'stock_metadata_unavailable'
             if getattr(exc, "category", None) == "transport":
                 stage = "network_failed"
             elif getattr(exc, "category", None) in {"rate_limit", "access_denied", "unsupported"}:
@@ -279,9 +306,13 @@ def coverage_report(market: pd.DataFrame, benchmark: pd.DataFrame, sessions: pd.
         actual = pd.DatetimeIndex(frame["date"])
         missing, extra = sessions.difference(actual), actual.difference(sessions)
         invalid = pd.Series(False, index=frame.index)
-        required = ["open", "high", "low", "close", "volume"] + (["adj_factor", "up_limit", "down_limit"] if stock else [])
+        required = ["open", "high", "low", "close"] + (["adj_factor", "up_limit", "down_limit"] if stock else [])
         values = frame[required].to_numpy(dtype=float)
         invalid |= ~np.isfinite(values).all(axis=1) | (values <= 0).any(axis=1)
+        halted = frame.get("is_suspended", pd.Series(False, index=frame.index)) if stock else pd.Series(False, index=frame.index)
+        invalid |= ~np.isfinite(frame.volume) | frame.volume.lt(0) | (frame.volume.eq(0) & ~halted)
+        if stock:
+            invalid |= invalid_halt_rows(frame)
         invalid |= frame["high"] < frame[["open", "close", "low"]].max(axis=1)
         invalid |= frame["low"] > frame[["open", "close", "high"]].min(axis=1)
         if stock:
@@ -293,6 +324,7 @@ def coverage_report(market: pd.DataFrame, benchmark: pd.DataFrame, sessions: pd.
         if stock:
             valid_pe = np.isfinite(frame["pe_ttm"]) & (frame["pe_ttm"] > 0)
             result["missing_valuation_dates"] = dates(frame.loc[~valid_pe, "date"])
+            result["suspended_dates"] = dates(frame.loc[halted, "date"])
         result["complete"] = not any(result[key] for key in ["missing_dates", "extra_dates", "duplicate_dates", "invalid_dates"])
         return result
 
@@ -305,7 +337,7 @@ def coverage_report(market: pd.DataFrame, benchmark: pd.DataFrame, sessions: pd.
     index = assess(benchmark, benchmark_code, False)
     return {"status": "complete" if all(row["complete"] for row in [*stocks, index]) and len(sessions) > 0 else "incomplete",
             "expected_sessions": len(sessions), "stock_count": len(codes), "stocks": stocks, "benchmark": index, 'adjustment_anomalies': anomalies,
-            "note": "缺失交易日不直接推断为停牌；复权连续性异常需核查公司行动或数据口径，不自动缩放、补值或剔除股票"}
+            "note": "缺失交易日不直接推断为停牌；仅独立两种复权口径均确认的整日停牌可按此前已知收盘价估值并禁止买卖，缺失估值仅向前沿用且记录时点；其他缺失或复权异常不自动补值、缩放或剔除股票"}
 
 
 def publish_snapshot(root: Path, config: DataConfig, market: pd.DataFrame, benchmark: pd.DataFrame,
@@ -328,11 +360,13 @@ def publish_snapshot(root: Path, config: DataConfig, market: pd.DataFrame, bench
                               "第三方历史数据与估值发布时间/修订未经独立核实；不使用财报因子"]}
         if config.validation.mode != 'off':
             manifest.update(schema_version='market-v3', source='tushare_baostock', cross_validation=coverage['cross_validation'])
-            sources = [Path(__file__), Path(__file__).with_name('reconciliation.py'), Path(__file__).with_name('quality.py'),
+            sources = [Path(__file__), Path(__file__).with_name('reconciliation.py'), Path(__file__).with_name('suspensions.py'), Path(__file__).with_name('quality.py'),
                        Path(__file__).parent / 'providers/baostock.py', Path(__file__).parent / 'providers/baostock_worker.py',
                        Path(__file__).parent / 'providers/tushare.py']
             manifest['validation_code_sha256'] = hashlib.sha256(b''.join(path.read_bytes() for path in sources)).hexdigest()
             manifest['notes'] += ['联合核验未复权OHLC与复权收益，保留逐股来源；不是对估值或财报的独立认证']
+            if market.get('is_suspended', pd.Series(False, index=market.index)).any():
+                manifest['notes'] += ['已确认整日停牌采用此前已知收盘价估值，成交量为零且禁止买卖；缺失PE仅沿用此前可得值，valuation_asof记录该值的行情日期']
         version = hashlib.sha256(json.dumps(manifest, sort_keys=True, allow_nan=False).encode()).hexdigest()[:16]
         prefix = 'joint' if config.validation.mode != 'off' else 'tushare'
         manifest.update(id=f"{prefix}-{version}", snapshot_path=f"snapshots/{version}")
@@ -353,23 +387,23 @@ def publish_snapshot(root: Path, config: DataConfig, market: pd.DataFrame, bench
             staging.rmdir()
 
 
-def download_dataset(config: DataConfig, *, provider=None, refresh: bool = False, secondary_provider=None, cache_from: Path | None = None) -> dict:
-    if cache_from is not None:
-        cache_from = Path(cache_from).resolve()
+def download_dataset(config: DataConfig, *, provider=None, refresh: bool = False, secondary_provider=None, cache_from: Path | tuple[Path, ...] | None = None, calendar_validator=None) -> dict:
+    if cache_from:
+        cache_from = tuple(Path(path).resolve() for path in (cache_from if isinstance(cache_from, (tuple, list)) else [cache_from]))
         if refresh:
             raise ValueError('A fresh download cannot reuse a different primary cache')
-        if not (cache_from / 'catalog.sqlite3').is_file():
+        if any(not (source / 'catalog.sqlite3').is_file() for source in cache_from):
             raise ValueError('Primary cache catalog does not exist')
     root = config.root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     try:
         with FileLock(root / ".download.lock", timeout=0):
-            return _download_locked(config, provider, refresh, secondary_provider, cache_from)
+            return _download_locked(config, provider, refresh, secondary_provider, cache_from, calendar_validator)
     except Timeout:
         raise DatasetDownloadError("Another download is running in this data directory") from None
 
 
-def _download_locked(config: DataConfig, provider, refresh: bool, secondary_provider=None, cache_from=None) -> dict:
+def _download_locked(config: DataConfig, provider, refresh: bool, secondary_provider=None, cache_from=None, calendar_validator=None) -> dict:
     root = config.root.resolve()
     provider = provider or TushareProvider(TushareSettings.from_env())
     catalog = Catalog(root)
@@ -391,6 +425,8 @@ def _download_locked(config: DataConfig, provider, refresh: bool, secondary_prov
         expected_calendar = pd.date_range(config.start, calendar_end)
         if not pd.DatetimeIndex(calendar["date"]).equals(expected_calendar):
             raise DatasetDownloadError("Official calendar dates are incomplete or duplicated")
+        if calendar_validator is not None:
+            calendar_validator(calendar)
         sessions = pd.DatetimeIndex(calendar.loc[calendar["is_open"], "date"])
         expected = sessions[(sessions >= pd.Timestamp(config.start)) & (sessions <= pd.Timestamp(config.end))]
         if len(expected) < 25 or not (sessions > pd.Timestamp(config.end)).any():
@@ -398,19 +434,53 @@ def _download_locked(config: DataConfig, provider, refresh: bool, secondary_prov
         ranges = [(start, end) for start, end in ranges if expected.to_series().between(pd.Timestamp(start), pd.Timestamp(end)).any()]
         catalog.set_total(job_id, len(calendar_ranges) + len(config.codes) * (1 + 4 * len(ranges)) + len(ranges))
         frames, benchmark_parts = [], []
+        if config.validation.mode != 'off':
+            from finance_quant.data.providers.baostock import BaoStockProvider
+            from finance_quant.data.reconciliation import normalize_baostock
+            secondary_provider = MemoizedSecondary(secondary_provider or BaoStockProvider(root / 'secondary', namespace=fetch.generation))
         for code in config.codes:
+            halted_dates = pd.DatetimeIndex([])
             name = fetch.get("stock_basic", ts_code=code)
             abort_failed(fetch)
+            if name is not None:
+                metadata = name.iloc[0]
+                for field, outside in [('list_date', lambda date: expected[expected < date]),
+                                       ('delist_date', lambda date: expected[expected > date])]:
+                    value = metadata.get(field)
+                    if pd.notna(value) and str(value).strip():
+                        boundary = pd.to_datetime(str(value), format='%Y%m%d', errors='coerce')
+                        affected = outside(boundary) if pd.notna(boundary) else pd.DatetimeIndex([])
+                        if len(affected):
+                            fetch.errors.append({'api': 'stock_basic', 'params': {'ts_code': code},
+                                                 'error': 'outside_listing_period',
+                                                 'missing_dates': affected.strftime('%Y-%m-%d').tolist()})
+                            abort_failed(fetch)
             parts = {api: [] for api in ["daily", "adj_factor", "daily_basic", "stk_limit"]}
             for start, end in ranges:
                 monthly = fetch.get_many([(api, {"ts_code": code, "start_date": start, "end_date": end}) for api in parts])
                 abort_failed(fetch)
+                period_sessions = expected[(expected >= pd.Timestamp(start)) & (expected <= pd.Timestamp(end))]
+                missing_bars = any(frame is not None and len(period_sessions.difference(pd.DatetimeIndex(frame.date)))
+                                   for api, frame in zip(parts, monthly))
+                if config.validation.mode != 'off' and missing_bars:
+                    try:
+                        bundle = secondary_provider.fetch(code, expected[0].strftime('%Y%m%d'), expected[-1].strftime('%Y%m%d'))
+                        checked_secondary = normalize_baostock(bundle, code, expected)
+                    except (ValueError, RuntimeError) as error:
+                        from finance_quant.data.providers.baostock import BaoStockProviderError
+                        category = ('secondary_connection_failed' if isinstance(error, BaoStockProviderError) and error.retryable
+                                    else 'secondary_unavailable' if isinstance(error, BaoStockProviderError) else 'secondary_invalid')
+                        fetch.errors.append({'api': 'secondary_history', 'params': {'ts_code': code}, 'error': category})
+                        catalog.finish(job_id, 'failed', {'status': 'failed', 'failures': fetch.errors})
+                        raise DatasetDownloadError(f'Independent suspension evidence unavailable for {code}') from None
+                    halted_dates = pd.DatetimeIndex(checked_secondary.loc[checked_secondary.is_suspended, 'date'])
                 for api, frame in zip(parts, monthly):
                     if frame is not None:
                         checked = []
                         for month_start, month_end in month_ranges(start, end):
-                            month_sessions = expected[(expected >= pd.Timestamp(month_start)) & (expected <= pd.Timestamp(month_end))]
+                            month_sessions = expected[(expected >= pd.Timestamp(month_start)) & (expected <= pd.Timestamp(month_end))].difference(halted_dates)
                             section = frame.loc[frame["date"].between(pd.Timestamp(month_start), pd.Timestamp(month_end))]
+                            section = section.loc[~section.date.isin(halted_dates)]
                             checked.append(repair_missing_dates(fetch, api, code, month_start, month_end, section, month_sessions))
                             abort_failed(fetch)
                         frame = pd.concat(checked, ignore_index=True)
@@ -418,7 +488,7 @@ def _download_locked(config: DataConfig, provider, refresh: bool, secondary_prov
                 abort_failed(fetch)
             if name is None or any(not rows for api, rows in parts.items() if api not in fetch.fallback_apis):
                 continue
-            if fetch.fallback_apis:
+            if config.validation.mode != 'off' or fetch.fallback_apis:
                 joined = pd.DataFrame({'instrument': instrument(code), 'date': expected})
                 for api, rows in parts.items():
                     if rows:

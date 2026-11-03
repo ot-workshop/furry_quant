@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field,asdict
+from finance_quant.research.neutralization import NeutralizationConfig,parse_neutralization
+from finance_quant.research.execution_policy import EXECUTION_FIELDS,ExecutionCosts,validate_frequency
 from datetime import date
 from numbers import Integral, Real
 from pathlib import Path
@@ -39,9 +41,9 @@ _DATE_PATTERNS = (
 _BENCHMARKS = frozenset(
     {"000300.SH", "000905.SH", "000852.SH", "000001.SH", "399001.SZ", "399006.SZ"}
 )
-_TOP_LEVEL_FIELDS = frozenset({"data", "backtest", "runs_dir", "factors", "evaluation"})
+_TOP_LEVEL_FIELDS = frozenset({"data", "backtest", "runs_dir", "factors", "evaluation", "neutralization"})
 _DATA_FIELDS = frozenset({"root", "start", "end", "codes", "benchmark", "validation"})
-_FACTOR_FIELDS = frozenset({"name", "weight", "window"})
+_FACTOR_FIELDS = frozenset({"name", "weight", "window", "skip", "baseline_window", "id"})
 _EVALUATION_FIELDS = frozenset({"horizons", "groups", "min_cross_section"})
 _BACKTEST_FIELDS = frozenset(
     {
@@ -65,6 +67,10 @@ _BACKTEST_OPTIONALS = (
     "close_cost",
     "min_cost",
 )
+_BACKTEST_FIELDS=_BACKTEST_FIELDS.union(EXECUTION_FIELDS)
+_BACKTEST_OPTIONALS+=EXECUTION_FIELDS
+_BACKTEST_FIELDS=_BACKTEST_FIELDS.union({'benchmark'})
+_BACKTEST_OPTIONALS+=('benchmark',)
 
 
 def _path(value: Any, field: str) -> Path:
@@ -182,6 +188,14 @@ class BacktestConfig:
     open_cost: float = 0.001
     close_cost: float = 0.001
     min_cost: float = 5.0
+    rebalance_frequency: str = 'daily'
+    cost_mode: str = 'legacy'
+    commission_rate: float = .0003
+    tax_mode: str = 'historical'
+    stamp_tax_rate: float = .0005
+    transfer_fee_rate: float = .00001
+    impact_cost: float = 0.
+    benchmark: str | None = None
 
     def __post_init__(self) -> None:
         start_date = _parse_date(self.start, "backtest.start")
@@ -215,6 +229,14 @@ class BacktestConfig:
         min_cost = _finite(self.min_cost, "min_cost")
         if min_cost < 0:
             raise ValueError("min_cost must be nonnegative")
+        validate_frequency(self.rebalance_frequency)
+        costs=ExecutionCosts(**{key:getattr(self,key) for key in ExecutionCosts.__dataclass_fields__})
+        costs.validate_range(start_date.isoformat())
+        if self.benchmark is not None:
+            from finance_quant.data.benchmarks import normalize_benchmark
+            object.__setattr__(self,'benchmark',normalize_benchmark(self.benchmark))
+        for key in ('commission_rate','stamp_tax_rate','transfer_fee_rate','impact_cost'):
+            object.__setattr__(self,key,getattr(costs,key))
 
         object.__setattr__(self, "start", start_date.isoformat())
         object.__setattr__(self, "end", end_date.isoformat())
@@ -234,6 +256,7 @@ class ResearchConfig:
     runs_dir: Path
     factors: FactorConfig = field(default_factory=FactorConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    neutralization: NeutralizationConfig = field(default_factory=NeutralizationConfig)
 
     def __post_init__(self) -> None:
         if not isinstance(self.data, DataConfig):
@@ -244,6 +267,7 @@ class ResearchConfig:
             raise ValueError("factors must be a FactorConfig")
         if not isinstance(self.evaluation, EvaluationConfig):
             raise ValueError("evaluation must be an EvaluationConfig")
+        if not isinstance(self.neutralization,NeutralizationConfig):raise ValueError("neutralization must be a NeutralizationConfig")
         runs_dir = _path(self.runs_dir, "runs_dir")
 
         data_start = _parse_date(self.data.start, "data.start")
@@ -268,20 +292,11 @@ class ResearchConfig:
                 "benchmark": self.data.benchmark,
                 "validation": self.data.validation.as_dict(),
             },
-            "backtest": {
-                "start": self.backtest.start,
-                "end": self.backtest.end,
-                "initial_cash": self.backtest.initial_cash,
-                "topk": self.backtest.topk,
-                "n_drop": self.backtest.n_drop,
-                "risk_degree": self.backtest.risk_degree,
-                "open_cost": self.backtest.open_cost,
-                "close_cost": self.backtest.close_cost,
-                "min_cost": self.backtest.min_cost,
-            },
+            "backtest": asdict(self.backtest),
             "runs_dir": str(self.runs_dir),
             "factors": self.factors.as_list(),
             "evaluation": self.evaluation.as_dict(),
+            **({"neutralization":self.neutralization.as_dict()} if self.neutralization != NeutralizationConfig() else {}),
         }
 
 
@@ -327,13 +342,7 @@ def _factor_config(document: dict[str, Any]) -> FactorConfig:
             raise ValueError("each factor must be a JSON object")
         _reject_unknown(item, _FACTOR_FIELDS, "factor configuration")
         _require_fields(item, ("name", "weight"), "factor configuration")
-        specs.append(
-            FactorSpec(
-                name=item["name"],
-                weight=item["weight"],
-                window=item.get("window"),
-            )
-        )
+        specs.append(FactorSpec(**item))
     return FactorConfig(tuple(specs))
 
 
@@ -413,4 +422,5 @@ def load_config(path: Path) -> ResearchConfig:
         runs_dir=runs_dir,
         factors=_factor_config(document),
         evaluation=_evaluation_config(document),
+        neutralization=parse_neutralization(document.get("neutralization")),
     )

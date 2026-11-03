@@ -69,7 +69,7 @@ def load_market(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, d
             raise ValueError("Snapshot path escapes batch directory")
         manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
         root = snapshot
-    if manifest.get('schema_version') not in {'market-v1', 'market-v2', 'market-v3'}:
+    if manifest.get('schema_version') not in {'market-v1', 'market-v2', 'market-v3','market-v4-shared'}:
         raise ValueError('Unsupported market snapshot schema')
     if set(manifest["files"]) != {"market.parquet", "benchmark.parquet", "calendar.parquet"}:
         raise ValueError("Incomplete market snapshot file manifest")
@@ -82,9 +82,14 @@ def load_market(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, d
         raise ValueError('This snapshot was quarantined after a failed quality audit')
     manifest["snapshot_dir"] = str(root.resolve())
     market = pd.read_parquet(root / 'market.parquet')
+    if market.get('is_suspended', pd.Series(False, index=market.index)).any() and manifest.get('schema_version') not in {'market-v3','market-v4-shared'}:
+        raise ValueError('Suspended valuation rows require an independently validated joint snapshot')
     if manifest.get('schema_version') == 'market-v3':
         from finance_quant.data.reconciliation import validate_published_sources
         validate_published_sources(market, manifest)
+    if manifest.get('schema_version')=='market-v4-shared':
+        from finance_quant.data.shared_market import validate_snapshot
+        validate_snapshot(market,manifest)
     if adjustment_discontinuities(market):
         raise ValueError('Market adjustment continuity failed; verify supplier data or corporate actions before backtesting')
     return (market, pd.read_parquet(root / "benchmark.parquet"),

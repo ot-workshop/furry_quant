@@ -54,6 +54,10 @@ _CACHE_CORRUPT = "BaoStock cache entry is corrupted"
 class BaoStockProviderError(RuntimeError):
     """Public adapter error; never carries an external response body or traceback."""
 
+    def __init__(self, message, *, retryable=False):
+        super().__init__(message)
+        self.retryable = retryable
+
 
 @dataclass(frozen=True)
 class BaoStockBundle:
@@ -180,6 +184,7 @@ class BaoStockProvider:
         namespace: str = "base",
         timeout: float = 45,
         worker=None,
+        adjusted_flag: str = '1',
     ) -> None:
         if not isinstance(namespace, str) or not namespace.strip():
             raise BaoStockProviderError("namespace must be a non-empty string")
@@ -192,6 +197,8 @@ class BaoStockProvider:
             raise BaoStockProviderError("timeout must be a positive number")
         if worker is not None and not callable(worker):
             raise BaoStockProviderError("worker must be callable")
+        if adjusted_flag not in {'1','2'}:raise BaoStockProviderError('adjusted_flag must be 1 or 2')
+        self.adjusted_flag=adjusted_flag
         self.cache_root = Path(cache_root)
         self.namespace = namespace
         self.timeout = float(timeout)
@@ -206,6 +213,7 @@ class BaoStockProvider:
             raise BaoStockProviderError("start date must not be after end date")
 
         request = {"code": code, "start": start_iso, "end": end_iso}
+        if self.adjusted_flag!='1':request['adjusted_flag']=self.adjusted_flag
         version = _sdk_version()
         key = _cache_key(request, ",".join(FIELDS), version, self.namespace)
 
@@ -225,11 +233,18 @@ class BaoStockProvider:
         except BaoStockProviderError:
             raise
         except Exception:
+            from finance_quant.data.network_budget import DownloadPaused
+            if isinstance(sys.exception(),DownloadPaused):
+                raise
             raise BaoStockProviderError(
                 "BaoStock cache is unavailable"
             ) from None
 
     # -- cache -----------------------------------------------------------------
+
+    def alternate_basis(self):
+        return BaoStockProvider(self.cache_root,namespace=self.namespace,timeout=self.timeout,
+            worker=self._worker,adjusted_flag='2' if self.adjusted_flag=='1' else '1')
 
     def _fetch_and_publish(
         self,
@@ -240,7 +255,19 @@ class BaoStockProvider:
         request: dict,
         version: str,
     ) -> BaoStockBundle:
-        payload = self._invoke_worker(dict(request))
+        # A fresh subprocess opens a fresh SDK connection. Retry transport/worker
+        # failures once; invalid payloads and corrupt caches remain hard errors.
+        # Shared across cache roots, stocks, threads and our local processes.
+        # A timed-out worker has exited before another connection can start.
+        with FileLock(Path(tempfile.gettempdir()) / 'finance-quant-baostock.network.lock', timeout=120):
+            for attempt in range(2):
+                try:
+                    payload = self._invoke_worker(dict(request))
+                    break
+                except BaoStockProviderError as error:
+                    if not error.retryable or attempt:
+                        raise
+                    print(f"baostock {request['code']}: reconnecting once", flush=True)
         raw, adjusted = _validate_payload(payload)
 
         staging = _guard(root, base / f".{key}.{uuid.uuid4().hex}.tmp")
@@ -362,6 +389,7 @@ class BaoStockProvider:
     ) -> dict:
         return {
             "source": "baostock",
+            **({'adjusted_flag':request['adjusted_flag']} if 'adjusted_flag' in request else {}),
             "schema": SCHEMA,
             "request": request,
             "sdk_version": version,
@@ -382,9 +410,12 @@ class BaoStockProvider:
         try:
             return self._worker(request)
         except TimeoutError:
-            raise BaoStockProviderError("BaoStock worker timed out") from None
+            raise BaoStockProviderError("BaoStock worker timed out", retryable=True) from None
         except Exception:
-            raise BaoStockProviderError(_WORKER_ERROR) from None
+            from finance_quant.data.network_budget import DownloadPaused
+            if isinstance(sys.exception(),DownloadPaused):
+                raise
+            raise BaoStockProviderError(_WORKER_ERROR, retryable=True) from None
 
     def _run_subprocess_worker(self, request: dict):
         try:
@@ -397,12 +428,15 @@ class BaoStockProvider:
                 shell=False,
             )
         except subprocess.TimeoutExpired:
-            raise BaoStockProviderError("BaoStock worker timed out") from None
+            raise BaoStockProviderError("BaoStock worker timed out", retryable=True) from None
         except Exception:
-            raise BaoStockProviderError(_WORKER_ERROR) from None
+            raise BaoStockProviderError(_WORKER_ERROR, retryable=True) from None
 
+        if completed.returncode == 3:
+            from finance_quant.data.network_budget import DownloadPaused
+            raise DownloadPaused('BaoStock达到预算或限制访问，已保留断点')
         if completed.returncode != 0:
-            raise BaoStockProviderError(_WORKER_ERROR)
+            raise BaoStockProviderError(_WORKER_ERROR, retryable=True)
         try:
             return json.loads(completed.stdout)
         except Exception:

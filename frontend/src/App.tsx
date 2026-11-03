@@ -8,6 +8,7 @@ import { DataStatusPage } from "./pages/DataStatusPage";
 import { EvaluationPage } from "./pages/EvaluationPage";
 import { ExperimentPage } from "./pages/ExperimentPage";
 import { FactorRankingPage } from "./pages/FactorRankingPage";
+import { ResearchPage } from "./pages/ResearchPage";
 import { StockFactorsPage } from "./pages/StockFactorsPage";
 import type { Instrument } from "./types";
 
@@ -15,6 +16,12 @@ const PAGE_META: Record<
   TabKey,
   { eyebrow: string; title: string; subtitle: string }
 > = {
+  research: {
+    eyebrow: "RESEARCH WORKFLOW",
+    title: "新建研究",
+    subtitle:
+      "配置股票池、因子与回测参数，提交本地研究任务并跟踪完成后对应结果。",
+  },
   factors: {
     eyebrow: "FACTOR LAB",
     title: "股票因子",
@@ -54,13 +61,15 @@ const PAGE_META: Record<
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabKey>("factors");
+  const [activeTab, setActiveTab] = useState<TabKey>("research");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedInstrument, setSelectedInstrument] =
     useState<Instrument | null>(null);
   const [selectedBacktestId, setSelectedBacktestId] = useState<string | null>(
     null,
   );
+  const [selectedEvaluationId, setSelectedEvaluationId] = useState<string | null>(null);
+  const [scoreContext, setScoreContext] = useState<{runId: string; date: string} | null>(null);
 
   const overview = useApiResource((signal) => api.getOverview(signal), []);
   const runs = useApiResource((signal) => api.getFactorRuns(signal), []);
@@ -68,12 +77,13 @@ export default function App() {
   useEffect(() => {
     const items = runs.data?.items;
     if (!items?.length) return;
-    if (!selectedRunId || !items.some((run) => run.id === selectedRunId)) {
+    if (!selectedRunId) {
       setSelectedRunId(items[0].id);
     }
   }, [runs.data, selectedRunId]);
 
   const openStock = (instrument: Instrument) => {
+    setScoreContext(null);
     setSelectedInstrument(instrument);
     setActiveTab("factors");
   };
@@ -98,7 +108,7 @@ export default function App() {
             </div>
             <div className="page-head-meta">
               <span className="live-dot" aria-hidden="true" />
-              <span>本地只读</span>
+              <span>本地研究</span>
               <span className="meta-sep" aria-hidden="true">
                 ·
               </span>
@@ -108,11 +118,39 @@ export default function App() {
 
           <NoticeBanner overview={overview} />
 
+          {activeTab === "research" ? (
+            <ResearchPage
+              onOpenResult={(kind, id, date) => {
+                overview.reload();
+                if (kind === "factors") {
+                  setSelectedRunId(id);
+                  setScoreContext(date ? {runId: id, date} : null);
+                  setSelectedInstrument(null);
+                  setActiveTab("factors");
+                  runs.reload();
+                  return;
+                }
+                if (kind === "backtests") {
+                  setSelectedBacktestId(id);
+                  setActiveTab("backtests");
+                  return;
+                }
+                setSelectedEvaluationId(id);
+                setActiveTab("evaluations");
+              }}
+              onResultsChanged={() => {
+                runs.reload();
+                overview.reload();
+              }}
+            />
+          ) : null}
+
           {activeTab === "factors" ? (
             <StockFactorsPage
               runs={runs}
               selectedRunId={selectedRunId}
-              onRunChange={setSelectedRunId}
+              onRunChange={id => { setSelectedRunId(id); setScoreContext(null); }}
+              requestedDate={scoreContext?.runId === selectedRunId ? scoreContext.date : undefined}
               selectedInstrument={selectedInstrument}
               onInstrumentChange={setSelectedInstrument}
             />
@@ -138,7 +176,7 @@ export default function App() {
 
           {activeTab === "data" ? <DataStatusPage /> : null}
 
-          {activeTab === "evaluations" ? <EvaluationPage /> : null}
+          {activeTab === "evaluations" ? <EvaluationPage selectedEvaluationId={selectedEvaluationId} /> : null}
 
           <footer className="app-footer">
             <span>展示本地已保存的研究结果</span>

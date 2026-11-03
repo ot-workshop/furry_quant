@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from numbers import Integral, Real
 from typing import Any
+from finance_quant.research.factor_library import FACTOR_LIBRARY
 
 __all__ = [
     "FactorSpec",
@@ -19,15 +21,10 @@ __all__ = [
     "DEFAULT_WINDOWS",
 ]
 
-FACTOR_NAMES = ("momentum", "value", "volatility")
-# Causal daily factors only; financial-statement factors remain out of scope.
-FACTOR_DIRECTIONS = {"momentum": "higher", "value": "higher", "volatility": "lower"}
-FACTOR_DISPLAY_NAMES = {
-    "momentum": "动量",
-    "value": "盈利收益率",
-    "volatility": "波动率",
-}
-DEFAULT_WINDOWS = {"momentum": 20, "value": None, "volatility": 10}
+FACTOR_NAMES = tuple(FACTOR_LIBRARY)
+FACTOR_DIRECTIONS = {name: definition.direction for name, definition in FACTOR_LIBRARY.items()}
+FACTOR_DISPLAY_NAMES = {name: definition.label for name, definition in FACTOR_LIBRARY.items()}
+DEFAULT_WINDOWS = {name: definition.default_window for name, definition in FACTOR_LIBRARY.items()}
 
 
 def _weight(value: Any) -> float:
@@ -53,14 +50,18 @@ class FactorSpec:
     name: str
     weight: float
     window: int | None = None
+    skip: int | None = None
+    baseline_window: int | None = None
+    id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or self.name not in FACTOR_NAMES:
-            raise ValueError("unsupported factor name; choose momentum, value or volatility")
+            raise ValueError("unsupported factor name; choose a registered daily factor")
+        definition = FACTOR_LIBRARY[self.name]
         weight = _weight(self.weight)
-        if self.name == "value":
+        if definition.default_window is None:
             if self.window is not None:
-                raise ValueError("value factor does not accept a window")
+                raise ValueError(f"{self.name} factor does not accept a window")
             window = None
         else:
             if self.window is None:
@@ -71,6 +72,44 @@ class FactorSpec:
                     raise ValueError("factor window must be between 2 and 252")
         object.__setattr__(self, "weight", weight)
         object.__setattr__(self, "window", window)
+        skip = definition.default_skip if self.skip is None else self.skip
+        if definition.default_skip is None:
+            if self.skip is not None: raise ValueError(f'{self.name} does not accept skip')
+        else:
+            skip = _integer(skip, 'skip')
+            if not 0 <= skip < window: raise ValueError('skip must be nonnegative and smaller than window')
+        baseline = definition.default_baseline_window if self.baseline_window is None else self.baseline_window
+        if definition.default_baseline_window is None:
+            if self.baseline_window is not None: raise ValueError(f'{self.name} does not accept baseline_window')
+        else:
+            baseline = _integer(baseline, 'baseline_window')
+            if not 2 <= baseline <= 252: raise ValueError('baseline_window must be between 2 and 252')
+        if self.id is not None and (not isinstance(self.id, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', self.id)
+                                   or self.id in {'composite','date','instrument','rank','entry_date','exit_date','forward_return','available_at','name','industry','exclusion','raw','scores','contributions'}
+                                   or (self.id in FACTOR_LIBRARY and self.id != self.name)):
+            raise ValueError('factor id must be a unique lowercase identifier, not a reserved result field')
+        object.__setattr__(self, 'skip', skip)
+        object.__setattr__(self, 'baseline_window', baseline)
+        if self.id == self.name: object.__setattr__(self, 'id', None)
+
+    @property
+    def key(self):
+        return self.id or self.name
+
+    @property
+    def lookback(self):
+        return self.window + self.baseline_window - 1 if self.baseline_window else self.window or 0
+
+    @property
+    def parameters(self):
+        return {key: value for key in ('window','skip','baseline_window') if (value := getattr(self, key)) is not None}
+
+    def as_dict(self):
+        result = {'name': self.name, 'weight': self.weight, 'window': self.window}
+        if self.skip is not None and (self.name != 'momentum' or self.skip != 0): result['skip'] = self.skip
+        if self.baseline_window is not None: result['baseline_window'] = self.baseline_window
+        if self.id is not None: result['id'] = self.id
+        return result
 
 
 @dataclass(frozen=True)
@@ -93,22 +132,20 @@ class FactorConfig:
             if not isinstance(spec, FactorSpec):
                 raise ValueError("factor specs must be FactorSpec instances")
             specs.append(spec)
-        names = [spec.name for spec in specs]
+        if len(specs) > 20: raise ValueError('at most 20 factor instances may be selected')
+        names = [spec.key for spec in specs]
         if len(set(names)) != len(names):
             raise ValueError("factor names must be unique")
         if abs(sum(spec.weight for spec in specs) - 1.0) > 1e-9:
             raise ValueError("factor weights must sum to 1")
-        object.__setattr__(self, "specs", tuple(sorted(specs, key=lambda spec: spec.name)))
+        object.__setattr__(self, "specs", tuple(sorted(specs, key=lambda spec: spec.key)))
 
     @property
     def weights(self) -> dict[str, float]:
-        return {spec.name: spec.weight for spec in self.specs}
+        return {spec.key: spec.weight for spec in self.specs}
 
     def as_list(self) -> list[dict[str, Any]]:
-        return [
-            {"name": spec.name, "weight": spec.weight, "window": spec.window}
-            for spec in self.specs
-        ]
+        return [spec.as_dict() for spec in self.specs]
 
     @property
     def scheme(self) -> str:

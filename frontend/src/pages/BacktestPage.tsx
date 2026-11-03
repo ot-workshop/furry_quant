@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import {IndustryDiagnostics} from '../components/IndustryDiagnostics';
+import {TemporalAuditPanel} from '../components/TemporalAuditPanel';
 import { api } from "../api/client";
 import { DrawdownChart } from "../components/DrawdownChart";
 import { EquityChart } from "../components/EquityChart";
 import { Pagination } from "../components/Pagination";
+import { PerformanceSummary } from "../components/PerformanceSummary";
+import {ExecutionEvents} from '../components/ExecutionEvents';
+import {TradingCostSummary,COST_LABELS} from '../components/TradingCostSummary';
 import { EmptyPanel, ErrorPanel, LoadingPanel } from "../components/StatePanels";
 import { useApiResource } from "../hooks/useApiResource";
 import {
@@ -10,27 +15,12 @@ import {
   formatMetricValue,
   formatNumber,
   formatWeight,
-  metricLabel,
   statusClass,
   statusLabel,
   tradeSideLabel,
 } from "../utils/format";
 
 const PAGE_SIZE = 50;
-
-const KNOWN_METRIC_ORDER = [
-  "total_return",
-  "max_drawdown",
-  "total_cost",
-  "benchmark_return",
-  "excess_return",
-  "annualized_return",
-  "volatility",
-  "sharpe_ratio",
-  "turnover",
-  "win_rate",
-  "trade_count",
-];
 
 interface BacktestPageProps {
   selectedBacktestId: string | null;
@@ -51,8 +41,7 @@ export function BacktestPage({
     const items = list.data?.items;
     if (!items?.length) return;
     if (
-      !selectedBacktestId ||
-      !items.some((item) => item.id === selectedBacktestId)
+      !selectedBacktestId
     ) {
       onSelectBacktest(items[0].id);
     }
@@ -121,17 +110,6 @@ export function BacktestPage({
       : null,
     [selectedBacktestId, tradeOffset],
   );
-
-  const metrics = detail.data?.metrics ?? null;
-
-  const metricKeys = useMemo(() => {
-    if (!metrics) return [];
-    const known = KNOWN_METRIC_ORDER.filter((key) => key in metrics);
-    const extras = Object.keys(metrics).filter(
-      (key) => !KNOWN_METRIC_ORDER.includes(key),
-    );
-    return [...known, ...extras];
-  }, [metrics]);
 
   const configEntries = detail.data?.config
     ? Object.entries(detail.data.config)
@@ -327,35 +305,11 @@ export function BacktestPage({
 
             <div className="section-divider" />
 
-            <div className="card-header compact-header">
-              <div>
-                <h3 className="subheading">数值指标</h3>
-                <p className="card-sub">
-                  指标基于本次运行计算，缺失值显示为“—”。
-                </p>
-              </div>
-            </div>
-
-            {metricKeys.length ? (
-              <div className="metric-grid">
-                {metricKeys.map((key) => (
-                  <div className="metric-card" key={key}>
-                    <div className="metric-label" title={key}>
-                      {metricLabel(key)}
-                    </div>
-                    <div
-                      className={`metric-value${metrics?.[key] === null ? " is-null" : ""}`}
-                    >
-                      {formatMetricValue(key, metrics?.[key])}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyPanel title="暂无数值指标" />
-            )}
+            <PerformanceSummary detail={detail.data} />
           </section>
 
+          <IndustryDiagnostics kind="backtests" runId={selectedBacktestId} date={positionDate}/>
+          <TemporalAuditPanel audit={detail.data.temporal_audit}/>
           <section className="card">
             <div className="card-header">
               <div>
@@ -559,6 +513,7 @@ export function BacktestPage({
                           </td>
                           <td className="numeric">
                             {formatNumber(item.cost, 2)}
+                            {item.cost_breakdown ? <details><summary>分项</summary>{COST_LABELS.filter(([key])=>key!=='total').map(([key,label])=><p key={key}>{label}：{formatNumber(item.cost_breakdown![key],2)}元</p>)}</details> : null}
                           </td>
                         </tr>
                       ))}
@@ -576,6 +531,8 @@ export function BacktestPage({
             )}
           </section>
 
+          {detail.data ? <TradingCostSummary detail={detail.data}/> : null}
+          {detail.data?.strategy==='HistoricalIndexTopkStrategy' && selectedBacktestId ? <ExecutionEvents key={selectedBacktestId} runId={selectedBacktestId} summary={detail.data.execution_summary}/> : null}
           <section className="card">
             <div className="card-header">
               <div>

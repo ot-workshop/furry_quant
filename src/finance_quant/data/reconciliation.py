@@ -12,6 +12,8 @@ import pandas as pd
 
 from finance_quant.data.providers.baostock import BaoStockBundle, BaoStockProviderError
 from finance_quant.data.quality import adjustment_discontinuities
+from finance_quant.data.suspensions import confirmed_halts, carry_halt_rows, invalid_halt_rows
+from finance_quant.data.reviewed_events import verified_event_moves
 
 POLICY = "baostock-crosscheck-v1"
 PRICE_TOLERANCE = .011
@@ -26,10 +28,11 @@ class CrosscheckError(ValueError):
 
 
 def normalize_baostock(bundle: BaoStockBundle, code: str, sessions: pd.DatetimeIndex) -> pd.DataFrame:
+    halted_dates = confirmed_halts(bundle, code, sessions)
     required = {"date", "code", "open", "high", "low", "close", "preclose", "volume", "amount", "adjustflag", "pctChg", "tradestatus", "isST"}
     expected_code = code[-2:].lower() + "." + code[:6]
     normalized = []
-    for original, flag in [(bundle.raw, "3"), (bundle.adjusted, "1")]:
+    for original, flag in [(bundle.raw, "3"), (bundle.adjusted, bundle.metadata.get('adjusted_flag','1'))]:
         if original.empty or not required.issubset(original.columns):
             raise CrosscheckError("BaoStock response is incomplete")
         frame = original.copy()
@@ -39,8 +42,11 @@ def normalize_baostock(bundle: BaoStockBundle, code: str, sessions: pd.DatetimeI
         frame = frame.sort_values("date").set_index("date")
         if frame.index.has_duplicates or not frame.index.equals(sessions):
             raise CrosscheckError("BaoStock trading dates differ from required exchange sessions")
-        if not frame["tradestatus"].astype(str).eq("1").all() or not frame["isST"].astype(str).isin(["0", "1"]).all():
-            raise CrosscheckError("BaoStock includes suspended or unsupported status records")
+        if not frame["isST"].astype(str).isin(["0", "1"]).all():
+            raise CrosscheckError("BaoStock includes unsupported status records")
+        frame = frame.loc[~frame.index.isin(halted_dates)]
+        if frame.empty:
+            raise CrosscheckError("No observed prices in requested interval")
         frame = frame.rename(columns={"preclose": "pre_close", "pctChg": "change"})
         for field in RAW_FIELDS:
             frame[field] = pd.to_numeric(frame[field], errors="coerce")
@@ -70,26 +76,31 @@ def normalize_baostock(bundle: BaoStockBundle, code: str, sessions: pd.DatetimeI
         raise CrosscheckError("BaoStock raw prices disagree with its reported changes")
     raw = raw[list(RAW_FIELDS)].copy()
     raw["adj_factor"] = factor / factor.iloc[0]
+    raw = raw.reindex(sessions)
+    raw = carry_halt_rows(raw, halted_dates)
     raw["instrument"] = code[-2:] + code[:6]
+    raw.index.name = "date"
     return raw.reset_index()
 
 
-def _primary_issues(frame: pd.DataFrame, sessions: pd.DatetimeIndex) -> list[str]:
+def _primary_issues(frame: pd.DataFrame, sessions: pd.DatetimeIndex, reviewed_dates=()) -> list[str]:
     issues = []
     if frame["date"].duplicated().any() or not pd.DatetimeIndex(frame.date).equals(sessions):
         issues.append("missing_or_duplicate_sessions")
     required = [*RAW_FIELDS, "adj_factor"]
     values = frame[required].to_numpy(dtype=float)
-    if not np.isfinite(values).all() or (frame[[*PRICE_FIELDS, "pre_close", "volume", "amount", "adj_factor"]] <= 0).any().any():
+    halted = frame.get("is_suspended", pd.Series(False, index=frame.index))
+    bad_activity = (frame[["volume", "amount"]] < 0).any(axis=1) | ((frame[["volume", "amount"]] == 0).any(axis=1) & ~halted)
+    if not np.isfinite(values).all() or (frame[[*PRICE_FIELDS, "pre_close", "adj_factor"]] <= 0).any().any() or bad_activity.any() or invalid_halt_rows(frame).any():
         issues.append("missing_or_invalid_prices_or_adjustment")
     if ((frame.high < frame[["open", "close", "low"]].max(axis=1)) | (frame.low > frame[["open", "close", "high"]].min(axis=1))).any():
         issues.append("invalid_ohlc_geometry")
-    if adjustment_discontinuities(frame):
+    if any(audit['date'] not in reviewed_dates for audit in adjustment_discontinuities(frame)):
         issues.append("adjustment_discontinuity")
     return issues
 
 
-def reconcile_market(market: pd.DataFrame, sessions, codes, mode: str, provider, *, primary_failures=()) -> tuple[pd.DataFrame, dict]:
+def reconcile_market(market: pd.DataFrame, sessions, codes, mode: str, provider, *, primary_failures=(), reviewed_events=()) -> tuple[pd.DataFrame, dict]:
     if mode not in {"verify", "fallback"}:
         raise ValueError("Reconciliation mode must be verify or fallback")
     sessions = pd.DatetimeIndex(sessions)
@@ -105,22 +116,27 @@ def reconcile_market(market: pd.DataFrame, sessions, codes, mode: str, provider,
         try:
             if primary.empty or primary.date.duplicated().any():
                 raise CrosscheckError("Primary merge must provide one row per instrument/session")
-            issues = _primary_issues(primary, sessions)
-            record["primary_issues"] = issues
             bundle = provider.fetch(code, sessions[0].strftime("%Y%m%d"), sessions[-1].strftime("%Y%m%d"))
             record["secondary"] = bundle.metadata
             secondary = normalize_baostock(bundle, code, sessions)
-            one = primary.set_index("date").reindex(sessions)
+            halted_dates = pd.DatetimeIndex(secondary.loc[secondary.is_suspended, "date"])
+            record["suspended_dates"] = halted_dates.strftime("%Y-%m-%d").tolist()
+            one = carry_halt_rows(primary.set_index("date").reindex(sessions), halted_dates)
+            one.index.name = "date"
             two = secondary.set_index("date")
             raw_bad = pd.Series(False, index=sessions)
             for field in PRICE_FIELDS:
-                present = np.isfinite(one[field]) & (one[field] > 0)
+                present = np.isfinite(one[field]) & (one[field] > 0) & ~one.is_suspended
                 # Invalid primary OHLC may be replaced; two plausible disagreeing quotes cannot.
                 raw_bad |= present & ((one[field] - two[field]).abs() > PRICE_TOLERANCE)
             record["raw_price_differences"] = [d.strftime("%Y-%m-%d") for d in sessions[raw_bad]]
             if raw_bad.any():
                 record['reason'] = 'raw_price_conflict'
                 raise CrosscheckError("Independent raw prices disagree; no source can be selected automatically")
+            events = verified_event_moves(one, two, code, reviewed_events)
+            record['verified_event_moves'] = events
+            issues = _primary_issues(one.reset_index(), sessions, {event['date'] for event in events})
+            record["primary_issues"] = issues
             primary_return = (one.close * one.adj_factor).pct_change(fill_method=None)
             secondary_return = (two.close * two.adj_factor).pct_change(fill_method=None)
             delta = (primary_return - secondary_return).abs()
@@ -153,10 +169,11 @@ def reconcile_market(market: pd.DataFrame, sessions, codes, mode: str, provider,
             one["valuation_source"], one["limit_source"] = "tushare", "tushare"
             one.index.name = "date"
             output.append(one.reset_index())
-        except (BaoStockProviderError, CrosscheckError, ValueError, KeyError, TypeError):
+        except (BaoStockProviderError, CrosscheckError, ValueError, KeyError, TypeError) as error:
             # Keep structured evidence; never persist arbitrary provider exception text.
             record["status"] = "conflict"
-            record.setdefault("reason", "secondary_unavailable_invalid_or_conflicting")
+            record.setdefault("reason", "secondary_connection_failed" if isinstance(error, BaoStockProviderError) and error.retryable
+                              else "secondary_unavailable_invalid_or_conflicting")
         stocks.append(record)
     conflicts = [stock["code"] for stock in stocks if stock["status"] == "conflict"]
     fallback = [stock["code"] for stock in stocks if stock["status"] == "fallback"]
@@ -189,6 +206,9 @@ def validate_published_sources(market: pd.DataFrame, manifest: dict) -> None:
         code = stock['code']; section = market.loc[market.instrument == code[-2:] + code[:6]]
         if stock.get('status') not in {'verified','fallback'} or section.empty:
             raise ValueError('Joint snapshot has unresolved source conflicts')
+        halted = section.get('is_suspended', pd.Series(False, index=section.index))
+        if invalid_halt_rows(section).any() or set(section.loc[halted, 'date'].dt.strftime('%Y-%m-%d')) != set(stock.get('suspended_dates', [])):
+            raise ValueError('Suspension rows differ from independent trading-status evidence')
         source = 'baostock' if stock['status'] == 'fallback' else 'tushare'
         if (stock.get('price_source') != source or stock.get('adjustment_source') != source
             or not section.price_source.eq(source).all() or not section.adjustment_source.eq(source).all()

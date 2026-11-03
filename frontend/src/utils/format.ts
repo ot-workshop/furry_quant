@@ -3,6 +3,13 @@ const FACTOR_LABELS: Record<string, string> = {
   value: "价值",
   quality: "质量",
   volatility: "低波动",
+  book_to_price: "账面价值收益率",
+  size: "小市值",
+  reversal: "短期反转",
+  medium_momentum: "中期动量",
+  downside_volatility: "下行波动率",
+  max_drawdown: "滚动最大回撤",
+  amount_anomaly: "成交额异动",
   composite: "综合",
 };
 
@@ -17,17 +24,25 @@ const METRIC_LABELS: Record<string, string> = {
   total_return: "总收益",
   annualized_return: "年化收益",
   benchmark_return: "基准收益",
-  excess_return: "超额收益",
+  excess_return: "累计收益差（百分点）",
+  relative_return: "相对净值收益",
+  tracking_error: "年化跟踪误差",
+  information_ratio: "信息比率",
+  annualized_active_return: "日主动收益均值年化",
   max_drawdown: "最大回撤",
-  volatility: "波动率",
+  volatility: "年化波动率",
   sharpe_ratio: "夏普比率",
+  calmar_ratio: "卡玛比率",
+  profit_loss_ratio: "日收益盈亏比",
   turnover: "换手率",
-  total_cost: "总费用",
+  total_cost: "费用 / 初始资金",
   total_cost_amount: "费用金额（元）",
   avg_turnover: "日均换手率",
   cost: "费用",
-  win_rate: "胜率",
+  win_rate: "日收益胜率",
   trade_count: "成交笔数",
+  total_days: "回测交易日数",
+  years: "折算交易年数",
 };
 
 const PERCENT_METRICS = new Set([
@@ -35,6 +50,9 @@ const PERCENT_METRICS = new Set([
   "annualized_return",
   "benchmark_return",
   "excess_return",
+  "relative_return",
+  "tracking_error",
+  "annualized_active_return",
   "max_drawdown",
   "benchmark_max_drawdown",
   "volatility",
@@ -50,6 +68,7 @@ const COUNT_METRICS = new Set([
   "order_count",
   "num_trades",
   "num_orders",
+  "total_days",
 ]);
 
 const STATUS_LABELS: Record<string, string> = {
@@ -88,7 +107,9 @@ export function formatWeight(value: number | null | undefined): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
-export function factorLabel(key: string): string {
+export function factorLabel(key: string, definitions?: Record<string, {label:string;name:string}>): string {
+  const definition = definitions?.[key];
+  if (definition) return definition.label + (definition.name !== key ? ` [${key}]` : '');
   return FACTOR_LABELS[key] ?? key;
 }
 
@@ -107,12 +128,15 @@ export function formatMetricValue(
   value: number | null | undefined,
 ): string {
   if (!isFiniteNumber(value)) return "—";
+  if (key === 'excess_return') return `${(value * 100).toFixed(2)}个百分点`;
   if (COUNT_METRICS.has(key)) {
     return Math.round(value).toLocaleString("zh-CN");
   }
   if (PERCENT_METRICS.has(key)) {
     return formatPercent(value);
   }
+  if (["sharpe_ratio", "calmar_ratio", "profit_loss_ratio", "information_ratio"].includes(key)) return value.toFixed(2);
+  if (["years", "total_cost_amount"].includes(key)) return formatNumber(value, 2);
   return formatNumber(value, 4);
 }
 

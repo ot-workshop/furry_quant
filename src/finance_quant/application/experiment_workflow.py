@@ -88,9 +88,9 @@ def run_experiment(config, plan: ExperimentPlan) -> dict:
                     base / "application/evaluation_workflow.py", base / "integrations/qlib_runner.py",
                     base / "research/market_factors.py", base / "research/registry.py",
                     base / "research/evaluation.py", base / "research/report.py",
-                    base / "data/market.py", base / "data/quality.py"]
+                    base / "data/market.py", base / "data/quality.py",base/'integrations/execution.py',base/'research/execution_policy.py',base/'data/temporal_audit.py',base/'data/china_a_rules.py']
     shared = {"backtest": {k: v for k, v in asdict(config.backtest).items() if k not in {"start", "end"}},
-              "codes": sorted(config.data.codes), "benchmark": config.data.benchmark, "evaluation": config.evaluation.as_dict()}
+              "codes": sorted(config.data.codes), "benchmark": config.backtest.benchmark or config.data.benchmark, "evaluation": config.evaluation.as_dict()}
     provenance = {**source_provenance(source_files), "data_version": manifest["id"],
                   "data_checksums": manifest["files"], "plan": plan.as_dict(), "shared_parameters": shared}
     run_id = "split-" + fingerprint(provenance)
@@ -156,7 +156,10 @@ def run_experiment(config, plan: ExperimentPlan) -> dict:
                                        "selected_candidate": chosen.id, "validation_kind": "retrospective_split",
                                        "provenance": provenance},
                           "plan": plan.as_dict(), "shared_parameters": shared, "selection": selection,
-                          "rows": rows, "limitations": LIMITATIONS}
+                          "rows": rows, "limitations": [
+                              '策略为复权等效持股，全收益基准计入分红再投资；仍未逐笔模拟现金红利与红利税。'
+                              if config.backtest.benchmark=='H00300.CSI' and text.startswith('策略按复权收益口径计算，基准是价格指数') else text
+                              for text in LIMITATIONS]}
                 store.publish("experiments", run_id, result)
             report = store.publish_report(run_id, experiment_markdown(result), category="experiments")
             return {"reused": reused, "run_id": run_id, "selected_candidate": result["selection"]["candidate_id"],

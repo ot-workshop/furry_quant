@@ -9,6 +9,8 @@ from functools import wraps
 import numpy as np
 import pandas as pd
 from filelock import FileLock, Timeout
+from finance_quant.research.performance import enrich_backtest
+from finance_quant.research.execution_policy import ExecutionCosts,rebalance_dates
 
 
 def exclusive_workspace(function):
@@ -33,7 +35,9 @@ def write_features(quotes: pd.DataFrame, calendar: pd.DatetimeIndex, destination
         raise ValueError("Duplicate Qlib instrument/date")
     if not np.isfinite(quotes[fields].to_numpy(dtype=float)).all():
         raise ValueError("Missing/nonfinite Qlib quotes must be resolved before execution")
-    if (quotes[["open", "close", "high", "low", "volume", "factor"]] <= 0).any().any():
+    suspended = quotes.get('is_suspended', pd.Series(False, index=quotes.index)).fillna(False).astype(bool)
+    invalid_volume = quotes.volume.lt(0) | (quotes.volume.eq(0) & ~suspended) | (suspended & quotes.volume.ne(0))
+    if (quotes[["open", "close", "high", "low", "factor"]] <= 0).any().any() or invalid_volume.any():
         raise ValueError("Nonpositive execution quotes are unsupported")
     for directory in ["calendars", "instruments", "features"]:
         (destination / directory).mkdir(parents=True, exist_ok=True)
@@ -67,11 +71,15 @@ def run_qlib(quotes: pd.DataFrame, factors: dict, data_dir: Path, *, calendar: p
              close_cost: float = 0.001, min_cost: float = 5.0,
              limit_expressions: tuple[str, str] = ("$open < 0", "$open < 0"),
              require_availability: bool = False, benchmark: str = "SH000300",
-             n_drop: int = 1, risk_degree: float = 0.9) -> dict:
+             n_drop: int = 1, risk_degree: float = 0.9, historical: dict | None = None,
+             rebalance_frequency: str = 'daily',cost_mode: str = 'legacy',commission_rate: float = .0003,
+             tax_mode: str = 'historical',stamp_tax_rate: float = .0005,transfer_fee_rate: float = .00001,
+             impact_cost: float = 0.) -> dict:
     import qlib
     from qlib.backtest import backtest
     from qlib.backtest.decision import Order
     from qlib.contrib.strategy.signal_strategy import TopkDropoutStrategy
+    from finance_quant.integrations.execution import CostAwareExchange,ScheduledTopkStrategy
 
     if (not np.isfinite([initial_cash, open_cost, close_cost, min_cost, risk_degree]).all()
         or initial_cash <= 0 or isinstance(topk, bool) or not isinstance(topk, int) or topk <= 0
@@ -81,8 +89,14 @@ def run_qlib(quotes: pd.DataFrame, factors: dict, data_dir: Path, *, calendar: p
         raise ValueError("Invalid capital, holding count, or fees")
     if not pd.Timestamp(initial_date) < pd.Timestamp(start) <= pd.Timestamp(end):
         raise ValueError("Initial valuation must precede the execution interval")
+    if any(pd.Timestamp(day) not in calendar for day in (initial_date,start,end)):
+        raise ValueError('期初估值与回测起止必须位于实际交易日历中')
+    costs_policy=ExecutionCosts(cost_mode,commission_rate,tax_mode,stamp_tax_rate,transfer_fee_rate,impact_cost,open_cost,close_cost,min_cost)
+    costs_policy.validate_range(start)
+    scheduled=rebalance_dates(calendar,start,end,rebalance_frequency)
     required_sessions = calendar[(calendar >= pd.Timestamp(initial_date)) & (calendar <= pd.Timestamp(end))]
     for instrument in [*names, benchmark]:
+        if historical is not None and instrument!=benchmark:continue
         observed = pd.DatetimeIndex(quotes.loc[quotes["instrument"] == instrument, "date"])
         if not required_sessions.isin(observed).all():
             raise ValueError("Quotes do not cover the full requested account interval")
@@ -99,17 +113,24 @@ def run_qlib(quotes: pd.DataFrame, factors: dict, data_dir: Path, *, calendar: p
     if require_availability and "available_at" not in signal:
         raise ValueError("Real signals require an explicit availability timestamp")
     signal["datetime"] = pd.to_datetime(signal["date"], errors="raise")
+    if signal.datetime.dt.tz is not None or not signal.datetime.eq(signal.datetime.dt.normalize()).all() or not signal.datetime.isin(calendar).all():
+        raise ValueError('信号日期必须为交易日历内的完整交易日期')
     if "available_at" in signal.columns:
-        for row in signal.itertuples():
+        for row in signal[['date','datetime','available_at']].drop_duplicates().itertuples():
             known_at = pd.Timestamp(row.available_at)
             if known_at.tzinfo is None:
                 raise ValueError("Signal availability must include a timezone")
+            if require_availability and factors['metadata'].get('signal_uses_close') and known_at < row.datetime.tz_localize('Asia/Shanghai')+pd.Timedelta(hours=15):
+                raise ValueError('收盘因子不能声称在信号日收盘前可用')
             following = calendar[calendar > row.datetime]
-            if len(following) and known_at > following[0].tz_localize("Asia/Shanghai") + pd.Timedelta(hours=9, minutes=30):
+            if len(following) and known_at >= following[0].tz_localize("Asia/Shanghai") + pd.Timedelta(hours=9, minutes=30):
                 raise ValueError("Signal was not available before next-session opening execution")
     signal = signal.set_index(["datetime", "instrument"])["composite"].sort_index()
 
-    class RecordingStrategy(TopkDropoutStrategy):
+    if historical is not None:
+        from finance_quant.integrations.china_a import HistoricalIndexStrategy,ChinaAExchange,MarketStates
+    strategy_base=HistoricalIndexStrategy if historical is not None else ScheduledTopkStrategy
+    class RecordingStrategy(strategy_base):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             self.fills, self.orders = [], []
@@ -122,19 +143,38 @@ def run_qlib(quotes: pd.DataFrame, factors: dict, data_dir: Path, *, calendar: p
                           "requested_amount": float(order.amount * factor), "amount": float(order.deal_amount * factor),
                           "price": float(price / factor) if np.isfinite(price) else None,
                           "value": float(value), "cost": float(cost)}
+                if hasattr(order,'quantity_clipped_from'):record['quantity_clipped_from']=float(order.quantity_clipped_from)
+                record['cost_breakdown']=costs_policy.breakdown(float(value),order.direction==Order.SELL,order.start_time)
+                if not np.isclose(record['cost_breakdown']['total'],float(cost),rtol=1e-9,atol=1e-7):
+                    raise ValueError('费用明细与Qlib实际账户扣费不一致')
+                if historical is not None:
+                    record['reason']=self.pending_exits.get(order.stock_id,'rank_selection' if order.direction==Order.BUY else 'score_rotation')
                 self.orders.append(record)
                 if order.deal_amount > 0:
                     self.fills.append(record)
 
+    extra=({'membership_by_execution_date':historical['membership_by_execution_date'],
+            'decision_coverage':factors['metadata']['availability_by_date']} if historical is not None else {})
     strategy = RecordingStrategy(signal=signal, topk=topk, n_drop=n_drop, risk_degree=risk_degree,
-                                 hold_thresh=1, forbid_all_trade_at_limit=False)
+                                 hold_thresh=1, forbid_all_trade_at_limit=False,rebalance_dates=scheduled,**extra)
+    # A zero-volume row is only permitted with an explicit validated suspension
+    # marker above. Lock both buy and sell orders on those valuation-only rows.
+    limit_expressions = tuple(f"($volume <= 0) | ({expression})" for expression in limit_expressions)
     config = {"start_time": start, "end_time": end, "account": initial_cash, "benchmark": benchmark,
               "exchange_kwargs": {"codes": sorted(names), "deal_price": "$open", "open_cost": open_cost,
                                   "close_cost": close_cost, "min_cost": min_cost, "trade_unit": 100,
-                                  "limit_threshold": limit_expressions, "impact_cost": 0.0}}
-    executor = {"class": "SimulatorExecutor", "module_path": "qlib.backtest.executor",
+                                  "limit_threshold": limit_expressions, "impact_cost": impact_cost}}
+    if historical is not None:
+        states=MarketStates(quotes,names)
+        kwargs={**config['exchange_kwargs'],'start_time':start,'end_time':end,'market_states':states,
+                'limit_threshold':('($volume <= 0)','($volume <= 0)')}
+        exchange=ChinaAExchange(**kwargs,execution_costs=costs_policy)
+    else:
+        exchange=CostAwareExchange(**config['exchange_kwargs'],start_time=start,end_time=end,execution_costs=costs_policy)
+    executor = {"class": "DailySimulatorExecutor", "module_path": "finance_quant.integrations.execution",
                 "kwargs": {"time_per_step": "day", "generate_portfolio_metrics": True}}
-    portfolio, _ = backtest(strategy=strategy, executor=executor, **config)
+    call_config={**config,'exchange_kwargs':{'exchange':exchange}}
+    portfolio, _ = backtest(strategy=strategy, executor=executor, **call_config)
     report, positions = portfolio["1day"]
     if report.empty:
         raise ValueError("Qlib returned an empty report")
@@ -162,12 +202,33 @@ def run_qlib(quotes: pd.DataFrame, factors: dict, data_dir: Path, *, calendar: p
                "max_drawdown": min(point["drawdown"] for point in equity),
                "total_cost": costs / initial_cash, "total_cost_amount": costs,
                "avg_turnover": float(report["turnover"].mean()), "benchmark_return": equity[-1]["benchmark"] - 1}
-    return {"summary": {"id": "unpublished", "name": "未发布回测", "status": "succeeded",
+    result = {"summary": {"id": "unpublished", "name": "未发布回测", "status": "succeeded",
                         "strategy": "TopkDropoutStrategy", "start_date": start, "end_date": end,
                         "created_at": datetime.now(timezone.utc).isoformat(), "metrics": metrics},
             "metadata": {"engine": "qlib", "engine_version": qlib.__version__,
+                         "execution_costs":costs_policy.as_dict(),
+                         "cost_summary":{key:sum(t['cost_breakdown'][key] for t in strategy.fills)
+                             for key in ['commission','stamp_tax','transfer_fee','impact','legacy_fee','total']},
+                         "rebalance_policy":{'frequency':rebalance_frequency,'dates':scheduled,'scheduled_count':len(scheduled),
+                             'timing':'区间首日建仓；随后每周/每月首个交易日开盘，使用前一交易日评分；每日估值',
+                             'exit_policy':'动态池成分调出每日重试，非调仓日卖出后现金等下个调仓日补仓' if historical is not None else '只在调仓日轮换'},
                          "config": {**config, "topk": topk, "n_drop": n_drop, "risk_degree": risk_degree,
+                                    "rebalance_frequency":rebalance_frequency,'execution_costs':costs_policy.as_dict(),
                                     "signal_lag": "previous_trading_day", "factor_run_id": factors["metadata"]["id"]}},
             "equity": equity, "positions": holdings, "trades": strategy.fills, "orders": strategy.orders,
             "qlib_report": [{"date": date.strftime("%Y-%m-%d"), **{key: float(value) for key, value in row.items()}}
                             for date, row in report.iterrows()]}
+    if historical is not None:
+        result['execution_events']=strategy.events
+        final_position=positions[report.index[-1]]
+        result['metadata']['execution_summary']={'events':len(strategy.events),
+            'blocked_exits':sum(e['action']=='sell' and e['reason']!='score_rotation' and e['status']=='blocked' for e in strategy.events),
+            'pending_exits':[{'instrument':code,'reason':reason} for code,reason in strategy.pending_exits.items()
+                if code in final_position.get_stock_list()]}
+        result['metadata']['universe_policy']=historical['membership_policy']
+        from finance_quant.data.china_a_rules import RULE_VERSION
+        result['metadata']['market_rule_version']=RULE_VERSION
+        result['summary']['strategy']='HistoricalIndexTopkStrategy'
+    from finance_quant.data.temporal_audit import add_execution_audit
+    add_execution_audit(result,quotes,factors)
+    return enrich_backtest(result)

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import {IndustryDiagnostics} from '../components/IndustryDiagnostics';
 import { api } from "../api/client";
 import { Pagination } from "../components/Pagination";
 import { EmptyPanel, ErrorPanel, LoadingPanel } from "../components/StatePanels";
@@ -92,6 +93,7 @@ export function FactorRankingPage({
 
   return (
     <div className="page-stack">
+      <IndustryDiagnostics kind="factors" runId={selectedRunId}/>
       <section className="card">
         <div className="card-header">
           <div>
@@ -134,7 +136,7 @@ export function FactorRankingPage({
             >
               {sortOptions.map((key) => (
                 <option key={key} value={key}>
-                  {key === "composite" ? "综合分" : factorLabel(key)}
+                  {key === "composite" ? "综合分" : factorLabel(key, metadata?.factor_definitions)}
                 </option>
               ))}
             </select>
@@ -199,10 +201,10 @@ export function FactorRankingPage({
                       排名
                     </th>
                     <th scope="col">股票</th>
-                    <th scope="col">行业</th>
+                    <th scope="col">{metadata?.industry_data ? '历史行业' : '行业（下载时）'}</th>
                     {factorKeys.map((key) => (
                       <th scope="col" className="numeric" key={key}>
-                        {factorLabel(key)}
+                        {factorLabel(key, metadata?.factor_definitions)}
                       </th>
                     ))}
                     <th scope="col" className="numeric">
@@ -222,7 +224,7 @@ export function FactorRankingPage({
                         <div className="cell-code">{item.instrument}</div>
                         <div className="cell-name">{item.name}</div>
                       </td>
-                      <td>{item.industry || "—"}</td>
+                      <td>{item.industry_status ? item.industry_name ?? '未知/冲突' : item.industry || "—"}</td>
                       {factorKeys.map((key) => (
                         <td className="numeric" key={key}>
                           {formatNumber(item.scores?.[key], 2)}

@@ -2,6 +2,8 @@ import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../api/client";
 import { EmptyPanel, ErrorPanel, LoadingPanel } from "../components/StatePanels";
 import { CrossValidationPanel } from "../components/CrossValidationPanel";
+import { IndexDownloadPanel } from "../components/IndexDownloadPanel";
+import { SharedMarketPanel } from "../components/SharedMarketPanel";
 import { useApiResource } from "../hooks/useApiResource";
 import type {
   Coverage,
@@ -217,6 +219,8 @@ export function DataStatusPage() {
 
   return (
     <div className="page-stack">
+      <SharedMarketPanel />
+      <IndexDownloadPanel />
       <section className="card">
         <div className="card-header">
           <div>

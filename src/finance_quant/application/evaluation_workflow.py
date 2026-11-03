@@ -15,7 +15,7 @@ from finance_quant.storage import ResultStore
 
 def evaluate_configured(config) -> dict:
     market, _, calendar, manifest = load_configured_snapshot(config)
-    factors = publish_factor_run(market, manifest, config.runs_dir, config.factors)
+    factors = publish_factor_run(market, manifest, config.runs_dir, config.factors, config.neutralization)
     base = Path(__file__).parents[1]
     provenance = {**source_provenance([Path(__file__), base / "research/evaluation.py", base / "research/report.py"]),
                   "data_version": manifest["id"], "factor_run_id": factors["metadata"]["id"],
@@ -39,6 +39,9 @@ def evaluate_configured(config) -> dict:
                                       "evaluation": config.evaluation.as_dict(), "start": config.backtest.start,
                                       "end": config.backtest.end, "sample_size": int(market["instrument"].nunique()),
                                       "provenance": provenance}
+                result['metadata']['factor_definitions'] = factors['metadata'].get('factor_definitions', {})
+                for key in ['neutralization','industry_data','temporal_audit']:
+                    if key in factors['metadata']:result['metadata'][key]=factors['metadata'][key]
                 result['metadata']['source'] = manifest.get('source', 'third_party_tushare_compatible')
                 if manifest.get('cross_validation'):
                     result['metadata']['cross_validation'] = manifest['cross_validation']

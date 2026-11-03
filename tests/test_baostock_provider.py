@@ -76,6 +76,22 @@ def _payload():
     return {"raw": RAW_ROWS, "adjusted": ADJ_ROWS}
 
 
+def test_network_is_serial_across_different_cache_roots(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading,time
+    active=0;maximum=0;guard=threading.Lock()
+    def worker(request):
+        nonlocal active,maximum
+        with guard:active+=1;maximum=max(active,maximum)
+        time.sleep(.05)
+        with guard:active-=1
+        return _payload()
+    providers=[BaoStockProvider(tmp_path/str(n),worker=worker) for n in range(2)]
+    with ThreadPoolExecutor(2) as pool:
+        results=list(pool.map(lambda p:p.fetch('600000.SH','20240101','20240103'),providers))
+    assert maximum==1 and len(results)==2
+
+
 def _provider(tmp_path, worker, **kwargs):
     return BaoStockProvider(tmp_path, worker=worker, **kwargs)
 
@@ -210,6 +226,28 @@ def test_injected_timeout_is_sanitized(tmp_path):
     with pytest.raises(BaoStockProviderError, match="timed out") as excinfo:
         _provider(tmp_path, worker).fetch("600000.SH", "20240101", "20240103")
     assert "secret" not in str(excinfo.value)
+    assert len(worker.calls) == 2
+
+
+def test_transient_worker_failure_reconnects_once_and_then_reuses_cache(tmp_path):
+    calls = []
+    def flaky(request):
+        calls.append(request)
+        if len(calls) == 1:
+            raise TimeoutError('private socket detail')
+        return _payload()
+    provider = _provider(tmp_path, flaky)
+    result = provider.fetch('600000.SH', '20240101', '20240103')
+    assert len(result.raw) == 2 and len(calls) == 2
+    assert provider.fetch('600000.SH', '20240101', '20240103').metadata == result.metadata
+    assert len(calls) == 2
+
+
+def test_invalid_worker_content_is_not_retried(tmp_path):
+    worker = RecordingWorker(payload={'raw': [], 'adjusted': ADJ_ROWS})
+    with pytest.raises(BaoStockProviderError, match='invalid data'):
+        _provider(tmp_path, worker).fetch('600000.SH', '20240101', '20240103')
+    assert len(worker.calls) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { EChartsOption } from "echarts";
 import type { FactorHistoryItem } from "../types";
+import type { FactorDescriptor } from '../types';
 import { factorLabel, formatNumber } from "../utils/format";
 import { Chart } from "./Chart";
 
@@ -17,12 +18,14 @@ interface FactorHistoryChartProps {
   items: FactorHistoryItem[];
   scheme: string;
   scoreUnit?: string;
+  definitions?: Record<string, FactorDescriptor>;
 }
 
 export function FactorHistoryChart({
   items,
   scheme,
   scoreUnit,
+  definitions,
 }: FactorHistoryChartProps) {
   const option = useMemo<EChartsOption>(() => {
     const keys = new Set<string>();
@@ -74,7 +77,7 @@ export function FactorHistoryChart({
         axisLabel: { color: "#6b7b8c", fontSize: 11 },
       },
       series: orderedKeys.map((key) => ({
-        name: factorLabel(key),
+        name: definitions?.[key] ? `${definitions[key].label}${definitions[key].name !== key ? ` [${key}]` : ''}` : factorLabel(key),
         type: "line" as const,
         smooth: false,
         symbol: "circle",
@@ -89,7 +92,7 @@ export function FactorHistoryChart({
         }),
       })),
     };
-  }, [items, scoreUnit]);
+  }, [items, scoreUnit, definitions]);
 
   return (
     <Chart

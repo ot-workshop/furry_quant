@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import {IndustryDiagnostics} from '../components/IndustryDiagnostics';
+import {TemporalAuditPanel} from '../components/TemporalAuditPanel';
 import { api } from "../api/client";
 import { FactorHistoryChart } from "../components/FactorHistoryChart";
+import { FactorDetails } from "../components/FactorDetails";
 import { EmptyPanel, ErrorPanel, LoadingPanel } from "../components/StatePanels";
 import { useApiResource, type ApiState } from "../hooks/useApiResource";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
@@ -20,6 +23,7 @@ interface StockFactorsPageProps {
   onRunChange: (id: string) => void;
   selectedInstrument: Instrument | null;
   onInstrumentChange: (instrument: Instrument) => void;
+  requestedDate?: string;
 }
 
 export function StockFactorsPage({
@@ -28,20 +32,21 @@ export function StockFactorsPage({
   onRunChange,
   selectedInstrument,
   onInstrumentChange,
+  requestedDate,
 }: StockFactorsPageProps) {
   const [query, setQuery] = useState("");
   const [displayMode, setDisplayMode] = useState<DisplayMode>("score");
-  const [selectedDate, setSelectedDate] = useState("");
+  const [selectedDate, setSelectedDate] = useState(requestedDate ?? "");
   const debouncedQuery = useDebouncedValue(query, 250);
 
   const instruments = useApiResource(
-    (signal) => api.getInstruments(debouncedQuery.trim(), signal),
-    [debouncedQuery],
+    selectedRunId ? (signal) => api.getInstruments(debouncedQuery.trim(), signal, selectedRunId) : null,
+    [debouncedQuery, selectedRunId],
   );
 
   useEffect(() => {
     if (
-      !selectedInstrument &&
+      (!selectedInstrument || !instruments.data?.items.some(item => item.instrument === selectedInstrument.instrument)) &&
       !debouncedQuery.trim() &&
       instruments.data?.items.length
     ) {
@@ -54,13 +59,17 @@ export function StockFactorsPage({
     onInstrumentChange,
   ]);
 
+  useEffect(() => { setQuery(""); }, [selectedRunId]);
+  useEffect(() => { setSelectedDate(requestedDate ?? ""); }, [selectedRunId, requestedDate]);
+
   const selectedRun =
     runs.data?.items.find((run) => run.id === selectedRunId) ?? null;
   const availableDates = selectedRun?.available_dates ?? (selectedRun ? [selectedRun.as_of] : []);
-  const effectiveDate = availableDates.includes(selectedDate) ? selectedDate : selectedRun?.as_of;
+  const effectiveDate = availableDates.includes(selectedDate) ? selectedDate
+    : requestedDate ? availableDates.filter(date => date <= requestedDate).at(-1) : selectedRun?.as_of;
 
   const scores = useApiResource(
-    selectedRunId && selectedInstrument
+    selectedRunId && selectedRun && selectedInstrument && effectiveDate
       ? (signal) =>
           api.getFactorScores(
             selectedRunId,
@@ -90,6 +99,8 @@ export function StockFactorsPage({
   );
 
   const score = scores.data?.items[0] ?? null;
+  const historyItems = useMemo(() => effectiveDate
+    ? (history.data?.items ?? []).filter(row => row.date <= effectiveDate) : [], [history.data, effectiveDate]);
   const metadata = scores.data?.metadata;
   const raw = score?.raw ?? null;
   const scoreValues = score?.scores ?? null;
@@ -142,8 +153,14 @@ export function StockFactorsPage({
     );
   }
 
+  if (selectedRunId && !selectedRun) {
+    return <section className="card"><ErrorPanel message="指定任务的评分批次不存在或暂时不可读取；没有切换到其他批次。" onRetry={runs.reload} /></section>;
+  }
+
   return (
     <div className="page-stack">
+      <IndustryDiagnostics kind="factors" runId={selectedRunId} date={effectiveDate}/>
+      {scores.data?.metadata ? <TemporalAuditPanel audit={scores.data.metadata.temporal_audit}/>:null}
       <section className="card">
         <div className="card-header">
           <div>
@@ -358,7 +375,7 @@ export function StockFactorsPage({
                 <div>
                   <h3 className="stock-name">{score.name || selectedInstrument.name}</h3>
                   <p className="stock-sub">
-                    {score.industry ? `行业：${score.industry}` : "行业：暂无资料"}
+                    {score.industry_status ? `历史行业：${score.industry_name ?? '未知/冲突'}` : score.industry ? `行业（下载时）：${score.industry}` : "行业：暂无资料"}
                     <span aria-hidden="true"> · </span>
                     评分日期：{score.date}
                   </p>
@@ -397,7 +414,7 @@ export function StockFactorsPage({
                   return (
                     <div className="factor-card" key={key}>
                       <div className="factor-card-head">
-                        <span>{factorLabel(key)}</span>
+                        <span>{factorLabel(key, metadata?.factor_definitions)}</span>
                         {typeof weight === "number" ? (
                           <span className="weight-tag">
                             权重 {formatWeight(weight)}
@@ -430,13 +447,15 @@ export function StockFactorsPage({
         )}
       </section>
 
+      {scores.data?.metadata?.factor_definitions && !scores.loading && selectedInstrument ? <FactorDetails response={scores.data} score={score} instrument={selectedInstrument.instrument} /> : null}
+
       <section className="card">
         <div className="card-header">
           <div>
             <h2 className="card-title">因子历史走势</h2>
             <p className="card-sub">
               {selectedInstrument
-                ? `股票 ${selectedInstrument.instrument} · 方案 ${selectedRun?.scheme ?? "—"}`
+                ? `股票 ${selectedInstrument.instrument} · 截至 ${effectiveDate ?? "—"} · 方案 ${selectedRun?.scheme ?? "—"}`
                 : "选择股票后加载历史评分"}
             </p>
           </div>
@@ -459,19 +478,20 @@ export function StockFactorsPage({
           <LoadingPanel label="正在加载历史评分…" />
         ) : history.error ? (
           <ErrorPanel message={history.error} onRetry={history.reload} />
-        ) : !history.data?.items.length ? (
+        ) : !historyItems.length ? (
           <EmptyPanel title="暂无历史评分">
             此股票在所选方案下没有历史评分。
           </EmptyPanel>
         ) : (
           <>
             <FactorHistoryChart
-              items={history.data.items}
-              scheme={history.data.scheme}
+              items={historyItems}
+              scheme={selectedRun.scheme}
               scoreUnit={metadata?.score_unit}
+              definitions={metadata?.factor_definitions}
             />
             <p className="chart-note">
-              评分方案：<code>{history.data.scheme}</code>；
+              评分方案：<code>{selectedRun.scheme}</code>；
               当前图表口径：{scoreUnitLabel(metadata?.score_unit)}。
             </p>
           </>

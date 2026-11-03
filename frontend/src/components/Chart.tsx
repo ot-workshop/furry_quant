@@ -1,11 +1,11 @@
 import { useEffect, useRef } from "react";
 import * as echarts from "echarts/core";
-import { LineChart } from "echarts/charts";
+import { LineChart, BarChart } from "echarts/charts";
 import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import type { EChartsOption } from "echarts";
 
-echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer]);
+echarts.use([LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer]);
 
 interface ChartProps {
   option: EChartsOption;

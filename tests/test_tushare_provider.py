@@ -35,6 +35,35 @@ def _settings(token="test-token", url="https://api.tushare.pro"):
     return TushareSettings(token=token, http_url=url)
 
 
+def test_official_transport_posts_root_without_sdk_proxy_parameters(monkeypatch):
+    import requests
+    calls=[]
+    class Response:
+        status_code=200
+        def raise_for_status(self):pass
+        def json(self):return {'code':0,'data':{'fields':['trade_date','adj_factor'],'items':[['20230301',2.]]}}
+    def post(url,**kwargs):calls.append((url,kwargs));return Response()
+    monkeypatch.setattr(requests,'post',post)
+    frame=TushareProvider(_settings(),min_interval=0).query('adj_factor',ts_code='000776.SZ')
+    assert len(frame)==1
+    assert calls[0][0]=='https://api.tushare.pro'
+    assert calls[0][1]['allow_redirects'] is False
+    assert calls[0][1]['json']['params']=={'ts_code':'000776.SZ'}
+
+
+def test_official_rejection_is_classified_without_exposing_credentials(monkeypatch):
+    import requests
+    class Response:
+        status_code=200
+        def raise_for_status(self):pass
+        def json(self):return {'code':-1,'msg':'权限不足 secret-provider-body'}
+    monkeypatch.setattr(requests,'post',lambda *args,**kwargs:Response())
+    with pytest.raises(TushareProviderError) as info:
+        TushareProvider(_settings(),min_interval=0).query('daily')
+    assert info.value.category=='access_denied'
+    assert 'secret' not in str(info.value)
+
+
 def _daily_row(**overrides):
     row = {
         "ts_code": "600000.SH",

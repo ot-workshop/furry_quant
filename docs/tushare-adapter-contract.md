@@ -10,7 +10,7 @@
 
 `TushareProvider(settings, min_interval=0.35, client=None)`：lazy import tushare；ts.pro_api(settings.token, timeout=20)，仅在该适配器内设置 _DataApi__http_url。允许注入模拟 client 供离线测试。
 
-`provider.query(api_name: str, *, fields: str = "", **params) -> pd.DataFrame`：调用 SDK client.query，限制最小调用间隔；不记录 token；不在异常中回显参数/响应正文。公开异常类型 TushareProviderError。空结果是空DataFrame，由上层决定是否可接受。网络错误最多重试2次，权限/参数错误不要无限重试。允许接口名白名单或严格标识校验。
+`provider.query(api_name: str, *, fields: str = "", **params) -> pd.DataFrame`：官方主源使用标准HTTPS JSON请求直达`https://api.tushare.pro`根路径，禁止重定向；避免本机SDK中的代理路径/额外参数影响官方调用。显式配置的第三方兼容服务保留SDK调用方式。限制最小调用间隔；不记录token；不在异常中回显参数/响应正文。公开异常类型TushareProviderError。空结果是空DataFrame，由上层决定是否可接受。网络错误最多重试2次，权限/参数错误不重试。接口名严格标识校验。
 
 可定义 `normalize_daily(raw)`、`normalize_adj_factor(raw)`、`normalize_calendar(raw)`、`normalize_index_daily(raw)`、`normalize_daily_basic(raw)`。
 

@@ -1,0 +1,321 @@
+"""Web research requests: strict parameters, pinned snapshots and stock subsets."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import re
+import shutil
+import tempfile
+from dataclasses import asdict, replace
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+from filelock import FileLock
+
+from finance_quant.research.neutralization import parse_neutralization,industry_context
+from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig, load_config
+from finance_quant.data.managed import atomic_json, coverage_report
+from finance_quant.data.market import load_market
+from finance_quant.data.execution_universe import validate_execution_universe
+from finance_quant.data.validation_config import CrosscheckConfig
+from finance_quant.research.market_factors import market_factors
+from finance_quant.research.registry import EvaluationConfig, FactorConfig, FactorSpec
+from finance_quant.research.factor_library import FACTOR_LIBRARY
+from finance_quant.application.research_readiness import cached_calendar, validate_warmup
+
+MAX_CODES = 50
+BENCHMARKS = [
+    {"code": "000300.SH", "name": "沪深300"}, {"code": "000905.SH", "name": "中证500"},
+    {"code": "000852.SH", "name": "中证1000"}, {"code": "000001.SH", "name": "上证指数"},
+    {"code": "399001.SZ", "name": "深证成指"}, {"code": "399006.SZ", "name": "创业板指"},
+]
+FACTOR_DEFINITIONS = [definition.public() for definition in FACTOR_LIBRARY.values()]
+
+
+def _fields(value, required, optional=(), label="配置"):
+    if not isinstance(value, dict) or not set(required).issubset(value) or set(value) - set(required) - set(optional):
+        raise ValueError(f"{label}字段不完整或包含不支持的参数")
+    return value
+
+
+def _iso(value):
+    return pd.Timestamp(value).strftime("%Y-%m-%d")
+
+
+def _backtest_dict(config):
+    result=asdict(config)
+    if result.get('benchmark') is None:result.pop('benchmark',None)
+    return result
+
+
+def snapshot_registry(data_root: Path) -> dict:
+    """Only published, valid snapshots below server-controlled locations are selectable."""
+    root = data_root.resolve()
+    paths = [root, *sorted(root.glob("snapshots/*")),
+             *sorted(root.glob("research/subsets/*")), *sorted(root.glob("research/downloads/*/snapshots/*"))]
+    found = {}
+    for path in paths:
+        try:
+            if not path.resolve().is_relative_to(root) or not (path / "manifest.json").is_file():
+                continue
+            market, benchmark, calendar, manifest = load_market(path)
+            identifier = manifest["id"]
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", identifier):
+                continue
+            found.setdefault(identifier, (market, benchmark, calendar, manifest))
+        except (OSError, ValueError, KeyError, TypeError):
+            # Quarantined, partially published and corrupt data is never offered.
+            continue
+    return found
+
+
+def research_options(data_root: Path, runs_root: Path) -> dict:
+    registry = snapshot_registry(data_root)
+    current_downloads = set()
+    for pointer in data_root.glob('research/downloads/*/manifest.json'):
+        try:
+            if not pointer.resolve().is_relative_to(data_root.resolve()): continue
+            document = json.loads(pointer.read_text(encoding='utf-8'))
+            if isinstance(document, dict) and isinstance(document.get('id'), str):
+                current_downloads.add(document['id'])
+        except (OSError, ValueError):
+            continue
+    snapshots = []
+    for identifier, (market, _, calendar, manifest) in registry.items():
+        names = market.drop_duplicates("instrument").set_index("instrument")["name"].to_dict()
+        codes = [{"code": code, "name": names.get(code[-2:] + code[:6], code)} for code in sorted(manifest["codes"])]
+        source_label = ('官方共享行情' if manifest.get('source')=='official_tushare_shared' else
+                        "联合数据" if manifest.get("source") == "tushare_baostock" else "Tushare 数据")
+        snapshots.append({"id": identifier, "label": f"{source_label} · {len(codes)}只 · {_iso(manifest['start'])} 至 {_iso(manifest['end'])}",
+                          "start": _iso(manifest["start"]), "end": _iso(manifest["end"]),
+                          "trading_days": manifest["trading_days"],
+                          "trading_dates": calendar.loc[calendar.is_open & calendar.date.between(pd.Timestamp(manifest["start"]), pd.Timestamp(manifest["end"])), "date"].dt.strftime("%Y-%m-%d").tolist(),
+                          "benchmark": manifest.get("benchmark", "000300.SH"),
+                          "is_current_download": identifier in current_downloads,
+                          "codes": codes, "validation_mode": manifest.get("cross_validation", {}).get("mode", "off"),
+                          "source": manifest.get("source", "third_party_tushare_compatible")})
+    # The active managed pointer is first; historical snapshots stay selectable.
+    selected = snapshots[0] if snapshots else None
+    end = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    data = ({"mode": "snapshot", "snapshot_id": selected["id"], "codes": [c["code"] for c in selected["codes"]]}
+            if selected else {"mode": "download", "codes": ["600000.SH", "000001.SZ", "600519.SH"],
+                              "start": str(int(end[:4]) - 1) + "-01-01", "end": end,
+                              "benchmark": "000300.SH", "validation_mode": "fallback"})
+    if selected:
+        calendar = registry[selected["id"]][2]
+        days = pd.DatetimeIndex(calendar.loc[calendar.is_open & calendar.date.between(pd.Timestamp(selected["start"]), pd.Timestamp(selected["end"])), "date"])
+        start = days[min(21, len(days) - 1)].strftime("%Y-%m-%d")
+        end = selected["end"]
+    else:
+        start = str(int(end[:4]) - 1) + "-03-03"
+    backtest = BacktestConfig(start, end, topk=min(3, len(data["codes"])))
+    factors, evaluation = FactorConfig(), EvaluationConfig()
+    neutralization=parse_neutralization()
+    active = runs_root / "active-research.json"
+    if selected and active.is_file():
+        try:
+            config = load_config(active)
+            if (set(config.data.codes) == set(data["codes"]) and _iso(config.data.start) == selected["start"]
+                and _iso(config.data.end) == selected["end"] and config.data.benchmark == selected["benchmark"]):
+                backtest, factors, evaluation = config.backtest, config.factors, config.evaluation
+                neutralization=config.neutralization
+        except ValueError:
+            pass
+    from finance_quant.application.index_download_manager import warehouse_root
+    from finance_quant.data.historical_warehouse import warehouse_option
+    from finance_quant.data.benchmarks import benchmark_options
+    from finance_quant.data.industries import optional_industries
+    industry=optional_industries()
+    from finance_quant.application.market_download import warehouse_roots
+    historical_indices=[option for root in warehouse_roots(data_root) if (option:=warehouse_option(root))]
+    return {"snapshots": snapshots, "historical_index":warehouse_option(warehouse_root()),
+            'historical_indices':historical_indices,
+            "comparison_benchmarks":benchmark_options(),
+            "industry_data":({**{k:industry.manifest[k] for k in ["id","source","rows","instruments","policy","point_in_time_certified"]},'data_asof':industry.data_asof} if industry else None),
+            "factor_definitions": FACTOR_DEFINITIONS, "benchmarks": BENCHMARKS,
+            "defaults": {"name": "我的研究", "data": data, "backtest": _backtest_dict(backtest),
+                         "factors": factors.as_list(), "evaluation": evaluation.as_dict(),
+                         **({'neutralization':neutralization.as_dict()} if neutralization.as_dict()!={'mode':'off'} else {})},
+            "limits": {"max_codes": MAX_CODES, "max_queued_tasks": 20}}
+
+
+def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[dict, dict]:
+    _fields(document, ("name", "data", "backtest", "factors", "evaluation"), ("neutralization",), label="研究")
+    neutralization=parse_neutralization(document.get('neutralization'))
+    industry=industry_context(neutralization) if 'neutralization' in document else None
+    neutral_extra={}
+    if 'neutralization' in document:
+        neutral_extra={'neutralization':{**neutralization.as_dict(),**({'industry_version':industry.manifest['id']} if industry else {})}}
+        neutralization=parse_neutralization(neutral_extra['neutralization'])
+    name = document["name"]
+    if not isinstance(name, str) or not name.strip() or len(name) > 80 or any(ord(c) < 32 for c in name):
+        raise ValueError("研究名称须为1至80个字符，不含换行")
+    _fields(document["backtest"], ("start", "end"), tuple(BacktestConfig.__dataclass_fields__)[2:], "回测")
+    backtest = BacktestConfig(**document["backtest"])
+    if neutralization.mode=='industry':industry.validate_range(backtest.end)
+    _fields(document["evaluation"], (), ("horizons", "groups", "min_cross_section"), "因子评估")
+    evaluation = EvaluationConfig(**document["evaluation"])
+    factor_list = document["factors"]
+    if not isinstance(factor_list, list):
+        raise ValueError("请选择因子并设置权重")
+    factors = FactorConfig(tuple(FactorSpec(**_fields(item, ("name", "weight"), ("window", "skip", "baseline_window", "id"), "因子")) for item in factor_list))
+    obj = document["data"]
+    if not isinstance(obj, dict) or obj.get("mode") not in {"snapshot", "download", "index_warehouse"}:
+        raise ValueError("请选择已有快照或下载新股票池")
+    if obj['mode']=='index_warehouse':
+        _fields(obj,('mode','warehouse_id'),label='历史成分仓库')
+        from finance_quant.application.index_download_manager import warehouse_root
+        from finance_quant.data.historical_warehouse import warehouse_option,warehouse_header
+        from finance_quant.application.market_download import warehouse_roots
+        root=next((r for r in warehouse_roots(data_root) if (o:=warehouse_option(r)) and o['id']==obj['warehouse_id']),warehouse_root())
+        option=warehouse_option(root)
+        if option is None or obj['warehouse_id']!=option['id']:raise ValueError('历史成分仓库未完成或版本已变化，请刷新数据列表')
+        _,calendar,digest=warehouse_header(root)
+        if not option['start']<=backtest.start<=backtest.end<=option['end']:raise ValueError('回测区间超出历史仓库研究范围')
+        sessions=pd.DatetimeIndex(calendar.loc[calendar.is_open,'date'])
+        if pd.Timestamp(backtest.start) not in sessions or pd.Timestamp(backtest.end) not in sessions:raise ValueError('回测起止日期必须为交易日')
+        if ((sessions>=pd.Timestamp(backtest.start))&(sessions<=pd.Timestamp(backtest.end))).sum()<=max(evaluation.horizons):
+            raise ValueError('回测交易日数须超过最长评估持有期')
+        if backtest.topk>300 or backtest.initial_cash>1e12:raise ValueError('目标持股最多300只，资金不超过一万亿元')
+        validate_warmup(option['data_start'],option['end'],backtest.start,factors,calendar)
+        normalized={'name':name.strip(),'data':{'mode':'index_warehouse','warehouse_id':option['id']},
+                    'backtest':_backtest_dict(backtest),'factors':factors.as_list(),'evaluation':evaluation.as_dict()}
+        normalized.update(neutral_extra)
+        return normalized,{'mode':'index_warehouse','warehouse_dir':str(root.resolve()),'manifest_sha256':digest}
+    if obj["mode"] == "snapshot":
+        _fields(obj, ("mode", "snapshot_id", "codes"), label="快照")
+        identifier = obj["snapshot_id"]
+        if not isinstance(identifier, str) or identifier not in (registry := snapshot_registry(data_root)):
+            raise ValueError("数据快照不存在或未通过校验，请刷新数据列表")
+        market, _, calendar, manifest = registry[identifier]
+        data = DataConfig(Path(manifest["snapshot_dir"]), manifest["start"], manifest["end"], obj["codes"],
+                          manifest.get("benchmark", "000300.SH"), CrosscheckConfig(manifest.get("cross_validation", {}).get("mode", "off")))
+        if not set(data.codes).issubset(manifest["codes"]):
+            raise ValueError("所选股票不在该快照中；请切换到下载新股票池")
+        execution = {"mode": "snapshot", "snapshot_dir": str(data.root), "data_version": manifest["id"], "files": manifest["files"]}
+        normalized_data = {"mode": "snapshot", "snapshot_id": identifier, "codes": sorted(data.codes)}
+    else:
+        _fields(obj, ("mode", "codes", "start", "end", "benchmark", "validation_mode"), label="下载")
+        data = DataConfig(data_root, obj["start"], obj["end"], obj["codes"], obj["benchmark"], CrosscheckConfig(obj["validation_mode"]))
+        if pd.Timestamp(data.end).date() > datetime.now(ZoneInfo("Asia/Shanghai")).date():
+            raise ValueError("数据结束日期不能晚于今天")
+        normalized_data = {"mode": "download", "codes": sorted(data.codes), "start": _iso(data.start), "end": _iso(data.end),
+                           "benchmark": data.benchmark, "validation_mode": data.validation.mode}
+        digest = hashlib.sha256(json.dumps(normalized_data, sort_keys=True).encode()).hexdigest()[:20]
+        execution = {"mode": "download", "download_root": str((data_root / "research/downloads" / digest).resolve())}
+    if len(data.codes) > MAX_CODES:
+        raise ValueError(f"单次研究最多选择{MAX_CODES}只股票")
+    validate_execution_universe(data.codes)
+    if backtest.initial_cash > 1e12:
+        raise ValueError("初始资金不能超过一万亿元")
+    config = ResearchConfig(data, backtest, runs_root, factors, evaluation,neutralization)
+    if obj["mode"] == "snapshot":
+        validate_research_data(config, market, calendar)
+    else:
+        known_calendar = cached_calendar(snapshot_registry(data_root), data.start, backtest.start)
+        validate_warmup(data.start, data.end, backtest.start, factors, known_calendar)
+    return {"name": name.strip(), "data": normalized_data, "backtest": _backtest_dict(backtest),
+            "factors": factors.as_list(), "evaluation": evaluation.as_dict(),**neutral_extra}, execution
+
+
+def request_config(request: dict, data: DataConfig, runs_root: Path) -> ResearchConfig:
+    return ResearchConfig(data, BacktestConfig(**request["backtest"]), runs_root,
+                          FactorConfig(tuple(FactorSpec(**item) for item in request["factors"])),
+                          EvaluationConfig(**request["evaluation"]),parse_neutralization(request.get("neutralization")))
+
+
+def validate_research_data(config: ResearchConfig, market, calendar) -> None:
+    validate_execution_universe(config.data.codes)
+    sessions = pd.DatetimeIndex(calendar.loc[calendar.is_open, "date"])
+    start, end = pd.Timestamp(config.backtest.start), pd.Timestamp(config.backtest.end)
+    if start not in sessions or end not in sessions:
+        raise ValueError("回测起止日期必须是实际交易日")
+    if end > market.date.max():
+        raise ValueError("回测结束日期超出已有行情")
+    left, right = sessions.get_loc(start), sessions.get_loc(end)
+    if left == 0:
+        raise ValueError("回测开始前至少需要一个交易日的评分数据，请延后开始日期")
+    if right - left + 1 <= max(config.evaluation.horizons):
+        raise ValueError("回测交易日数须超过最长评估持有期；可延长回测或调小评估持有期")
+    validate_warmup(config.data.start, config.data.end, config.backtest.start, config.factors, calendar)
+    codes = {code[-2:] + code[:6] for code in config.data.codes}
+    selected = market.loc[market.instrument.isin(codes)]
+    try:
+        result = market_factors(selected, "preflight", config.factors,neutralization=config.neutralization)
+    except ValueError as error:
+        if str(error).startswith(('行业中性化','历史行业','所选因子缺少数据字段', '有效评分不足', '因子输入股票池')):
+            raise
+        raise ValueError("历史预热数据不足或所选因子没有有效值，请缩短窗口或延后回测开始日期") from None
+    coverage = result["metadata"]["coverage_by_date"]
+    for date in sessions[left - 1:right].strftime("%Y-%m-%d"):
+        required = max(2, config.backtest.topk)
+        if coverage.get(date, {}).get("eligible", 0) < required:
+            if result['metadata'].get('industry_coverage_by_date',{}).get(date,{}).get('no_residual_variation'):
+                raise ValueError(f'{date}行业中性化后无行业内有效区分，请扩大股票池，或关闭中性化')
+            detail = result['metadata']['availability_by_date'][date]
+            definitions = result['metadata']['factor_definitions']
+            missing = '、'.join(f"{definitions[key]['label']}[{key}] {count['valid']}/{detail['universe']}只"
+                               for key, count in detail['factors'].items() if count['missing'])
+            raise ValueError(f"{date}有效评分不足：共同有效{detail['eligible']}/{detail['universe']}只，至少需要{required}只"
+                             f"（目标持股{config.backtest.topk}只）；不足指标：{missing or '共同交集不足'}。"
+                             '请检查指标公式、历史预热及停牌，或调整股票池、窗口、回测起点和持股数')
+
+
+def project_snapshot(snapshot_dir: Path, codes: tuple[str, ...], data_root: Path) -> Path:
+    """Recompute the scoring universe without altering or advancing the source snapshot."""
+    market, benchmark, calendar, parent = load_market(snapshot_dir)
+    if set(codes) == set(parent["codes"]):
+        return Path(parent["snapshot_dir"])
+    if not set(codes).issubset(parent["codes"]):
+        raise ValueError("股票池超出父快照")
+    projection = {"parent_data_version": parent["id"], "parent_files": parent["files"], "codes": sorted(codes),
+                  "code_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    digest = hashlib.sha256(json.dumps(projection, sort_keys=True).encode()).hexdigest()[:20]
+    target = data_root / "research/subsets" / digest
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(target.with_suffix(".lock"), timeout=0):
+        if target.exists():
+            saved = load_market(target)[3]
+            if saved.get("projection") != projection:
+                raise ValueError("派生快照与已有内容冲突")
+            return target
+        chosen = market.loc[market.instrument.isin({c[-2:] + c[:6] for c in codes})].copy()
+        sessions = pd.DatetimeIndex(calendar.loc[calendar.is_open & calendar.date.between(pd.Timestamp(parent["start"]), pd.Timestamp(parent["end"])), "date"])
+        coverage = coverage_report(chosen, benchmark, sessions, codes, parent.get("benchmark", "000300.SH"))
+        if coverage["status"] != "complete":
+            raise ValueError("所选股票池数据不完整")
+        manifest = copy.deepcopy(parent)
+        for key in ("snapshot_path", "snapshot_dir"):
+            manifest.pop(key, None)
+        manifest.update(id="subset-" + digest, codes=sorted(codes), rows=len(chosen), coverage=coverage, projection=projection)
+        if manifest.get('schema_version')=='market-v4-shared':
+            from finance_quant.data.shared_market import validation_counts
+            manifest['validation_counts']=validation_counts(chosen)
+        if "cross_validation" in manifest:
+            report = manifest["cross_validation"]
+            report["stocks"] = [s for s in report["stocks"] if s["code"] in codes]
+            report["fallback_codes"] = [s["code"] for s in report["stocks"] if s["status"] == "fallback"]
+            report["conflict_codes"] = []
+            report["status"] = "fallback" if report["fallback_codes"] else "verified"
+            coverage["cross_validation"] = report
+        staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=target.parent))
+        try:
+            chosen.to_parquet(staging / "market.parquet", index=False)
+            for name in ("benchmark.parquet", "calendar.parquet"):
+                shutil.copyfile(Path(parent["snapshot_dir"]) / name, staging / name)
+            manifest["files"] = {name: hashlib.sha256((staging / name).read_bytes()).hexdigest()
+                                 for name in ("market.parquet", "benchmark.parquet", "calendar.parquet")}
+            atomic_json(staging / "manifest.json", manifest)
+            load_market(staging)
+            staging.rename(target)
+        finally:
+            if staging.exists():
+                # Only the three files and manifest created by this call are removed.
+                for name in ("market.parquet", "benchmark.parquet", "calendar.parquet", "manifest.json"):
+                    (staging / name).unlink(missing_ok=True)
+                staging.rmdir()
+        return target

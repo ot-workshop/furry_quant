@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../api/client";
+import {TemporalAuditPanel} from '../components/TemporalAuditPanel';
 import { EmptyPanel, ErrorPanel, LoadingPanel } from "../components/StatePanels";
 import { useApiResource } from "../hooks/useApiResource";
 import type {
@@ -35,14 +36,15 @@ function exclusionText(exclusions: Record<string, number>): string {
   const reasons: Record<string, string> = {
     outside_evaluation_end: "后续交易日不足或离场超出评估区间",
     missing_entry_or_exit: "缺少入场或离场价格",
+    non_trading_entry_or_exit: "入场或离场日停牌",
   };
   const entries = Object.entries(exclusions).filter(([, count]) => count > 0);
   if (!entries.length) return DASH;
   return entries.map(([reason, count]) => `${reasons[reason] ?? reason} ${formatNumber(count, 0)}`).join(" · ");
 }
 
-export function EvaluationPage() {
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+export function EvaluationPage({ selectedEvaluationId = null }: { selectedEvaluationId?: string | null }) {
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(selectedEvaluationId);
   const [selectedHorizon, setSelectedHorizon] = useState<number | null>(null);
 
   const list = useApiResource((signal) => api.getEvaluations(signal), []);
@@ -57,16 +59,10 @@ export function EvaluationPage() {
   );
 
   useEffect(() => {
-    if (!evaluations.length) {
-      setSelectedRunId(null);
-      return;
-    }
-    setSelectedRunId((current) =>
-      current && evaluations.some((item) => item.id === current)
-        ? current
-        : evaluations[0].id,
-    );
-  }, [evaluations]);
+    if (!selectedRunId && !selectedEvaluationId && evaluations.length) setSelectedRunId(evaluations[0].id);
+  }, [evaluations, selectedRunId, selectedEvaluationId]);
+
+  useEffect(() => { if (selectedEvaluationId) setSelectedRunId(selectedEvaluationId); }, [selectedEvaluationId]);
 
   useEffect(() => {
     setSelectedHorizon(horizons[0] ?? null);
@@ -182,6 +178,7 @@ export function EvaluationPage() {
         )}
       </section>
 
+      {result ? <TemporalAuditPanel audit={result.metadata.temporal_audit}/> : null}
       {result ? <CoverageSections result={result} /> : null}
     </div>
   );
@@ -235,9 +232,10 @@ function EvaluationDetail({
 
       <div className="badge-row">
         {metadata.factor_config.map((item) => (
-          <span className="badge" key={item.name}>
-            {labelName(item.name)} · 权重 {formatWeight(item.weight)}
+            <span className="badge" key={item.id ?? item.name}>
+              {labelName(item.name)}{item.id ? ` [${item.id}]` : ''} · 权重 {formatWeight(item.weight)}
             {item.window !== null ? ` · ${item.window} 日窗口` : ""}
+              {item.skip != null ? ` · 剔除${item.skip}日` : ''}{item.baseline_window != null ? ` · 基准${item.baseline_window}日` : ''}
           </span>
         ))}
       </div>
@@ -263,7 +261,7 @@ function EvaluationDetail({
         <p className="hint-text">
           方向对齐：
           {directionEntries
-            .map(([key, value]) => `${labelName(key)}（${value === "lower" ? "原始值越低越好" : "原始值越高越好"}）`)
+            .map(([key, value]) => `${factorLabel(key,metadata.factor_definitions)}（${value === "lower" ? "原始值越低越好" : "原始值越高越好"}）`)
             .join(" · ")}
         </p>
       ) : null}
@@ -299,7 +297,7 @@ function EvaluationDetail({
         factorEntries.map(([name, factor], index) => (
           <div key={name}>
             {index > 0 ? <div className="section-divider" /> : null}
-            <h4 className="subheading">{labelName(name)}</h4>
+            <h4 className="subheading">{factorLabel(name, metadata.factor_definitions)}</h4>
             {factor.horizons[horizonKey] ? (
               <FactorDiagnosticView diagnostic={factor.horizons[horizonKey]} />
             ) : (
@@ -443,7 +441,7 @@ function CorrelationSection({ result }: { result: EvaluationResult }) {
               {correlations.pairs.map((pair, index) => (
                 <tr key={`${pair.first}-${pair.second}-${index}`}>
                   <td>
-                    {labelName(pair.first)} / {labelName(pair.second)}
+                    {factorLabel(pair.first,result.metadata.factor_definitions)} / {factorLabel(pair.second,result.metadata.factor_definitions)}
                   </td>
                   <td className="numeric">
                     {formatNumber(pair.mean_rank_correlation, 4)}
@@ -533,6 +531,8 @@ function CoverageSections({ result }: { result: EvaluationResult }) {
             <div key={key}>
               {index > 0 ? <div className="section-divider" /> : null}
               <LabelCoverageView name={key} label={label} />
+              {result.tables?.[`labels/${key}/observations`] ? <p><a href={`/api/v1/evaluations/${encodeURIComponent(result.metadata.id)}/labels/${key}/download`}>
+                下载完整收益标签明细（Parquet）</a> · 共 {result.tables[`labels/${key}/observations`].rows} 条，JSON报告保留文件索引。</p> : null}
             </div>
           ))
         ) : (

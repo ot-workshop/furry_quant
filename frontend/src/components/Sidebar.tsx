@@ -4,6 +4,7 @@ import type { Overview } from "../types";
 import { overviewModeLabel } from "../utils/format";
 
 export type TabKey =
+  | "research"
   | "factors"
   | "ranking"
   | "backtests"
@@ -19,6 +20,29 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  {
+    key: "research",
+    label: "新建研究",
+    caption: "配置与任务运行",
+    icon: (
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
+        <path
+          d="M12 5v14M5 12h14"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+        <circle
+          cx="12"
+          cy="12"
+          r="8"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          opacity="0.55"
+        />
+      </svg>
+    ),
+  },
   {
     key: "factors",
     label: "股票因子",

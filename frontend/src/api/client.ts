@@ -110,8 +110,8 @@ export const api = {
     return request<Overview>("/overview", signal);
   },
 
-  getInstruments(q?: string, signal?: AbortSignal): Promise<InstrumentList> {
-    return request<InstrumentList>(`/instruments${queryString({ q })}`, signal);
+  getInstruments(q?: string, signal?: AbortSignal, runId?: string): Promise<InstrumentList> {
+    return request<InstrumentList>(`/instruments${queryString({ q, run_id: runId })}`, signal);
   },
 
   getFactorRuns(signal?: AbortSignal): Promise<FactorRunList> {
@@ -180,6 +180,10 @@ export const api = {
 
   getBacktest(id: string, signal?: AbortSignal): Promise<BacktestDetail> {
     return request<BacktestDetail>(`/backtests/${encodeURIComponent(id)}`, signal);
+  },
+
+  getExecutionEvents(id:string,offset=0,signal?:AbortSignal):Promise<{items:Array<{date:string;instrument:string;action:string;reason:string;status:string;block_reason:string|null}>;total:number;offset:number;limit:number}> {
+    return request(`/backtests/${encodeURIComponent(id)}/execution-events?offset=${offset}&limit=50`,signal);
   },
 
   getBacktestEquity(id: string, signal?: AbortSignal): Promise<EquityResponse> {

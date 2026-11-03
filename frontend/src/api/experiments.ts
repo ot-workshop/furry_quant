@@ -46,6 +46,8 @@ export interface ExperimentBacktestParameters {
   open_cost: number;
   close_cost: number;
   min_cost: number;
+  rebalance_frequency?:'daily'|'weekly'|'monthly';cost_mode?:'legacy'|'itemized';commission_rate?:number;
+  tax_mode?:'historical'|'fixed';stamp_tax_rate?:number;transfer_fee_rate?:number;impact_cost?:number;
 }
 
 export interface ExperimentEvaluationParameters {

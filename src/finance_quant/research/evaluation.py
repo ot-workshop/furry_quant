@@ -7,6 +7,7 @@ import pandas as pd
 from qlib.contrib.eva.alpha import calc_ic
 
 from finance_quant.research.registry import EvaluationConfig
+from finance_quant.research.factor_library import FACTOR_LIBRARY
 
 
 def _number(value) -> float | None:
@@ -39,30 +40,35 @@ def forward_open_labels(market: pd.DataFrame, calendar, horizon: int, end: str) 
     values = market[["open", "adj_factor"]].to_numpy(dtype=float)
     if not np.isfinite(values).all() or (values <= 0).any():
         raise ValueError("Evaluation requires finite positive opens and adjustment factors")
-    frame = market.assign(adjusted_open=market["open"] * market["adj_factor"])
+    frame = market[['date','instrument','open','adj_factor',*(['is_suspended'] if 'is_suspended' in market else [])]].copy()
+    frame['adjusted_open']=frame.open*frame.adj_factor
     if not np.isfinite(frame["adjusted_open"].to_numpy(dtype=float)).all():
         raise ValueError("Adjusted opens must be finite")
     grid = frame.pivot(index="date", columns="instrument", values="adjusted_open").reindex(sessions)
+    halted = frame.assign(is_suspended=frame.get('is_suspended', False)).pivot(index='date', columns='instrument', values='is_suspended').reindex(sessions).fillna(False)
+    entry_halted, exit_halted = halted.shift(-1), halted.shift(-horizon - 1)
     entry, exit_ = grid.shift(-1), grid.shift(-horizon - 1)
     entry_dates = pd.Series(sessions, index=sessions).shift(-1)
     exit_dates = pd.Series(sessions, index=sessions).shift(-horizon - 1)
     returns = exit_ / entry - 1
-    records = []
-    for date in sessions:
-        for instrument in grid.columns:
-            entry_date, exit_date = entry_dates.loc[date], exit_dates.loc[date]
-            if pd.isna(exit_date) or exit_date > pd.Timestamp(end):
-                reason = "outside_evaluation_end"
-            elif pd.isna(entry.loc[date, instrument]) or pd.isna(exit_.loc[date, instrument]):
-                reason = "missing_entry_or_exit"
-            else:
-                reason = None
-            records.append({"date": date.strftime("%Y-%m-%d"), "instrument": instrument,
-                            "entry_date": entry_date.strftime("%Y-%m-%d") if pd.notna(entry_date) else None,
-                            "exit_date": exit_date.strftime("%Y-%m-%d") if pd.notna(exit_date) else None,
-                            "forward_return": _number(returns.loc[date, instrument]) if reason is None else None,
-                            "exclusion": reason})
-    return pd.DataFrame(records)
+    # Build the calendar x instrument grid in bulk. This preserves missing
+    # lifecycle sessions and boundary exclusions without per-cell .loc calls.
+    entry_values=entry.to_numpy(float);exit_values=exit_.to_numpy(float)
+    outside=(exit_dates.isna() | exit_dates.gt(pd.Timestamp(end))).to_numpy()[:,None]
+    missing=~np.isfinite(entry_values)|~np.isfinite(exit_values)
+    halted_values=entry_halted.fillna(False).to_numpy(bool)|exit_halted.fillna(False).to_numpy(bool)
+    reasons=np.full(entry_values.shape,None,dtype=object)
+    reasons[halted_values]='non_trading_entry_or_exit'
+    reasons[missing]='missing_entry_or_exit'
+    reasons[np.broadcast_to(outside,entry_values.shape)]='outside_evaluation_end'
+    values=returns.to_numpy(float);values[reasons!=None]=np.nan
+    n=len(grid.columns)
+    return pd.DataFrame({'date':np.repeat(sessions.strftime('%Y-%m-%d').to_numpy(),n),
+        'instrument':np.tile(grid.columns.to_numpy(),len(sessions)),
+        'entry_date':np.repeat([d.strftime('%Y-%m-%d') if pd.notna(d) else None for d in entry_dates],n),
+        'exit_date':np.repeat([d.strftime('%Y-%m-%d') if pd.notna(d) else None for d in exit_dates],n),
+        'forward_return':values.ravel(),'exclusion':reasons.ravel()})
+
 
 
 def _statistics(values: pd.Series) -> dict:
@@ -76,7 +82,8 @@ def _statistics(values: pd.Series) -> dict:
 
 def _diagnostics(section: pd.DataFrame, config: EvaluationConfig) -> dict:
     """Qlib computes IC; guards distinguish undefined correlations from zero."""
-    daily, valid = [], []
+    section=section[['date','instrument','entry_date','exit_date','forward_return','prediction']].reset_index(drop=True)
+    daily, valid = [], np.zeros(len(section),dtype=bool)
     for date, day in section.groupby("date", sort=True):
         usable = day.dropna(subset=["forward_return", "prediction"])
         count = len(usable)
@@ -88,7 +95,7 @@ def _diagnostics(section: pd.DataFrame, config: EvaluationConfig) -> dict:
                   "group_returns": {str(i): None for i in range(1, config.groups + 1)},
                   "group_counts": {str(i): 0 for i in range(1, config.groups + 1)}, "high_minus_low": None}
         if reason is None:
-            valid.append(usable)
+            valid[usable.index.to_numpy()]=True
         # Do not split ties by ticker. Equal values receive the same group;
         # an absent end group means its spread is undefined.
         if count >= config.min_cross_section and usable["prediction"].nunique() >= 2:
@@ -101,8 +108,8 @@ def _diagnostics(section: pd.DataFrame, config: EvaluationConfig) -> dict:
             if low is not None and high is not None:
                 record["high_minus_low"] = high - low
         daily.append(record)
-    if valid:
-        joined = pd.concat(valid).set_index(["date", "instrument"])
+    if valid.any():
+        joined = section.loc[valid,['date','instrument','prediction','forward_return']].set_index(["date", "instrument"])
         ic, rank_ic = calc_ic(joined["prediction"], joined["forward_return"], date_col="date")
         for row in daily:
             row["ic"] = _number(ic.get(row["date"], np.nan))
@@ -120,12 +127,12 @@ def _diagnostics(section: pd.DataFrame, config: EvaluationConfig) -> dict:
 
 
 def evaluate_factors(market: pd.DataFrame, factors: dict, calendar, *, start: str, end: str,
-                     config: EvaluationConfig | None = None) -> dict:
+                     config: EvaluationConfig | None = None, raw_predictions:pd.DataFrame | None=None, row_sink=None) -> dict:
     config = config or EvaluationConfig()
     sessions = _sessions(calendar)
     if pd.Timestamp(start) not in sessions or pd.Timestamp(end) not in sessions or start > end:
         raise ValueError("Evaluation start/end must be ordered exchange trading dates")
-    history = pd.DataFrame(factors["history"])
+    history = pd.DataFrame(factors["history"]) if raw_predictions is None else raw_predictions
     if history.empty or history.duplicated(["date", "instrument"]).any():
         raise ValueError("Factor observations must be nonempty and unique")
     if not pd.DatetimeIndex(history["date"]).isin(sessions).all():
@@ -133,10 +140,15 @@ def evaluate_factors(market: pd.DataFrame, factors: dict, calendar, *, start: st
     if not set(history["instrument"]).issubset(set(market["instrument"])):
         raise ValueError("Factor instruments are outside the quote universe")
     names = list(factors["metadata"]["weights"])
+    configs = {spec.get('id', spec['name']): spec['name'] for spec in factors['metadata'].get('factor_config', [])}
+    directions = {name: FACTOR_LIBRARY[configs.get(name, name)].direction if configs.get(name, name) in FACTOR_LIBRARY
+                  else 'lower' if name == 'volatility' else 'higher' for name in names}
     predictions = history[["date", "instrument", "available_at"]].copy()
     for name in names:
         # IC uses direction-aligned raw values, not clipped/weighted composite ranks.
-        predictions[name] = history["raw"].map(lambda row: row[name]) * (-1 if name == "volatility" else 1)
+        neutralized=factors['metadata'].get('neutralization',{}).get('mode')=='industry'
+        values=history['raw_'+name] if raw_predictions is not None else history['processed' if neutralized else 'raw'].map(lambda row:row[name])
+        predictions[name] = values if neutralized else values * (-1 if directions[name] == 'lower' else 1)
     predictions["composite"] = history["composite"]
     if not np.isfinite(predictions[names + ["composite"]].to_numpy(dtype=float)).all():
         raise ValueError("Factor predictions must be finite")
@@ -145,7 +157,7 @@ def evaluate_factors(market: pd.DataFrame, factors: dict, calendar, *, start: st
     predictions = predictions.loc[predictions["entry_date"].between(start, end)].copy()
     if predictions.empty:
         raise ValueError("No factor signals precede an entry in the evaluation range")
-    for row in predictions.itertuples():
+    for row in predictions[['available_at','entry_date']].drop_duplicates().itertuples():
         available = pd.Timestamp(row.available_at)
         opening = pd.Timestamp(row.entry_date).tz_localize("Asia/Shanghai") + pd.Timedelta(hours=9, minutes=30)
         if pd.isna(available) or available.tzinfo is None or available > opening:
@@ -163,29 +175,40 @@ def evaluate_factors(market: pd.DataFrame, factors: dict, calendar, *, start: st
                      "exclusions": {str(key): int(count) for key, count in day["exclusion"].dropna().value_counts().items()}}
                     for date, day in joined.groupby("date", sort=True)]
         observations = joined.loc[joined["forward_return"].notna(), ["date", "instrument", "entry_date", "exit_date", "forward_return"]]
-        output["labels"][str(horizon)] = {"coverage": coverage, "observations": observations.to_dict("records"),
+        if row_sink is not None:
+            for position in range(0,len(observations),8192):
+                row_sink(f'labels/{horizon}/observations',observations.iloc[position:position+8192].to_dict('records'))
+        output["labels"][str(horizon)] = {"coverage": coverage, "observations": observations.to_dict("records") if row_sink is None else [],
                                           "valid_observations": len(observations), "excluded_observations": len(joined) - len(observations)}
+        if row_sink is not None and len(observations):output['labels'][str(horizon)]['observations_storage']='external_table'
         for name in names + ["composite"]:
-            output["factors"][name]["horizons"][str(horizon)] = _diagnostics(joined.assign(prediction=joined[name]), config)
+            section=joined[['date','instrument','entry_date','exit_date','forward_return',name]].rename(columns={name:'prediction'})
+            output["factors"][name]["horizons"][str(horizon)] = _diagnostics(section, config)
+        del labels,joined,observations,section
+    pair_daily={(first,second):[] for i,first in enumerate(names) for second in names[i:]}
+    for day,section in predictions.groupby('date',sort=True):
+        if len(section)<config.min_cross_section:continue
+        usable=[name for name in names if section[name].nunique()>=2]
+        # Spearman is Pearson correlation of average ranks. The finite common
+        # cross-section is identical for every pair; no full-history copies.
+        correlations=section[usable].rank(method='average').corr()
+        for first,second in pair_daily:
+            if first in usable and second in usable:
+                pair_daily[first,second].append({'date':day,'rank_correlation':_number(correlations.loc[first,second])})
     pairs = []
     for i, first in enumerate(names):
         for second in names[i:]:
-            valid = [day for _, day in predictions.groupby("date") if len(day) >= config.min_cross_section
-                     and day[first].nunique() >= 2 and day[second].nunique() >= 2]
-            if valid:
-                values = pd.concat(valid).set_index(["date", "instrument"])
-                _, corr = calc_ic(values[first], values[second], date_col="date")
-                daily = [{"date": date, "rank_correlation": _number(value)} for date, value in corr.items()]
-            else:
-                daily = []
+            daily=pair_daily[first,second]
             pairs.append({"first": first, "second": second, "mean_rank_correlation": _number(pd.Series([r["rank_correlation"] for r in daily], dtype=float).mean()),
                           "valid_dates": sum(r["rank_correlation"] is not None for r in daily), "daily": daily})
-    output["correlations"] = {"method": "mean daily cross-sectional Spearman on direction-aligned raw factors", "pairs": pairs}
+    neutralized=factors['metadata'].get('neutralization',{}).get('mode')=='industry'
+    output["correlations"] = {"method": "mean daily cross-sectional Spearman on industry residuals" if neutralized else "mean daily cross-sectional Spearman on direction-aligned raw factors", "pairs": pairs}
     output["methodology"] = {
         "ic_engine": "qlib.contrib.eva.alpha.calc_ic",
         "label": "adjusted_open[T+1+h] / adjusted_open[T+1] - 1; h exchange sessions; exit <= evaluation end",
         "signal_range": "entry dates in [start,end]; signal uses preceding session",
-        "directions": {name: "lower" if name == "volatility" else "higher" for name in names},
+        "directions": directions,
+        "factor_values": "direction-aligned standardized industry residuals" if neutralized else "direction-aligned raw values",
         "groups": "Q1 low to QG high; floor(((average_rank-1)/(N-1))*G)+1 capped at G; ties never split by ticker",
         "statistics": "Daily cross-sections have equal weight; IR = mean / sample std without annualization; undefined values are null",
         "limitations": ["仅为因子诊断，未考虑涨跌停、停牌、费用和成交约束，分组收益不是可交易净值",
