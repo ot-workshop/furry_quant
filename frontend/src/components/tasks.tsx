@@ -1,0 +1,355 @@
+import {
+  App,
+  Button,
+  Descriptions,
+  Flex,
+  Popconfirm,
+  Progress,
+  Space,
+  Steps,
+  Table,
+  Tag,
+  Typography,
+} from "antd";
+import type { ColumnsType } from "antd/es/table";
+import {
+  isExperimentTask,
+  researchApi,
+  type ResearchRequest,
+  type ResearchTask,
+} from "../api/research";
+import { describeError } from "../api/http";
+import { navigate, paths } from "../app/routes";
+import {
+  factorLabel,
+  formatDateTime,
+  formatDuration,
+  REBALANCE_LABELS,
+} from "../utils/format";
+import { AppLink, StatusTag } from "./ui";
+
+const RESEARCH_STAGES = [
+  { key: "prepare", title: "准备数据" },
+  { key: "factors", title: "计算因子" },
+  { key: "backtest", title: "回测" },
+  { key: "evaluation", title: "因子评估" },
+];
+
+function stageIndex(task: ResearchTask): number {
+  if (task.status === "succeeded") return RESEARCH_STAGES.length;
+  const index = RESEARCH_STAGES.findIndex((stage) => stage.key === task.stage);
+  return index < 0
+    ? Math.min(task.progress.completed, RESEARCH_STAGES.length - 1)
+    : index;
+}
+
+function percent(task: ResearchTask) {
+  const { completed, total } = task.progress;
+  if (task.status === "succeeded") return 100;
+  return total ? Math.round((completed / total) * 100) : 0;
+}
+
+export function TaskProgress({ task }: { task: ResearchTask }) {
+  if (task.status === "queued")
+    return <Typography.Text type="secondary">等待运行</Typography.Text>;
+  const failed = task.status === "failed" || task.status === "interrupted";
+  return (
+    <Flex vertical gap={2} style={{ minWidth: 160 }}>
+      <Progress
+        percent={percent(task)}
+        size="small"
+        status={
+          failed
+            ? "exception"
+            : task.status === "succeeded"
+              ? "success"
+              : "active"
+        }
+        showInfo={false}
+      />
+      <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis>
+        {task.message}
+      </Typography.Text>
+    </Flex>
+  );
+}
+
+function ResultLinks({ task }: { task: ResearchTask }) {
+  const result = task.result;
+  if (task.status !== "succeeded" || !result) return null;
+  if (result.experiment_run_id)
+    return (
+      <AppLink to={paths.experiment(result.experiment_run_id)}>
+        查看方案比较
+      </AppLink>
+    );
+  return (
+    <Space size={12} wrap>
+      {result.backtest_run_id ? (
+        <AppLink to={paths.backtest(result.backtest_run_id)}>回测</AppLink>
+      ) : null}
+      {result.factor_run_id ? (
+        <AppLink
+          to={paths.factors({
+            run: result.factor_run_id,
+            date:
+              result.factor_as_of ??
+              (task.request as ResearchRequest).backtest?.end,
+          })}
+        >
+          因子评分
+        </AppLink>
+      ) : null}
+      {result.evaluation_run_id ? (
+        <AppLink to={paths.evaluation(result.evaluation_run_id)}>
+          因子评估
+        </AppLink>
+      ) : null}
+    </Space>
+  );
+}
+
+function RequestSummary({ task }: { task: ResearchTask }) {
+  if (isExperimentTask(task)) {
+    const request = task.request;
+    return (
+      <Descriptions
+        size="small"
+        column={{ xs: 1, md: 2 }}
+        items={[
+          {
+            key: "codes",
+            label: "股票池",
+            children: `${request.data.codes.length} 只`,
+          },
+          {
+            key: "periods",
+            label: "分段",
+            children: (["development", "validation", "test"] as const)
+              .map(
+                (key) =>
+                  `${request.plan.periods[key].start} ~ ${request.plan.periods[key].end}`,
+              )
+              .join(" / "),
+          },
+          {
+            key: "candidates",
+            label: "候选方案",
+            children: request.plan.candidates.map((c) => c.name).join("、"),
+          },
+          {
+            key: "topk",
+            label: "目标持股",
+            children: `${request.backtest.topk} 只`,
+          },
+        ]}
+      />
+    );
+  }
+  const request = task.request as ResearchRequest;
+  return (
+    <Descriptions
+      size="small"
+      column={{ xs: 1, md: 2 }}
+      items={[
+        {
+          key: "data",
+          label: "数据",
+          children:
+            request.data.mode === "index_warehouse"
+              ? "沪深300历史成分（动态股票池）"
+              : `快照 ${request.data.snapshot_id ?? "—"} · ${request.data.codes.length} 只`,
+        },
+        {
+          key: "range",
+          label: "回测区间",
+          children: `${request.backtest.start} ~ ${request.backtest.end}`,
+        },
+        {
+          key: "factors",
+          label: "因子",
+          children: request.factors
+            .map(
+              (f) =>
+                `${factorLabel(f.name)}${f.window ? `(${f.window}日)` : ""} ${(f.weight * 100).toFixed(0)}%`,
+            )
+            .join("，"),
+        },
+        {
+          key: "portfolio",
+          label: "组合",
+          children: `持股 ${request.backtest.topk} 只 · ${REBALANCE_LABELS[request.backtest.rebalance_frequency ?? "daily"]}调仓 · 资金 ${request.backtest.initial_cash.toLocaleString("zh-CN")} 元`,
+        },
+        {
+          key: "neutral",
+          label: "行业中性化",
+          children:
+            request.neutralization?.mode === "industry" ? "开启" : "关闭",
+        },
+        {
+          key: "benchmark",
+          label: "评价基准",
+          children: request.backtest.benchmark ?? "沿用数据集基准",
+        },
+      ]}
+    />
+  );
+}
+
+export function TaskDetail({ task }: { task: ResearchTask }) {
+  const failed = task.status === "failed" || task.status === "interrupted";
+  return (
+    <Flex vertical gap={12} style={{ padding: "4px 8px" }}>
+      {!isExperimentTask(task) &&
+      task.status !== "queued" &&
+      task.status !== "cancelled" ? (
+        <Steps
+          size="small"
+          current={stageIndex(task)}
+          status={
+            failed
+              ? "error"
+              : task.status === "succeeded"
+                ? "finish"
+                : "process"
+          }
+          items={RESEARCH_STAGES.map((stage) => ({ title: stage.title }))}
+        />
+      ) : null}
+      {task.error ? (
+        <Typography.Text type="danger">
+          {task.status === "interrupted" ? "已中断：" : "失败原因："}
+          {task.error}
+        </Typography.Text>
+      ) : null}
+      {task.error_details?.trace?.length ? (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          失败位置：
+          {task.error_details.trace
+            .slice(-3)
+            .map((frame) => `${frame.file}:${frame.line} ${frame.function}`)
+            .join(" → ")}
+        </Typography.Text>
+      ) : null}
+      <RequestSummary task={task} />
+    </Flex>
+  );
+}
+
+export function TaskTable({
+  tasks,
+  onChanged,
+  compact = false,
+  expandedId,
+}: {
+  tasks: ResearchTask[];
+  onChanged: () => void;
+  compact?: boolean;
+  expandedId?: string | null;
+}) {
+  const { message } = App.useApp();
+
+  async function cancel(task: ResearchTask) {
+    try {
+      await researchApi.cancel(task.id);
+      message.success("已取消排队任务");
+    } catch (error) {
+      message.error(describeError(error));
+    } finally {
+      onChanged();
+    }
+  }
+
+  const columns: ColumnsType<ResearchTask> = [
+    {
+      title: "任务",
+      key: "name",
+      render: (_, task) => (
+        <Flex vertical gap={2}>
+          <Space size={6}>
+            <Typography.Text strong>{task.name}</Typography.Text>
+            {isExperimentTask(task) ? <Tag>方案比较</Tag> : null}
+          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {formatDateTime(task.created_at)}
+          </Typography.Text>
+        </Flex>
+      ),
+    },
+    {
+      title: "状态",
+      key: "status",
+      width: 96,
+      render: (_, task) => <StatusTag status={task.status} />,
+    },
+    {
+      title: "进度",
+      key: "progress",
+      width: 220,
+      render: (_, task) => <TaskProgress task={task} />,
+    },
+    ...(compact
+      ? []
+      : [
+          {
+            title: "耗时",
+            key: "duration",
+            width: 110,
+            render: (_: unknown, task: ResearchTask) =>
+              formatDuration(task.started_at, task.finished_at),
+          },
+        ]),
+    {
+      title: "结果",
+      key: "result",
+      render: (_, task) => <ResultLinks task={task} />,
+    },
+    {
+      title: "",
+      key: "actions",
+      width: compact ? 90 : 170,
+      align: "right",
+      render: (_, task) => (
+        <Space size={4}>
+          {task.status === "queued" ? (
+            <Popconfirm
+              title="取消这个排队任务？"
+              onConfirm={() => void cancel(task)}
+            >
+              <Button size="small" type="link" danger>
+                取消
+              </Button>
+            </Popconfirm>
+          ) : null}
+          {!compact && !isExperimentTask(task) ? (
+            <Button
+              size="small"
+              type="link"
+              onClick={() => navigate(paths.newResearch(task.id))}
+            >
+              复用配置
+            </Button>
+          ) : null}
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <Table<ResearchTask>
+      rowKey="id"
+      size={compact ? "small" : "middle"}
+      columns={columns}
+      dataSource={tasks}
+      pagination={compact ? false : { pageSize: 20, hideOnSinglePage: true }}
+      expandable={
+        compact
+          ? undefined
+          : {
+              expandedRowRender: (task) => <TaskDetail task={task} />,
+              defaultExpandedRowKeys: expandedId ? [expandedId] : [],
+            }
+      }
+    />
+  );
+}

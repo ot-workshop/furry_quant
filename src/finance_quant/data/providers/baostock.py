@@ -9,7 +9,6 @@ checksum-verified cache entry.
 
 from __future__ import annotations
 
-import hashlib
 import importlib.metadata
 import json
 import math
@@ -25,6 +24,8 @@ from pathlib import Path
 
 import pandas as pd
 from filelock import FileLock
+
+from finance_quant.checksums import file_sha256, sha256_bytes
 
 SCHEMA = "baostock-history-v1"
 FIELDS = (
@@ -79,17 +80,13 @@ def _normalize_date(value: str, label: str) -> str:
         else:
             raise ValueError
     except ValueError:
-        raise BaoStockProviderError(
-            f"{label} must be a YYYYMMDD or YYYY-MM-DD date"
-        ) from None
+        raise BaoStockProviderError(f"{label} must be a YYYYMMDD or YYYY-MM-DD date") from None
     return parsed.isoformat()
 
 
 def _validate_code(code: str) -> str:
     if not isinstance(code, str) or _CODE_RE.fullmatch(code) is None:
-        raise BaoStockProviderError(
-            "code must be a canonical six-digit Shanghai or Shenzhen instrument"
-        )
+        raise BaoStockProviderError("code must be a canonical six-digit Shanghai or Shenzhen instrument")
     return code
 
 
@@ -113,18 +110,11 @@ def _cache_key(request: dict, fields: str, sdk_version: str, namespace: str) -> 
         "sdk_version": sdk_version,
         "namespace": namespace,
     }
-    encoded = json.dumps(
-        spec, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    encoded = json.dumps(spec, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return sha256_bytes(encoded)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+_sha256 = file_sha256
 
 
 def _guard(root: Path, path: Path) -> Path:
@@ -137,9 +127,7 @@ def _guard(root: Path, path: Path) -> Path:
 
 
 def _write_temp(parent: Path, writer) -> Path:
-    handle = tempfile.NamedTemporaryFile(
-        mode="wb", prefix=".tmp-", dir=str(parent), delete=False
-    )
+    handle = tempfile.NamedTemporaryFile(mode="wb", prefix=".tmp-", dir=str(parent), delete=False)
     temporary = Path(handle.name)
     try:
         handle.close()
@@ -184,7 +172,7 @@ class BaoStockProvider:
         namespace: str = "base",
         timeout: float = 45,
         worker=None,
-        adjusted_flag: str = '1',
+        adjusted_flag: str = "1",
     ) -> None:
         if not isinstance(namespace, str) or not namespace.strip():
             raise BaoStockProviderError("namespace must be a non-empty string")
@@ -197,8 +185,9 @@ class BaoStockProvider:
             raise BaoStockProviderError("timeout must be a positive number")
         if worker is not None and not callable(worker):
             raise BaoStockProviderError("worker must be callable")
-        if adjusted_flag not in {'1','2'}:raise BaoStockProviderError('adjusted_flag must be 1 or 2')
-        self.adjusted_flag=adjusted_flag
+        if adjusted_flag not in {"1", "2"}:
+            raise BaoStockProviderError("adjusted_flag must be 1 or 2")
+        self.adjusted_flag = adjusted_flag
         self.cache_root = Path(cache_root)
         self.namespace = namespace
         self.timeout = float(timeout)
@@ -213,7 +202,8 @@ class BaoStockProvider:
             raise BaoStockProviderError("start date must not be after end date")
 
         request = {"code": code, "start": start_iso, "end": end_iso}
-        if self.adjusted_flag!='1':request['adjusted_flag']=self.adjusted_flag
+        if self.adjusted_flag != "1":
+            request["adjusted_flag"] = self.adjusted_flag
         version = _sdk_version()
         key = _cache_key(request, ",".join(FIELDS), version, self.namespace)
 
@@ -227,24 +217,26 @@ class BaoStockProvider:
             with FileLock(str(lock_path), timeout=0):
                 if keydir.exists():
                     return self._load_cached(root, keydir, key, request, version)
-                return self._fetch_and_publish(
-                    root, base, keydir, key, request, version
-                )
+                return self._fetch_and_publish(root, base, keydir, key, request, version)
         except BaoStockProviderError:
             raise
         except Exception:
             from finance_quant.data.network_budget import DownloadPaused
-            if isinstance(sys.exception(),DownloadPaused):
+
+            if isinstance(sys.exception(), DownloadPaused):
                 raise
-            raise BaoStockProviderError(
-                "BaoStock cache is unavailable"
-            ) from None
+            raise BaoStockProviderError("BaoStock cache is unavailable") from None
 
     # -- cache -----------------------------------------------------------------
 
     def alternate_basis(self):
-        return BaoStockProvider(self.cache_root,namespace=self.namespace,timeout=self.timeout,
-            worker=self._worker,adjusted_flag='2' if self.adjusted_flag=='1' else '1')
+        return BaoStockProvider(
+            self.cache_root,
+            namespace=self.namespace,
+            timeout=self.timeout,
+            worker=self._worker,
+            adjusted_flag="2" if self.adjusted_flag == "1" else "1",
+        )
 
     def _fetch_and_publish(
         self,
@@ -259,7 +251,7 @@ class BaoStockProvider:
         # failures once; invalid payloads and corrupt caches remain hard errors.
         # Shared across cache roots, stocks, threads and our local processes.
         # A timed-out worker has exited before another connection can start.
-        with FileLock(Path(tempfile.gettempdir()) / 'finance-quant-baostock.network.lock', timeout=120):
+        with FileLock(Path(tempfile.gettempdir()) / "finance-quant-baostock.network.lock", timeout=120):
             for attempt in range(2):
                 try:
                     payload = self._invoke_worker(dict(request))
@@ -345,10 +337,7 @@ class BaoStockProvider:
 
             raw_hash = _sha256(raw_path)
             adjusted_hash = _sha256(adjusted_path)
-            if (
-                files["raw.parquet"] != raw_hash
-                or files["adjusted.parquet"] != adjusted_hash
-            ):
+            if files["raw.parquet"] != raw_hash or files["adjusted.parquet"] != adjusted_hash:
                 raise BaoStockProviderError(_CACHE_CORRUPT)
 
             raw = pd.read_parquet(raw_path)
@@ -389,7 +378,7 @@ class BaoStockProvider:
     ) -> dict:
         return {
             "source": "baostock",
-            **({'adjusted_flag':request['adjusted_flag']} if 'adjusted_flag' in request else {}),
+            **({"adjusted_flag": request["adjusted_flag"]} if "adjusted_flag" in request else {}),
             "schema": SCHEMA,
             "request": request,
             "sdk_version": version,
@@ -413,7 +402,8 @@ class BaoStockProvider:
             raise BaoStockProviderError("BaoStock worker timed out", retryable=True) from None
         except Exception:
             from finance_quant.data.network_budget import DownloadPaused
-            if isinstance(sys.exception(),DownloadPaused):
+
+            if isinstance(sys.exception(), DownloadPaused):
                 raise
             raise BaoStockProviderError(_WORKER_ERROR, retryable=True) from None
 
@@ -434,7 +424,8 @@ class BaoStockProvider:
 
         if completed.returncode == 3:
             from finance_quant.data.network_budget import DownloadPaused
-            raise DownloadPaused('BaoStock达到预算或限制访问，已保留断点')
+
+            raise DownloadPaused("BaoStock达到预算或限制访问，已保留断点")
         if completed.returncode != 0:
             raise BaoStockProviderError(_WORKER_ERROR, retryable=True)
         try:
@@ -448,9 +439,7 @@ def _relative_cache_path(root: Path, keydir: Path) -> str:
 
 
 def _publish_parquet(frame: pd.DataFrame, destination: Path) -> None:
-    temporary = _write_temp(
-        destination.parent, lambda path: frame.to_parquet(path, index=False)
-    )
+    temporary = _write_temp(destination.parent, lambda path: frame.to_parquet(path, index=False))
     try:
         os.replace(temporary, destination)
     except Exception:
@@ -462,12 +451,8 @@ def _publish_parquet(frame: pd.DataFrame, destination: Path) -> None:
 
 
 def _publish_json(value: dict, destination: Path) -> None:
-    text = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False
-    )
-    temporary = _write_temp(
-        destination.parent, lambda path: path.write_text(text, encoding="utf-8")
-    )
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    temporary = _write_temp(destination.parent, lambda path: path.write_text(text, encoding="utf-8"))
     try:
         os.replace(temporary, destination)
     except Exception:

@@ -19,8 +19,7 @@ def _aware_timestamp(value, name: str) -> pd.Timestamp:
     return stamp.tz_convert("UTC")
 
 
-def availability_from_announcement_date(announcement_date: str | date,
-                                      trading_sessions: Sequence) -> pd.Timestamp:
+def availability_from_announcement_date(announcement_date: str | date, trading_sessions: Sequence) -> pd.Timestamp:
     """Conservatively make date-only announcements usable next session at open.
 
     The caller supplies an official trading calendar; no weekday-only inference.
@@ -38,8 +37,7 @@ def availability_from_announcement_date(announcement_date: str | date,
     return future[0].tz_localize("Asia/Shanghai") + pd.Timedelta(hours=9, minutes=30)
 
 
-def financial_history_as_of(reports: pd.DataFrame, as_of,
-                           periods: int | None = None) -> pd.DataFrame:
+def financial_history_as_of(reports: pd.DataFrame, as_of, periods: int | None = None) -> pd.DataFrame:
     """Select visible revisions first, then the last N report periods per stock.
 
     Required fields: instrument, report_period, available_at, revision. Metric
@@ -59,11 +57,13 @@ def financial_history_as_of(reports: pd.DataFrame, as_of,
         raise ValueError("Financial visibility fields cannot be missing")
     if not frame["instrument"].map(lambda value: isinstance(value, str) and bool(value.strip())).all():
         raise ValueError("Financial instruments must be nonempty identifiers")
-    frame["available_at"] = pd.to_datetime([
-        _aware_timestamp(value, "available_at") for value in frame["available_at"]
-    ], utc=True)
+    frame["available_at"] = pd.to_datetime(
+        [_aware_timestamp(value, "available_at") for value in frame["available_at"]], utc=True
+    )
     frame["report_period"] = pd.to_datetime(frame["report_period"], errors="raise")
-    if frame["report_period"].dt.tz is not None or not frame["report_period"].equals(frame["report_period"].dt.normalize()):
+    if frame["report_period"].dt.tz is not None or not frame["report_period"].equals(
+        frame["report_period"].dt.normalize()
+    ):
         raise ValueError("report_period must contain dates without intraday times")
     revisions = pd.to_numeric(frame["revision"], errors="raise")
     if ((revisions < 0) | (revisions % 1 != 0)).any():

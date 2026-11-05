@@ -5,20 +5,20 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, field,asdict
-from finance_quant.research.neutralization import NeutralizationConfig,parse_neutralization
-from finance_quant.research.execution_policy import EXECUTION_FIELDS,ExecutionCosts,validate_frequency
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
+from finance_quant.data.validation_config import CrosscheckConfig
+from finance_quant.research.execution_policy import EXECUTION_FIELDS, ExecutionCosts, validate_frequency
+from finance_quant.research.neutralization import NeutralizationConfig, parse_neutralization
 from finance_quant.research.registry import (
     EvaluationConfig,
     FactorConfig,
     FactorSpec,
 )
-from finance_quant.data.validation_config import CrosscheckConfig
 
 __all__ = [
     "DataConfig",
@@ -38,9 +38,7 @@ _DATE_PATTERNS = (
     re.compile(r"^([0-9]{4})([0-9]{2})([0-9]{2})$"),
     re.compile(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})$"),
 )
-_BENCHMARKS = frozenset(
-    {"000300.SH", "000905.SH", "000852.SH", "000001.SH", "399001.SZ", "399006.SZ"}
-)
+_BENCHMARKS = frozenset({"000300.SH", "000905.SH", "000852.SH", "000001.SH", "399001.SZ", "399006.SZ"})
 _TOP_LEVEL_FIELDS = frozenset({"data", "backtest", "runs_dir", "factors", "evaluation", "neutralization"})
 _DATA_FIELDS = frozenset({"root", "start", "end", "codes", "benchmark", "validation"})
 _FACTOR_FIELDS = frozenset({"name", "weight", "window", "skip", "baseline_window", "id"})
@@ -67,10 +65,10 @@ _BACKTEST_OPTIONALS = (
     "close_cost",
     "min_cost",
 )
-_BACKTEST_FIELDS=_BACKTEST_FIELDS.union(EXECUTION_FIELDS)
-_BACKTEST_OPTIONALS+=EXECUTION_FIELDS
-_BACKTEST_FIELDS=_BACKTEST_FIELDS.union({'benchmark'})
-_BACKTEST_OPTIONALS+=('benchmark',)
+_BACKTEST_FIELDS = _BACKTEST_FIELDS.union(EXECUTION_FIELDS)
+_BACKTEST_OPTIONALS += EXECUTION_FIELDS
+_BACKTEST_FIELDS = _BACKTEST_FIELDS.union({"benchmark"})
+_BACKTEST_OPTIONALS += ("benchmark",)
 
 
 def _path(value: Any, field: str) -> Path:
@@ -107,8 +105,7 @@ def _normalize_code(value: Any, field: str) -> str:
     match = _CODE_PATTERN.fullmatch(value)
     if match is None:
         raise ValueError(
-            f"Invalid code in {field}; expected SH600000, 600000.SH, SZ000001, "
-            "000001.SZ, BJ430047, or 430047.BJ"
+            f"Invalid code in {field}; expected SH600000, 600000.SH, SZ000001, 000001.SZ, BJ430047, or 430047.BJ"
         )
     exchange = match.group(1) or match.group(4)
     digits = match.group(2) or match.group(3)
@@ -167,12 +164,8 @@ class DataConfig:
             raise ValueError("benchmark is not supported")
 
         object.__setattr__(self, "root", root)
-        object.__setattr__(
-            self, "start", f"{start_date.year:04d}{start_date.month:02d}{start_date.day:02d}"
-        )
-        object.__setattr__(
-            self, "end", f"{end_date.year:04d}{end_date.month:02d}{end_date.day:02d}"
-        )
+        object.__setattr__(self, "start", f"{start_date.year:04d}{start_date.month:02d}{start_date.day:02d}")
+        object.__setattr__(self, "end", f"{end_date.year:04d}{end_date.month:02d}{end_date.day:02d}")
         object.__setattr__(self, "codes", codes)
         object.__setattr__(self, "benchmark", benchmark)
 
@@ -188,13 +181,14 @@ class BacktestConfig:
     open_cost: float = 0.001
     close_cost: float = 0.001
     min_cost: float = 5.0
-    rebalance_frequency: str = 'daily'
-    cost_mode: str = 'legacy'
-    commission_rate: float = .0003
-    tax_mode: str = 'historical'
-    stamp_tax_rate: float = .0005
-    transfer_fee_rate: float = .00001
-    impact_cost: float = 0.
+    rebalance_frequency: str = "daily"
+    cost_mode: str = "legacy"
+    commission_rate: float = 0.0003
+    tax_mode: str = "historical"
+    stamp_tax_rate: float = 0.0005
+    transfer_fee_rate: float = 0.00001
+    # Five basis points per traded side: an explicit, conservative slippage assumption.
+    impact_cost: float = 0.0005
     benchmark: str | None = None
 
     def __post_init__(self) -> None:
@@ -230,13 +224,14 @@ class BacktestConfig:
         if min_cost < 0:
             raise ValueError("min_cost must be nonnegative")
         validate_frequency(self.rebalance_frequency)
-        costs=ExecutionCosts(**{key:getattr(self,key) for key in ExecutionCosts.__dataclass_fields__})
+        costs = ExecutionCosts(**{key: getattr(self, key) for key in ExecutionCosts.__dataclass_fields__})
         costs.validate_range(start_date.isoformat())
         if self.benchmark is not None:
             from finance_quant.data.benchmarks import normalize_benchmark
-            object.__setattr__(self,'benchmark',normalize_benchmark(self.benchmark))
-        for key in ('commission_rate','stamp_tax_rate','transfer_fee_rate','impact_cost'):
-            object.__setattr__(self,key,getattr(costs,key))
+
+            object.__setattr__(self, "benchmark", normalize_benchmark(self.benchmark))
+        for key in ("commission_rate", "stamp_tax_rate", "transfer_fee_rate", "impact_cost"):
+            object.__setattr__(self, key, getattr(costs, key))
 
         object.__setattr__(self, "start", start_date.isoformat())
         object.__setattr__(self, "end", end_date.isoformat())
@@ -267,7 +262,8 @@ class ResearchConfig:
             raise ValueError("factors must be a FactorConfig")
         if not isinstance(self.evaluation, EvaluationConfig):
             raise ValueError("evaluation must be an EvaluationConfig")
-        if not isinstance(self.neutralization,NeutralizationConfig):raise ValueError("neutralization must be a NeutralizationConfig")
+        if not isinstance(self.neutralization, NeutralizationConfig):
+            raise ValueError("neutralization must be a NeutralizationConfig")
         runs_dir = _path(self.runs_dir, "runs_dir")
 
         data_start = _parse_date(self.data.start, "data.start")
@@ -296,7 +292,11 @@ class ResearchConfig:
             "runs_dir": str(self.runs_dir),
             "factors": self.factors.as_list(),
             "evaluation": self.evaluation.as_dict(),
-            **({"neutralization":self.neutralization.as_dict()} if self.neutralization != NeutralizationConfig() else {}),
+            **(
+                {"neutralization": self.neutralization.as_dict()}
+                if self.neutralization != NeutralizationConfig()
+                else {}
+            ),
         }
 
 
@@ -307,9 +307,9 @@ def _reject_unknown(obj: dict[str, Any], allowed: frozenset[str], label: str) ->
 
 
 def _require_fields(obj: dict[str, Any], fields: tuple[str, ...], label: str) -> None:
-    for field in fields:
-        if field not in obj:
-            raise ValueError(f"Missing required field '{field}' in {label}")
+    for required_field in fields:
+        if required_field not in obj:
+            raise ValueError(f"Missing required field '{required_field}' in {label}")
 
 
 def _json_object(obj: dict[str, Any], field: str) -> dict[str, Any]:
@@ -353,9 +353,7 @@ def _evaluation_config(document: dict[str, Any]) -> EvaluationConfig:
     if not isinstance(value, dict):
         raise ValueError("'evaluation' must be a JSON object")
     _reject_unknown(value, _EVALUATION_FIELDS, "evaluation configuration")
-    return EvaluationConfig(
-        **{key: value[key] for key in _EVALUATION_FIELDS if key in value}
-    )
+    return EvaluationConfig(**{key: value[key] for key in _EVALUATION_FIELDS if key in value})
 
 
 def load_config(path: Path) -> ResearchConfig:
@@ -371,6 +369,7 @@ def load_config(path: Path) -> ResearchConfig:
         raise ValueError("Unable to read configuration file") from None
 
     try:
+
         def unique_fields(pairs):
             result = {}
             for key, value in pairs:
@@ -378,6 +377,7 @@ def load_config(path: Path) -> ResearchConfig:
                     raise ValueError("Configuration contains duplicate fields")
                 result[key] = value
             return result
+
         document = json.loads(text, object_pairs_hook=unique_fields)
     except json.JSONDecodeError:
         raise ValueError("Configuration file contains malformed JSON") from None
@@ -412,9 +412,7 @@ def load_config(path: Path) -> ResearchConfig:
         **{key: backtest_obj[key] for key in _BACKTEST_OPTIONALS if key in backtest_obj},
     )
     runs_dir = (
-        _resolve_path(document["runs_dir"], base, "runs_dir")
-        if "runs_dir" in document
-        else (base / "runs").resolve()
+        _resolve_path(document["runs_dir"], base, "runs_dir") if "runs_dir" in document else (base / "runs").resolve()
     )
     return ResearchConfig(
         data=data,

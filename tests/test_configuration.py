@@ -68,9 +68,7 @@ def test_dates_and_codes_are_canonical_and_immutable():
         data.start = "20260101"
 
 
-@pytest.mark.parametrize(
-    "value", ["", "20260230", "2026-13-01", "2026-09-01T00:00:00", "2026091"]
-)
+@pytest.mark.parametrize("value", ["", "20260230", "2026-13-01", "2026-09-01T00:00:00", "2026091"])
 def test_invalid_dates_and_times(value):
     with pytest.raises(ValueError):
         make_data(start=value)
@@ -175,18 +173,12 @@ def test_numeric_boundaries_are_accepted():
 
 
 def test_research_bounds_and_topk():
-    research = ResearchConfig(
-        make_data(), make_backtest(), Path("runs")
-    )
+    research = ResearchConfig(make_data(), make_backtest(), Path("runs"))
     assert research.runs_dir == Path("runs")
     with pytest.raises(ValueError):
-        ResearchConfig(
-            make_data(), make_backtest(start="2026-08-02"), Path("runs")
-        )
+        ResearchConfig(make_data(), make_backtest(start="2026-08-02"), Path("runs"))
     with pytest.raises(ValueError):
-        ResearchConfig(
-            make_data(), make_backtest(end="2026-10-01"), Path("runs")
-        )
+        ResearchConfig(make_data(), make_backtest(end="2026-10-01"), Path("runs"))
     with pytest.raises(ValueError):
         ResearchConfig(make_data(), make_backtest(topk=3), Path("runs"))
 
@@ -242,9 +234,7 @@ def test_credentials_fields_are_rejected_without_echoing_values(tmp_path, level)
     assert "super-secret-value" not in str(error.value)
 
 
-@pytest.mark.parametrize(
-    ("section", "field"), [("data", "start"), ("data", "root"), ("backtest", "end")]
-)
+@pytest.mark.parametrize(("section", "field"), [("data", "start"), ("data", "root"), ("backtest", "end")])
 def test_missing_fields_are_clear(tmp_path, section, field):
     document = valid_document()
     del document[section][field]
@@ -281,9 +271,9 @@ def test_loaded_config_has_no_credential_attributes(tmp_path):
 
 
 def test_utf8_bom_is_supported_and_duplicate_fields_are_rejected(tmp_path):
-    path = tmp_path / 'research.json'
-    path.write_text(json.dumps(valid_document()), encoding='utf-8-sig')
-    assert load_config(path).data.benchmark == '000300.SH'
-    path.write_text('{"data":{},"data":{}}', encoding='utf-8')
-    with pytest.raises(ValueError, match='duplicate'):
+    path = tmp_path / "research.json"
+    path.write_text(json.dumps(valid_document()), encoding="utf-8-sig")
+    assert load_config(path).data.benchmark == "000300.SH"
+    path.write_text('{"data":{},"data":{}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate"):
         load_config(path)

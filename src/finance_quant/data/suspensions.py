@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from finance_quant.data.symbols import to_baostock
+
 
 class MemoizedSecondary:
     def __init__(self, provider):
@@ -19,12 +21,17 @@ class MemoizedSecondary:
 
 def confirmed_halts(bundle, code: str, sessions: pd.DatetimeIndex) -> pd.DatetimeIndex:
     masks = []
-    expected_code = code[-2:].lower() + "." + code[:6]
-    adjusted_flag=bundle.metadata.get('adjusted_flag','1')
-    if adjusted_flag not in {'1','2'}:raise ValueError('Unsupported secondary adjustment basis')
+    expected_code = to_baostock(code)
+    adjusted_flag = bundle.metadata.get("adjusted_flag", "1")
+    if adjusted_flag not in {"1", "2"}:
+        raise ValueError("Unsupported secondary adjustment basis")
     for frame, flag in ((bundle.raw, "3"), (bundle.adjusted, adjusted_flag)):
         required = {"date", "code", "adjustflag", "tradestatus"}
-        if not required.issubset(frame) or not frame.code.eq(expected_code).all() or not frame.adjustflag.astype(str).eq(flag).all():
+        if (
+            not required.issubset(frame)
+            or not frame.code.eq(expected_code).all()
+            or not frame.adjustflag.astype(str).eq(flag).all()
+        ):
             raise ValueError("Suspension evidence has wrong instrument or adjustment basis")
         dates = pd.DatetimeIndex(pd.to_datetime(frame.date, format="%Y-%m-%d", errors="raise"))
         indexed = frame.assign(date=dates).sort_values("date").set_index("date")
@@ -33,14 +40,14 @@ def confirmed_halts(bundle, code: str, sessions: pd.DatetimeIndex) -> pd.Datetim
         status = indexed.tradestatus.astype(str)
         if not status.isin(["0", "1"]).all():
             raise ValueError("Unknown secondary trading status")
-        for field in ('volume', 'amount'):
+        for field in ("volume", "amount"):
             if field not in indexed:
-                raise ValueError('Secondary trading activity is missing')
-            values = indexed.loc[status.eq('0'), field]
-            numeric = pd.to_numeric(values, errors='coerce')
-            blank = values.isna() | values.astype(str).str.strip().eq('')
+                raise ValueError("Secondary trading activity is missing")
+            values = indexed.loc[status.eq("0"), field]
+            numeric = pd.to_numeric(values, errors="coerce")
+            blank = values.isna() | values.astype(str).str.strip().eq("")
             if (~blank & (numeric.isna() | ~np.isfinite(numeric) | numeric.ne(0))).any():
-                raise ValueError('Secondary trading activity conflicts with suspension status')
+                raise ValueError("Secondary trading activity conflicts with suspension status")
         masks.append(status.eq("0"))
     if not masks[0].equals(masks[1]):
         raise ValueError("Raw and adjusted suspension evidence disagree")
@@ -63,7 +70,7 @@ def carry_halt_rows(frame: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFram
     for field in ("open", "high", "low", "close", "pre_close"):
         out.loc[mask, field] = prior_close.loc[mask]
     for field in ("volume", "amount", "change"):
-        out.loc[mask, field] = 0.
+        out.loc[mask, field] = 0.0
     if "adj_factor" in out:
         out.loc[mask, "adj_factor"] = out.adj_factor.where(~mask).ffill().loc[mask]
     for field in ("pe_ttm", "pb", "total_mv", "up_limit", "down_limit"):
@@ -98,9 +105,9 @@ def invalid_halt_rows(frame: pd.DataFrame) -> pd.Series:
             known_at = pd.to_datetime(section.valuation_asof, errors="coerce")
             # A legitimately unavailable PE is a factor-coverage issue, not a
             # fabricated suspended quote. A claimed carried value needs evidence.
-            has_value = section.pe_ttm.notna() if 'pe_ttm' in section else pd.Series(True,index=section.index)
+            has_value = section.pe_ttm.notna() if "pe_ttm" in section else pd.Series(True, index=section.index)
             bad |= (has_value & known_at.isna()) | known_at.gt(section.date)
-            if 'valuation_carried' in section:
+            if "valuation_carried" in section:
                 bad |= section.valuation_carried & (~has_value | known_at.isna())
         invalid.loc[section.index] = halted & bad
     return invalid

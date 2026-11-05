@@ -9,11 +9,31 @@ from finance_quant.data.point_in_time import (
 
 
 def reports():
-    return pd.DataFrame([
-        {"instrument": "SH600000", "report_period": "2024-12-31", "available_at": "2025-03-20T20:00:00+08:00", "revision": 0, "roe": 0.1},
-        {"instrument": "SH600000", "report_period": "2024-12-31", "available_at": "2025-05-20T19:00:00+08:00", "revision": 1, "roe": 0.2},
-        {"instrument": "SH600000", "report_period": "2025-03-31", "available_at": "2025-04-25T18:00:00+08:00", "revision": 0, "roe": 0.15},
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "instrument": "SH600000",
+                "report_period": "2024-12-31",
+                "available_at": "2025-03-20T20:00:00+08:00",
+                "revision": 0,
+                "roe": 0.1,
+            },
+            {
+                "instrument": "SH600000",
+                "report_period": "2024-12-31",
+                "available_at": "2025-05-20T19:00:00+08:00",
+                "revision": 1,
+                "roe": 0.2,
+            },
+            {
+                "instrument": "SH600000",
+                "report_period": "2025-03-31",
+                "available_at": "2025-04-25T18:00:00+08:00",
+                "revision": 0,
+                "roe": 0.15,
+            },
+        ]
+    )
 
 
 def test_report_period_is_not_publication_time():
@@ -46,7 +66,17 @@ def test_visibility_filter_precedes_history_window_and_period_selection():
 def test_date_only_announcement_waits_until_next_exchange_session():
     available = availability_from_announcement_date("2025-01-24", ["2025-01-24", "2025-02-05"])
     assert available == pd.Timestamp("2025-02-05T09:30:00+08:00")
-    frame = pd.DataFrame([{"instrument": "SH600000", "report_period": "2024-12-31", "available_at": available, "revision": 0, "roe": 0.1}])
+    frame = pd.DataFrame(
+        [
+            {
+                "instrument": "SH600000",
+                "report_period": "2024-12-31",
+                "available_at": available,
+                "revision": 0,
+                "roe": 0.1,
+            }
+        ]
+    )
     assert latest_financials_as_of(frame, "2025-01-24T15:00:00+08:00").empty
     assert latest_financials_as_of(frame, "2025-02-05T09:29:59+08:00").empty
     assert len(latest_financials_as_of(frame, available)) == 1
@@ -63,7 +93,9 @@ def test_visibility_is_separate_for_each_stock():
     assert set(latest_financials_as_of(frame, "2025-03-21T15:00:00+08:00")["instrument"]) == {"SH600000"}
 
 
-@pytest.mark.parametrize("mutation", ["missing_available_at", "naive_available_at", "duplicate", "premature", "fractional_revision"])
+@pytest.mark.parametrize(
+    "mutation", ["missing_available_at", "naive_available_at", "duplicate", "premature", "fractional_revision"]
+)
 def test_ambiguous_or_invalid_financial_inputs_are_rejected(mutation):
     frame = reports()
     if mutation == "missing_available_at":

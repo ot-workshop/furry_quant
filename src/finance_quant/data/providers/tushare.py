@@ -19,6 +19,8 @@ from urllib.parse import urlsplit
 import numpy as np
 import pandas as pd
 
+from finance_quant.data.symbols import to_qlib
+
 DEFAULT_HTTP_URL = "https://api.tushare.pro"
 MAX_RETRIES = 2
 
@@ -27,22 +29,52 @@ _CODE_RE = re.compile(r"^\d{6}\.(?:SH|SZ|BJ)$")
 _RETRY_DELAY = 0.25
 
 _DAILY_COLUMNS = [
-    "instrument", "date", "open", "high", "low", "close", "pre_close",
-    "volume", "amount", "change",
+    "instrument",
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "pre_close",
+    "volume",
+    "amount",
+    "change",
 ]
 _DAILY_REQUIRED = (
-    "ts_code", "trade_date", "open", "high", "low", "close", "pre_close",
-    "vol", "amount", "pct_chg",
+    "ts_code",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "pre_close",
+    "vol",
+    "amount",
+    "pct_chg",
 )
 _ADJ_COLUMNS = ["instrument", "date", "adj_factor"]
 _CALENDAR_COLUMNS = ["date", "is_open"]
 _INDEX_COLUMNS = [
-    "instrument", "date", "open", "high", "low", "close", "pre_close",
-    "volume", "amount",
+    "instrument",
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "pre_close",
+    "volume",
+    "amount",
 ]
 _INDEX_REQUIRED = (
-    "ts_code", "trade_date", "open", "high", "low", "close", "pre_close",
-    "vol", "amount",
+    "ts_code",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "pre_close",
+    "vol",
+    "amount",
 )
 _BASIC_COLUMNS = ["instrument", "date", "pe_ttm", "pb", "total_mv"]
 
@@ -68,9 +100,7 @@ class TushareSettings:
 
     def __post_init__(self) -> None:
         token = "" if self.token is None else str(self.token).strip()
-        http_url = (
-            DEFAULT_HTTP_URL if self.http_url is None else str(self.http_url).strip()
-        )
+        http_url = DEFAULT_HTTP_URL if self.http_url is None else str(self.http_url).strip()
         if not token:
             raise TushareConfigError("TUSHARE_TOKEN is not configured")
         parts = urlsplit(http_url)
@@ -82,9 +112,7 @@ class TushareSettings:
             or parts.query
             or parts.fragment
         ):
-            raise TushareConfigError(
-                "TUSHARE_HTTP_URL must be HTTPS without userinfo, query, or fragment"
-            )
+            raise TushareConfigError("TUSHARE_HTTP_URL must be HTTPS without userinfo, query, or fragment")
         object.__setattr__(self, "token", token)
         object.__setattr__(self, "http_url", http_url)
 
@@ -97,24 +125,12 @@ class TushareSettings:
             if env_file is not None or path.is_file():
                 from dotenv import dotenv_values
 
-                file_values = {
-                    key: value
-                    for key, value in dotenv_values(path).items()
-                    if value is not None
-                }
+                file_values = {key: value for key, value in dotenv_values(path).items() if value is not None}
         except OSError:
             file_values = {}
 
-        token = (
-            os.environ.get("TUSHARE_TOKEN")
-            or file_values.get("TUSHARE_TOKEN")
-            or ""
-        )
-        http_url = (
-            os.environ.get("TUSHARE_HTTP_URL")
-            or file_values.get("TUSHARE_HTTP_URL")
-            or DEFAULT_HTTP_URL
-        )
+        token = os.environ.get("TUSHARE_TOKEN") or file_values.get("TUSHARE_TOKEN") or ""
+        http_url = os.environ.get("TUSHARE_HTTP_URL") or file_values.get("TUSHARE_HTTP_URL") or DEFAULT_HTTP_URL
         return cls(token=token, http_url=http_url)
 
 
@@ -129,8 +145,14 @@ def _is_retryable(exc: BaseException) -> bool:
     return any(
         marker in text
         for marker in (
-            "timeout", "timed out", "connection", "network", "请求异常",
-            "temporarily unavailable", "remote end closed", "max retries",
+            "timeout",
+            "timed out",
+            "connection",
+            "network",
+            "请求异常",
+            "temporarily unavailable",
+            "remote end closed",
+            "max retries",
         )
     )
 
@@ -169,7 +191,7 @@ class TushareProvider:
 
     def _get_client(self):
         if self._client is None:
-            if self.settings.http_url.rstrip('/') == DEFAULT_HTTP_URL:
+            if self.settings.http_url.rstrip("/") == DEFAULT_HTTP_URL:
                 self._client = _OfficialClient(self.settings)
                 return self._client
             try:
@@ -178,9 +200,7 @@ class TushareProvider:
                 client = ts.pro_api(self.settings.token, timeout=20)
                 client._DataApi__http_url = self.settings.http_url
             except Exception:
-                raise TushareProviderError(
-                    "failed to initialize the Tushare SDK client"
-                ) from None
+                raise TushareProviderError("failed to initialize the Tushare SDK client") from None
             self._client = client
         return self._client
 
@@ -205,6 +225,7 @@ class TushareProvider:
                 break
             except Exception as exc:
                 from finance_quant.data.network_budget import DownloadPaused
+
                 if isinstance(exc, DownloadPaused):
                     raise
                 category = _error_category(exc)
@@ -230,23 +251,28 @@ class _OfficialClient:
     def __init__(self, settings):
         self.settings = settings
 
-    def query(self, api_name, fields='', **params):
+    def query(self, api_name, fields="", **params):
         import requests
+
         from finance_quant.data.network_budget import reserve_tushare
+
         reserve_tushare(api_name)
-        response = requests.post(DEFAULT_HTTP_URL,
-            json={'api_name': api_name, 'token': self.settings.token, 'params': params, 'fields': fields},
-            timeout=20, allow_redirects=False)
+        response = requests.post(
+            DEFAULT_HTTP_URL,
+            json={"api_name": api_name, "token": self.settings.token, "params": params, "fields": fields},
+            timeout=20,
+            allow_redirects=False,
+        )
         response.raise_for_status()
         if response.status_code != 200:
-            raise TushareProviderError('Official endpoint returned an unexpected status')
+            raise TushareProviderError("Official endpoint returned an unexpected status")
         result = response.json()
-        if result.get('code') != 0:
+        if result.get("code") != 0:
             # Use provider text only internally to classify the failure; never expose it.
-            category = _error_category(RuntimeError(str(result.get('msg', ''))))
-            raise TushareProviderError('Official API rejected the request', category=category)
-        data = result['data']
-        return pd.DataFrame(data['items'], columns=data['fields'])
+            category = _error_category(RuntimeError(str(result.get("msg", ""))))
+            raise TushareProviderError("Official API rejected the request", category=category)
+        data = result["data"]
+        return pd.DataFrame(data["items"], columns=data["fields"])
 
 
 def _empty_frame(raw, columns: list[str]) -> pd.DataFrame | None:
@@ -260,9 +286,7 @@ def _empty_frame(raw, columns: list[str]) -> pd.DataFrame | None:
 def _require_columns(raw: pd.DataFrame, required: tuple[str, ...]) -> None:
     missing = [column for column in required if column not in raw.columns]
     if missing:
-        raise TushareProviderError(
-            "Tushare response is missing required column(s): " + ", ".join(missing)
-        )
+        raise TushareProviderError("Tushare response is missing required column(s): " + ", ".join(missing))
 
 
 def _parse_dates(values: pd.Series) -> pd.Series:
@@ -282,12 +306,10 @@ def _parse_dates(values: pd.Series) -> pd.Series:
 
 def _instruments(raw: pd.DataFrame) -> pd.Series:
     codes = raw["ts_code"].astype("string").str.strip().str.upper()
-    valid = codes.map(
-        lambda code: isinstance(code, str) and _CODE_RE.fullmatch(code) is not None
-    )
+    valid = codes.map(lambda code: isinstance(code, str) and _CODE_RE.fullmatch(code) is not None)
     if not bool(valid.all()):
         raise TushareProviderError("Tushare response contains an invalid ts_code")
-    return codes.map(lambda code: f"{code[-2:]}{code[:6]}")
+    return codes.map(to_qlib)
 
 
 def _numbers(raw: pd.DataFrame, column: str) -> pd.Series:
@@ -313,9 +335,7 @@ def _finite(
 
 def _reject_duplicates(frame: pd.DataFrame) -> None:
     if frame.duplicated(subset=["instrument", "date"]).any():
-        raise TushareProviderError(
-            "Tushare response contains duplicate instrument/date rows"
-        )
+        raise TushareProviderError("Tushare response contains duplicate instrument/date rows")
 
 
 def normalize_daily(raw: pd.DataFrame) -> pd.DataFrame:
@@ -358,9 +378,7 @@ def normalize_adj_factor(raw: pd.DataFrame) -> pd.DataFrame:
         {
             "instrument": _instruments(raw),
             "date": _parse_dates(raw["trade_date"]),
-            "adj_factor": _finite(
-                _numbers(raw, "adj_factor"), "adj_factor", positive=True
-            ),
+            "adj_factor": _finite(_numbers(raw, "adj_factor"), "adj_factor", positive=True),
         }
     )
     _reject_duplicates(result)
@@ -378,14 +396,12 @@ def normalize_calendar(raw: pd.DataFrame) -> pd.DataFrame:
     if flags.isna().any() or not bool(flags.isin((0, 1)).all()):
         raise TushareProviderError("is_open must contain only 0 or 1")
 
-    result = pd.DataFrame(
-        {"date": _parse_dates(raw["cal_date"]), "is_open": flags.astype(bool)}
-    )
+    result = pd.DataFrame({"date": _parse_dates(raw["cal_date"]), "is_open": flags.astype(bool)})
     return result.sort_values("date").reset_index(drop=True)
 
 
 def normalize_index_daily(raw: pd.DataFrame) -> pd.DataFrame:
-    """Normalize ``index_daily`` with shares and yuan, like standard daily data."""
+    """Normalize ``index_daily`` with shares/yuan and ascending trade dates."""
     empty = _empty_frame(raw, _INDEX_COLUMNS)
     if empty is not None:
         return empty
@@ -400,17 +416,13 @@ def normalize_index_daily(raw: pd.DataFrame) -> pd.DataFrame:
                 for column in ("open", "high", "low", "close", "pre_close")
             },
             "volume": _finite(_numbers(raw, "vol"), "vol", nonnegative=True) * 100.0,
-            "amount": _finite(
-                _numbers(raw, "amount"), "amount", nonnegative=True
-            ) * 1000.0,
+            "amount": _finite(_numbers(raw, "amount"), "amount", nonnegative=True) * 1000.0,
         }
     )
     if "pct_chg" in raw.columns:
-        result["change"] = (
-            _finite(_numbers(raw, "pct_chg"), "pct_chg") / 100.0
-        )
+        result["change"] = _finite(_numbers(raw, "pct_chg"), "pct_chg") / 100.0
     _reject_duplicates(result)
-    return result.reset_index(drop=True)
+    return result.sort_values("date").reset_index(drop=True)
 
 
 def normalize_daily_basic(raw: pd.DataFrame) -> pd.DataFrame:

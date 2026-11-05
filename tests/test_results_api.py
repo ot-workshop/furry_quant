@@ -1,9 +1,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from finance_quant.api import create_app
-from finance_quant.sample import sample_factors, sample_prices
 from finance_quant.storage import ResultStore
+from support.fakes import make_app
+from support.synthetic import sample_factors, sample_prices
 
 
 def test_immutable_results_and_identifier_boundaries(tmp_path):
@@ -24,7 +24,7 @@ def test_immutable_results_and_identifier_boundaries(tmp_path):
 
 def test_empty_api_and_validation(tmp_path):
     (tmp_path / "backtests" / "interrupted").mkdir(parents=True)
-    client = TestClient(create_app(tmp_path))
+    client = TestClient(make_app(tmp_path))
     assert client.get("/api/v1/backtests").json() == {"items": [], "total": 0}
     assert client.get("/api/v1/backtests/absent").status_code == 404
     assert client.get("/api/v1/backtests/absent/trades?limit=-1").status_code == 422
@@ -35,7 +35,7 @@ def test_empty_api_and_validation(tmp_path):
 def test_factor_api_pagination_ranking_and_history(tmp_path):
     factors = sample_factors(sample_prices())
     ResultStore(tmp_path).publish("factors", "demo-factors", factors)
-    client = TestClient(create_app(tmp_path))
+    client = TestClient(make_app(tmp_path))
     listing = client.get("/api/v1/factor-runs").json()
     assert listing["items"][0]["is_synthetic"] is True
     assert "2025-01-06" in listing["items"][0]["available_dates"]
@@ -62,7 +62,7 @@ def test_history_requires_explicit_run_when_scheme_has_multiple_versions(tmp_pat
     store.publish("factors", "first", factors)
     factors["metadata"]["id"] = "second"
     store.publish("factors", "second", factors)
-    client = TestClient(create_app(tmp_path))
+    client = TestClient(make_app(tmp_path))
     path = "/api/v1/instruments/SH600000/factor-history"
     assert client.get(path).status_code == 409
     selected = client.get(path + "?run_id=second").json()

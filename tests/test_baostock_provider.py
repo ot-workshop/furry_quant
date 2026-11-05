@@ -6,7 +6,6 @@ import hashlib
 import json
 from types import SimpleNamespace
 
-import pandas as pd
 import pytest
 
 import finance_quant.data.providers.baostock as baostock_module
@@ -52,9 +51,7 @@ RAW_ROWS = [
     },
 ]
 
-ADJ_ROWS = [
-    {**row, "adjustflag": "1", "close": str(float(row["close"]) * 2)} for row in RAW_ROWS
-]
+ADJ_ROWS = [{**row, "adjustflag": "1", "close": str(float(row["close"]) * 2)} for row in RAW_ROWS]
 
 
 class RecordingWorker:
@@ -77,19 +74,28 @@ def _payload():
 
 
 def test_network_is_serial_across_different_cache_roots(tmp_path):
+    import threading
+    import time
     from concurrent.futures import ThreadPoolExecutor
-    import threading,time
-    active=0;maximum=0;guard=threading.Lock()
+
+    active = 0
+    maximum = 0
+    guard = threading.Lock()
+
     def worker(request):
-        nonlocal active,maximum
-        with guard:active+=1;maximum=max(active,maximum)
-        time.sleep(.05)
-        with guard:active-=1
+        nonlocal active, maximum
+        with guard:
+            active += 1
+            maximum = max(active, maximum)
+        time.sleep(0.05)
+        with guard:
+            active -= 1
         return _payload()
-    providers=[BaoStockProvider(tmp_path/str(n),worker=worker) for n in range(2)]
+
+    providers = [BaoStockProvider(tmp_path / str(n), worker=worker) for n in range(2)]
     with ThreadPoolExecutor(2) as pool:
-        results=list(pool.map(lambda p:p.fetch('600000.SH','20240101','20240103'),providers))
-    assert maximum==1 and len(results)==2
+        results = list(pool.map(lambda p: p.fetch("600000.SH", "20240101", "20240103"), providers))
+    assert maximum == 1 and len(results) == 2
 
 
 def _provider(tmp_path, worker, **kwargs):
@@ -115,9 +121,7 @@ def test_success_returns_original_tables_and_reuses_cache(tmp_path):
     bundle = provider.fetch("600000.SH", "20240101", "2024-01-03")
 
     assert isinstance(bundle, BaoStockBundle)
-    assert worker.calls == [
-        {"code": "600000.SH", "start": "2024-01-01", "end": "2024-01-03"}
-    ]
+    assert worker.calls == [{"code": "600000.SH", "start": "2024-01-01", "end": "2024-01-03"}]
     assert list(bundle.raw.columns) == list(FIELDS)
     assert list(bundle.adjusted.columns) == list(FIELDS)
     assert bundle.raw.to_dict("records") == RAW_ROWS
@@ -231,22 +235,24 @@ def test_injected_timeout_is_sanitized(tmp_path):
 
 def test_transient_worker_failure_reconnects_once_and_then_reuses_cache(tmp_path):
     calls = []
+
     def flaky(request):
         calls.append(request)
         if len(calls) == 1:
-            raise TimeoutError('private socket detail')
+            raise TimeoutError("private socket detail")
         return _payload()
+
     provider = _provider(tmp_path, flaky)
-    result = provider.fetch('600000.SH', '20240101', '20240103')
+    result = provider.fetch("600000.SH", "20240101", "20240103")
     assert len(result.raw) == 2 and len(calls) == 2
-    assert provider.fetch('600000.SH', '20240101', '20240103').metadata == result.metadata
+    assert provider.fetch("600000.SH", "20240101", "20240103").metadata == result.metadata
     assert len(calls) == 2
 
 
 def test_invalid_worker_content_is_not_retried(tmp_path):
-    worker = RecordingWorker(payload={'raw': [], 'adjusted': ADJ_ROWS})
-    with pytest.raises(BaoStockProviderError, match='invalid data'):
-        _provider(tmp_path, worker).fetch('600000.SH', '20240101', '20240103')
+    worker = RecordingWorker(payload={"raw": [], "adjusted": ADJ_ROWS})
+    with pytest.raises(BaoStockProviderError, match="invalid data"):
+        _provider(tmp_path, worker).fetch("600000.SH", "20240101", "20240103")
     assert len(worker.calls) == 1
 
 
@@ -292,9 +298,7 @@ def test_default_subprocess_worker_invokes_module_with_timeout(tmp_path, monkeyp
         )
 
     monkeypatch.setattr(baostock_module.subprocess, "run", fake_run)
-    bundle = BaoStockProvider(tmp_path, timeout=7.5).fetch(
-        "600000.SH", "20240101", "20240103"
-    )
+    bundle = BaoStockProvider(tmp_path, timeout=7.5).fetch("600000.SH", "20240101", "20240103")
 
     assert captured["command"] == [
         baostock_module.sys.executable,
@@ -315,15 +319,11 @@ def test_default_subprocess_worker_invokes_module_with_timeout(tmp_path, monkeyp
 
 def test_default_subprocess_timeout_is_sanitized(tmp_path, monkeypatch):
     def fake_run(command, **kwargs):
-        raise baostock_module.subprocess.TimeoutExpired(
-            command, kwargs["timeout"], output="secret stdout"
-        )
+        raise baostock_module.subprocess.TimeoutExpired(command, kwargs["timeout"], output="secret stdout")
 
     monkeypatch.setattr(baostock_module.subprocess, "run", fake_run)
     with pytest.raises(BaoStockProviderError, match="timed out") as excinfo:
-        BaoStockProvider(tmp_path, timeout=1).fetch(
-            "600000.SH", "20240101", "20240103"
-        )
+        BaoStockProvider(tmp_path, timeout=1).fetch("600000.SH", "20240101", "20240103")
     assert "secret" not in str(excinfo.value)
 
 
@@ -390,9 +390,7 @@ class FakeSDK:
     def logout(self):
         self.calls.append(("logout",))
 
-    def query_history_k_data_plus(
-        self, code, fields, start_date=None, end_date=None, frequency=None, adjustflag=None
-    ):
+    def query_history_k_data_plus(self, code, fields, start_date=None, end_date=None, frequency=None, adjustflag=None):
         self.calls.append(
             {
                 "code": code,

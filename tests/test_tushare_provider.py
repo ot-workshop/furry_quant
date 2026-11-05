@@ -37,31 +37,47 @@ def _settings(token="test-token", url="https://api.tushare.pro"):
 
 def test_official_transport_posts_root_without_sdk_proxy_parameters(monkeypatch):
     import requests
-    calls=[]
+
+    calls = []
+
     class Response:
-        status_code=200
-        def raise_for_status(self):pass
-        def json(self):return {'code':0,'data':{'fields':['trade_date','adj_factor'],'items':[['20230301',2.]]}}
-    def post(url,**kwargs):calls.append((url,kwargs));return Response()
-    monkeypatch.setattr(requests,'post',post)
-    frame=TushareProvider(_settings(),min_interval=0).query('adj_factor',ts_code='000776.SZ')
-    assert len(frame)==1
-    assert calls[0][0]=='https://api.tushare.pro'
-    assert calls[0][1]['allow_redirects'] is False
-    assert calls[0][1]['json']['params']=={'ts_code':'000776.SZ'}
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"code": 0, "data": {"fields": ["trade_date", "adj_factor"], "items": [["20230301", 2.0]]}}
+
+    def post(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response()
+
+    monkeypatch.setattr(requests, "post", post)
+    frame = TushareProvider(_settings(), min_interval=0).query("adj_factor", ts_code="000776.SZ")
+    assert len(frame) == 1
+    assert calls[0][0] == "https://api.tushare.pro"
+    assert calls[0][1]["allow_redirects"] is False
+    assert calls[0][1]["json"]["params"] == {"ts_code": "000776.SZ"}
 
 
 def test_official_rejection_is_classified_without_exposing_credentials(monkeypatch):
     import requests
+
     class Response:
-        status_code=200
-        def raise_for_status(self):pass
-        def json(self):return {'code':-1,'msg':'权限不足 secret-provider-body'}
-    monkeypatch.setattr(requests,'post',lambda *args,**kwargs:Response())
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"code": -1, "msg": "权限不足 secret-provider-body"}
+
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: Response())
     with pytest.raises(TushareProviderError) as info:
-        TushareProvider(_settings(),min_interval=0).query('daily')
-    assert info.value.category=='access_denied'
-    assert 'secret' not in str(info.value)
+        TushareProvider(_settings(), min_interval=0).query("daily")
+    assert info.value.category == "access_denied"
+    assert "secret" not in str(info.value)
 
 
 def _daily_row(**overrides):
@@ -146,14 +162,10 @@ def test_query_injects_client_and_forwards_arguments():
     client = FakeClient([raw])
     provider = TushareProvider(_settings(), min_interval=0, client=client)
 
-    result = provider.query(
-        "daily", fields="ts_code,trade_date", ts_code="600000.SH"
-    )
+    result = provider.query("daily", fields="ts_code,trade_date", ts_code="600000.SH")
 
     assert result is raw
-    assert client.calls == [
-        ("daily", "ts_code,trade_date", {"ts_code": "600000.SH"})
-    ]
+    assert client.calls == [("daily", "ts_code,trade_date", {"ts_code": "600000.SH"})]
 
 
 def test_query_error_does_not_leak_token_or_parameters():
@@ -172,9 +184,7 @@ def test_query_error_does_not_leak_token_or_parameters():
 def test_query_retries_transient_errors(monkeypatch):
     sleeps = []
     monkeypatch.setattr("time.sleep", lambda seconds: sleeps.append(seconds))
-    client = FakeClient(
-        [TimeoutError("timeout"), Exception("请求异常"), pd.DataFrame({"ok": [1]})]
-    )
+    client = FakeClient([TimeoutError("timeout"), Exception("请求异常"), pd.DataFrame({"ok": [1]})])
     provider = TushareProvider(_settings(), min_interval=0, client=client)
 
     result = provider.query("daily")
@@ -364,6 +374,27 @@ def test_normalize_index_daily_uses_standard_shares_and_yuan():
     assert row["change"] == pytest.approx(0.015)
 
 
+def test_normalize_index_daily_sorts_official_descending_response():
+    raw = pd.DataFrame(
+        {
+            "ts_code": ["000300.SH", "000300.SH"],
+            "trade_date": ["20240103", "20240102"],
+            "open": [3001.0, 3000.0],
+            "high": [3011.0, 3010.0],
+            "low": [2991.0, 2990.0],
+            "close": [3006.0, 3005.0],
+            "pre_close": [3005.0, 2995.0],
+            "vol": [1000.0, 999.0],
+            "amount": [1235.0, 1234.5],
+            "pct_chg": [0.03, 0.33],
+        }
+    )
+
+    result = normalize_index_daily(raw)
+
+    assert result["date"].tolist() == [pd.Timestamp("2024-01-02"), pd.Timestamp("2024-01-03")]
+
+
 def test_normalize_daily_basic_preserves_missing_valuations():
     raw = pd.DataFrame(
         {
@@ -383,31 +414,33 @@ def test_normalize_daily_basic_preserves_missing_valuations():
 
 
 def test_normalize_daily_basic_tolerates_missing_valuation_columns():
-    raw = pd.DataFrame(
-        {"ts_code": ["600000.SH"], "trade_date": ["20240102"]}
-    )
+    raw = pd.DataFrame({"ts_code": ["600000.SH"], "trade_date": ["20240102"]})
     result = normalize_daily_basic(raw)
 
     assert list(result.columns) == ["instrument", "date", "pe_ttm", "pb", "total_mv"]
     assert result[["pe_ttm", "pb", "total_mv"]].isna().all().all()
+
+
 def test_rate_limit_retries_are_bounded_and_permission_errors_do_not_retry(monkeypatch):
-    from finance_quant.data.providers.tushare import TushareProvider, TushareSettings, TushareProviderError
+    from finance_quant.data.providers.tushare import TushareProvider, TushareProviderError, TushareSettings
+
     waits = []
-    monkeypatch.setattr('finance_quant.data.providers.tushare.time.sleep', waits.append)
+    monkeypatch.setattr("finance_quant.data.providers.tushare.time.sleep", waits.append)
 
     class Client:
         def __init__(self, message):
             self.message, self.calls = message, 0
+
         def query(self, *args, **kwargs):
             self.calls += 1
             raise Exception(self.message)
-    limited = Client('超过每分钟频率限制 secret-marker')
-    with pytest.raises(TushareProviderError) as exc:
-        TushareProvider(TushareSettings('secret-marker'), min_interval=0, client=limited).query('daily')
-    assert limited.calls == 3 and waits == [5, 10]
-    assert exc.value.category == 'rate_limit' and 'secret-marker' not in str(exc.value)
-    denied = Client('权限不足 secret-marker')
-    with pytest.raises(TushareProviderError) as exc:
-        TushareProvider(TushareSettings('secret-marker'), min_interval=0, client=denied).query('daily')
-    assert denied.calls == 1 and exc.value.category == 'access_denied'
 
+    limited = Client("超过每分钟频率限制 secret-marker")
+    with pytest.raises(TushareProviderError) as exc:
+        TushareProvider(TushareSettings("secret-marker"), min_interval=0, client=limited).query("daily")
+    assert limited.calls == 3 and waits == [5, 10]
+    assert exc.value.category == "rate_limit" and "secret-marker" not in str(exc.value)
+    denied = Client("权限不足 secret-marker")
+    with pytest.raises(TushareProviderError) as exc:
+        TushareProvider(TushareSettings("secret-marker"), min_interval=0, client=denied).query("daily")
+    assert denied.calls == 1 and exc.value.category == "access_denied"

@@ -17,16 +17,68 @@ dependencies = [
   "python-dotenv>=1,<2",
   "filelock>=3,<5",
   "baostock>=0.9.4,<0.10",
+  "sqlalchemy>=2,<3",
+  "psycopg[binary]>=3,<4",
+  "alembic>=1.14,<2",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "httpx>=0.27,<1"]
+dev = [
+  "pytest>=8,<10",
+  "httpx>=0.27,<1",
+  "ruff>=0.12,<1",
+  "mypy>=1.17,<2",
+]
 
 [project.scripts]
-finance-quant = "finance_quant.cli:main"
+finance-quant-server = "finance_quant.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/finance_quant"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.isort]
+known-third-party = ["alembic"]
+known-first-party = ["finance_quant", "support"]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/*.py" = ["E501"]
+"src/finance_quant/application/task_worker.py" = ["E402"]
+# Thread limits and the Windows WMI workaround must run before scientific imports.
+"tests/conftest.py" = ["E402"]
+"scripts/*.py" = ["E402"]
+"tests/*.py" = ["E731"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+follow_imports = "skip"
+check_untyped_defs = true
+no_implicit_optional = true
+warn_unused_ignores = true
+files = [
+  "src/finance_quant/api.py",
+  "src/finance_quant/server.py",
+  "src/finance_quant/storage.py",
+  "src/finance_quant/checksums.py",
+  "src/finance_quant/paths.py",
+  "src/finance_quant/provenance.py",
+  "src/finance_quant/application/experiment_tasks.py",
+  "src/finance_quant/application/tasks.py",
+  "src/finance_quant/application/task_worker.py",
+  "src/finance_quant/integrations/qlib_runner.py",
+  "src/finance_quant/integrations/qlib_runtime.py",
+  "src/finance_quant/integrations/qlib_results.py",
+  "src/finance_quant/integrations/recording_strategy.py",
+  "src/finance_quant/web",
+  "src/finance_quant/persistence",
+]

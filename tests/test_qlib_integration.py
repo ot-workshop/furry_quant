@@ -1,10 +1,9 @@
 import math
 
-import pandas as pd
 import pytest
 
-from finance_quant.integrations.qlib_demo import INITIAL_CASH, execute_qlib
-from finance_quant.sample import sample_factors, sample_prices
+from support.synthetic import sample_factors, sample_prices
+from support.synthetic_qlib import INITIAL_CASH, execute_qlib
 
 
 def test_qlib_fills_next_open_and_account_reconciles(tmp_path):
@@ -15,8 +14,14 @@ def test_qlib_fills_next_open_and_account_reconciles(tmp_path):
     assert result["trades"]
     first_day = min(fill["date"] for fill in result["trades"])
     assert first_day == "2025-01-07"
-    initial_scores = sorted([row for row in factors["history"] if row["date"] == "2025-01-06"], key=lambda row: row["composite"], reverse=True)
-    assert {fill["instrument"] for fill in result["trades"] if fill["date"] == first_day} == {row["instrument"] for row in initial_scores[:2]}
+    initial_scores = sorted(
+        [row for row in factors["history"] if row["date"] == "2025-01-06"],
+        key=lambda row: row["composite"],
+        reverse=True,
+    )
+    assert {fill["instrument"] for fill in result["trades"] if fill["date"] == first_day} == {
+        row["instrument"] for row in initial_scores[:2]
+    }
     cash = INITIAL_CASH
     amounts = {}
     for point in result["equity"][1:]:
@@ -30,7 +35,10 @@ def test_qlib_fills_next_open_and_account_reconciles(tmp_path):
             assert fill["amount"] % 100 == pytest.approx(0)
         assert cash >= -1e-6
         assert point["cash"] == pytest.approx(cash)
-        market_value = sum(amount * prices.loc[(prices["date"] == day) & (prices["instrument"] == symbol), "close"].iloc[0] for symbol, amount in amounts.items())
+        market_value = sum(
+            amount * prices.loc[(prices["date"] == day) & (prices["instrument"] == symbol), "close"].iloc[0]
+            for symbol, amount in amounts.items()
+        )
         assert point["account_value"] == pytest.approx(cash + market_value, rel=1e-6)
         assert point["equity"] == pytest.approx(point["account_value"] / INITIAL_CASH)
     assert result["summary"]["metrics"]["total_return"] == pytest.approx(result["equity"][-1]["equity"] - 1)
@@ -56,7 +64,10 @@ def test_buy_and_hold_matches_hand_calculation_and_signal_lag(tmp_path):
             row["composite"] = 100 if row["instrument"] == "SZ000001" else 0
     altered = execute_qlib(prices, factors, tmp_path / "lag", topk=1, open_cost=0, close_cost=0, min_cost=5)
     assert [trade for trade in altered["trades"] if trade["date"] <= "2025-01-10"] == result["trades"]
-    assert any(trade["date"] == "2025-01-13" and trade["instrument"] == "SZ000001" and trade["side"] == "buy" for trade in altered["trades"])
+    assert any(
+        trade["date"] == "2025-01-13" and trade["instrument"] == "SZ000001" and trade["side"] == "buy"
+        for trade in altered["trades"]
+    )
 
 
 def test_current_day_close_cannot_change_opening_fills(tmp_path):

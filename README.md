@@ -1,342 +1,291 @@
-# 量化研究工作台
+# Finance Quant Research Workbench
 
-一个在本机运行的 A 股日线研究工具：下载和校验行情，在网页选择股票池、因子、窗口和权重，由 Qlib 执行回测，再查看评分、净值、持仓、成交和因子评估。
+面向 A 股日线研究的因子分析与回测工作台。项目使用官方 Tushare 管理行情和参考数据，以 PostgreSQL 保存数据版本、任务及结果，由独立 worker 调用 Qlib 完成因子计算、组合回测和因子评估，并通过 React 网页展示研究配置与结果。
 
-后端使用 Python、FastAPI 和 Qlib，前端使用 React、TypeScript 和 ECharts，数据保存为本地 Parquet 文件与 SQLite 元数据。使用官方 Tushare 获取主数据，BaoStock 用于串行辅助核验和异常补缺。项目用于研究，不连接券商下单。
+项目用于研究，不连接券商交易接口，也不承诺历史收益能够在实盘复现。
 
-本文按首次使用的顺序说明操作。所有命令均在 **Windows PowerShell、项目根目录**执行；示例目录为 `D:\codes\py\new-finance-quant`，请替换成自己的路径。
+## 功能
 
-## 1. 安装环境
+- 管理自选股票、沪深300历史成分股和共享全市场行情。
+- 按研究区间自动计算预热范围，支持增量更新和不可变数据集快照。
+- 提供动量、反转、波动、估值、流动性、回撤和市值等可配置因子。
+- 支持历史行业诊断与可选的因子行业中性化。
+- 支持日、周、月调仓，以及佣金、最低佣金、印花税、过户费和冲击成本。
+- 模拟停牌、涨跌停、整手、板块交易规则和动态成分股退出。
+- 支持价格指数与全收益指数基准。
+- 展示净值、回撤、风险指标、成交、持仓、费用、行业暴露和 IC/IR。
+- 为每次研究保存配置、数据版本、输入哈希和结果文件关系。
+- 支持 PostgreSQL 与研究输入/结果文件的一致性备份和恢复。
 
-准备以下工具：
+## 技术栈
 
-| 工具 | 用途与选择 |
-| --- | --- |
-| Python 3.12 | 运行后端；可由下方 uv 命令安装，无需修改系统 Python 或 Conda 环境 |
-| uv | 安装 Python、创建项目虚拟环境、按锁文件安装依赖 |
-| Node.js 和 npm | 构建前端；可使用 Node.js 22 LTS，安装包包含 npm |
-| 官方 Tushare Token | 下载真实数据时需要；只体验合成样本时可跳过 |
+- Python 3.12、FastAPI、Pandas、PyArrow、Qlib
+- PostgreSQL 18、SQLAlchemy、Alembic
+- React 19、TypeScript、Vite、Ant Design、ECharts
+- Docker Compose（仅生产运行）
+- GitHub Actions、GitHub Container Registry（私有镜像构建）
 
-从 [Node.js 官方下载页](https://nodejs.org/en/download)安装 Node.js。uv 可按[官方安装说明](https://docs.astral.sh/uv/getting-started/installation/)安装；Windows 有 WinGet 时可执行：
+## 架构
 
-```powershell
-winget install --id=astral-sh.uv -e
+```text
+Browser
+   │
+   ▼
+FastAPI ─────────────── PostgreSQL
+   │                         │
+   └── submit/query          ├── market facts and releases
+                             ├── task queue
+Worker ── Qlib subprocess    └── result metadata
+   │
+   └── storage/
+       ├── datasets/   immutable research inputs
+       ├── runs/       parquet details and reports
+       ├── raw/        provider responses
+       └── logs/       task process logs
 ```
 
-安装后重新打开 PowerShell，检查命令可用：
+API 只提交和查询任务。单 worker 从 PostgreSQL 队列领取任务，并用 advisory lock 保证同一部署只有一个有效消费者。Qlib 读取冻结后的研究输入，不在逐日回测循环中查询正在变化的市场数据库。
+
+详细设计见 [系统架构](docs/architecture.md)。
+
+## 本地开发
+
+本地开发不使用 Docker。需要安装：
+
+- Python 3.12
+- [uv](https://docs.astral.sh/uv/)
+- Node.js 22
+- PostgreSQL 18
+
+### 1. 安装依赖
 
 ```powershell
-uv --version
-node --version
-npm.cmd --version
-```
-
-将项目克隆或解压到本地，然后进入项目根目录，安装后端依赖并构建前端：
-
-```powershell
-Set-Location D:\codes\py\new-finance-quant
-uv python install 3.12
 uv sync --locked --extra dev
 npm.cmd --prefix frontend ci --no-audit --no-fund
-npm.cmd --prefix frontend run build
 ```
 
-执行成功后，应有 `.venv\Scripts\python.exe` 和 `frontend\dist\index.html`。首次安装需要联网；以后正常启动无需重复安装和构建。本文直接调用虚拟环境中的 Python，不需要先激活 `.venv`。
+### 2. 创建开发数据库
 
-## 2. 配置数据源
+使用 PostgreSQL 管理账户执行：
 
-首次使用时，把模板复制为项目根目录的 `.env`。下面的命令会保留已有配置：
+```sql
+CREATE ROLE quant_dev WITH LOGIN PASSWORD '请设置独立开发密码';
+CREATE DATABASE finance_quant_dev OWNER quant_dev;
+```
+
+复制开发环境模板：
 
 ```powershell
-if (-not (Test-Path -LiteralPath .env)) {
-    Copy-Item -LiteralPath .env.example -Destination .env
-}
-notepad .env
+Copy-Item .env.development.example .env.development
 ```
 
-填写自己的官方 Token，保存文件：
+填写 `POSTGRES_PASSWORD` 和 `TUSHARE_TOKEN`。开发数据库、`storage-dev/` 和生产环境必须相互独立。
 
-```dotenv
-TUSHARE_TOKEN=替换为你的官方TushareToken
-TUSHARE_HTTP_URL=https://api.tushare.pro
-```
-
-Token 仅供后端读取，不填到网页、源码或研究配置中。`.env` 已被 Git 忽略。进程环境变量优先于 `.env`；如果以前设置过同名环境变量，需要一并检查，避免仍使用旧凭据。更改配置后重启服务。
-
-共享行情入口使用官方 Tushare，BaoStock 不需要单独填写 Token，调用由程序串行管理。能否获取某类数据取决于账户实际接口权限；遇到权限错误，应按失败明细确认接口，而不是关闭数据校验。
-
-## 3. 启动网页
-
-首次使用建议显式指定随项目提供的配置，使数据和结果位置固定：
+执行迁移：
 
 ```powershell
-.\start.ps1 -Config configs\research.joint.json
+$env:FINANCE_QUANT_ENV_FILE = ".env.development"
+uv run alembic upgrade head
+Remove-Item Env:FINANCE_QUANT_ENV_FILE
 ```
 
-该命令选择 `data/managed-joint/` 作为行情根目录、`runs/` 作为结果目录。**这里只启动网页，不会自动下载配置中的股票，也不会先运行回测。** 股票、日期和因子随后在网页填写。
+### 3. 启动开发服务
 
-看到 `Application startup complete` 和 `Uvicorn running on http://127.0.0.1:8000` 后，打开：
-
-- 工作台：<http://127.0.0.1:8000>
-- API 文档：<http://127.0.0.1:8000/docs>
-
-保持终端运行，按 `Ctrl+C` 停止服务。首次打开没有数据或回测结果是正常情况，继续下一节下载数据。
-
-日常使用可以重复上述启动命令。已有环境也可运行 `.\start.ps1`：脚本优先采用 `runs/active-research.json`，再按本地数据情况选择目录。若使用不同配置后看不到原数据，先检查启动时选用的目录。
-
-只想体验界面、不配置 Token 时，在停止原服务后运行：
+后端 API：
 
 ```powershell
-.\start.ps1 -Demo
+uv run python -m finance_quant.server api --env-file .env.development --reload --host 127.0.0.1 --port 8000
 ```
 
-`-Demo` 会先生成合成样本再启动服务。样本结果带有明确标识，不代表真实行情；体验后停止服务，再按上面的 `-Config` 命令进入真实数据流程。
-
-## 4. 下载第一份数据
-
-先用少量股票和短区间走通流程，再扩大范围。以下股票和参数仅用于演示操作。
-
-进入 **数据管理 → 共享行情与增量更新**，填写：
-
-| 网页字段 | 示例 |
-| --- | --- |
-| 下载范围 | 自选股票 |
-| 范围开始日期 | `2025-03-03` |
-| 范围结束日期 | `2025-05-30` |
-| 此前预热交易日 | `21` |
-| 限定股票代码 | `600000.SH, 000001.SZ, 600519.SH, 600036.SH, 000858.SZ` |
-
-这里的起止日期是希望覆盖的研究区间。程序会按交易日历向前追加填写的预热日数，实际下载起点会早于范围开始日期。此示例的 21 日用于下一节的 20 日动量和 10 日波动率；更长窗口需要更多预热。
-
-1. 点击 **预览覆盖与增量方案**。
-2. 核对实际日期、包含预热的数据起点、股票数、可复用行数、缺口和预计请求数。可展开“查看各股缺口”。预览可能联网获取日历、证券、成分和基准参考数据，但尚不下载股票行情。
-3. 点击 **确认方案并下载 / 更新**。
-4. 等待后台任务完成，在“已发布版本”记录版本编号及研究快照编号。
-
-修改范围、日期、代码或预热后，需要重新预览。下载过程中可暂停，之后点击“续传此计划”；成功数据会保留。出现“部分完成，待复核”时，展开任务查看具体股票和原因，不把未完成版本当作完整数据使用。
-
-下载来源分为“单源检查通过”“双源核验通过”“补缺通过”，含义不同。单源检查表示内部一致性检查通过，不表示已由另一个供应商确认。
-
-### 预热日期怎样设置
-
-预热数据用来计算回测第一天之前的因子信号，不计入回测收益区间。不要把数据开始日期和回测开始日期设为同一天。
-
-- 共享行情下载面板按你填写的预热日数准备数据，不会自动读取研究表单的因子。
-- 在“新建研究”修改因子窗口后，查看页面的历史需求提示。如果不足，回到数据管理补足历史，或明确延后回测起点。
-- 若希望直接按因子窗口自动规划，可以使用“新建研究 → 下载新股票池”：先选因子和回测日期，保留“按回测日期与因子窗口自动计算下载区间”，预览后点击“确认下载并运行”。这是另一条研究下载流程，沿用该入口的校验模式；跨股票池共享与增量维护优先使用数据管理入口。
-
-例如，默认 126 日中期动量需要更长历史；成交额异动还需要近期窗口与此前基准窗口。不要一律把预热设为 20 日或一个自然月。详细规则见[预热日期说明](docs/warmup-validation.md)。
-
-## 5. 配置并运行第一次回测
-
-进入 **新建研究**，选择“使用已有数据”，在“数据快照”中找到上一节发布的共享快照，勾选这五只股票。若刚完成下载还看不到，刷新页面后重新选择。
-
-按以下示例填写：
-
-| 设置 | 示例值 |
-| --- | --- |
-| 研究名称 | 第一份五股研究 |
-| 因子 | 动量：窗口20、权重40%；盈利收益率：权重30%；波动率：窗口10、权重30% |
-| 其他因子 | 暂不启用 |
-| 行业中性化 | 关闭 |
-| 回测起止日期 | `2025-03-03` 至 `2025-05-30` |
-| 目标持股数量 | `3` |
-| 初始资金 | `100000` 元 |
-| 调仓频率 | 每周 |
-| 评价基准 | 沿用数据集原基准 |
-
-因子权重合计须为 100%，也可使用“等权分配”。窗口按交易日计算；同一因子可以配置不同窗口，各实例分别设置权重。可选指标包括动量、盈利收益率、波动率、账面价值收益率、小市值、短期反转、中期动量、下行波动率、滚动最大回撤和成交额异动，公式见[因子说明](docs/factor-library.md)。
-
-展开 **高级设置**，确认仓位、换仓数量和费用。用于熟悉表单的一组填写示例是：
-
-| 字段 | 示例值及含义 |
-| --- | --- |
-| 仓位比例 | `90`%，剩余资金作为现金 |
-| 每次换仓数量 | `1`，影响每次调仓的排名轮换 |
-| 费用模式 | 分项：佣金、印花税、过户费 |
-| 券商综合佣金 | `0.03`%，即万分之三 |
-| 最低单笔佣金 | `5` 元 |
-| 税费模式 | 按成交日历史费率 |
-| 双边冲击成本 | `0.01`%，作为示例压力参数 |
-
-**网页费率输入单位为百分数。** 输入 `0.03` 表示 `0.03%`；CLI JSON 中同一费率用小数 `0.0003`。分项模式下，佣金、印花税、过户费及冲击成本分别计算；旧版综合费率模式不再额外叠加佣金和税费。示例费用不是对你的券商收费或真实冲击成本的认定，使用时按自己的研究假设填写。
-
-周度调仓在区间首日建仓，随后每周首个交易日提供换仓机会；月度同理。净值每天计算。调仓不保证每次都成交或始终持满目标数量，现金、整手、停牌和涨跌停等规则仍会限制交易。“诊断持有期”只用于因子评估，不是调仓频率。详见[调仓与费用说明](docs/rebalance-and-costs.md)。
-
-确认页面没有校验错误后，点击 **创建研究任务**。任务会依次准备数据、计算因子、运行回测和进行因子评估。可以关闭浏览器再回来查看，但应保持后台服务运行；排队任务可取消，运行中的研究任务没有暂停续算按钮。
-
-## 6. 查看结果，修改参数后再运行
-
-从完成的研究任务卡片打开结果，确保看到的是这次任务对应的批次：
-
-| 入口 | 查看什么 |
-| --- | --- |
-| 查看评分 | 各股原始因子值、百分位、权重贡献、综合分、覆盖与缺失原因；可切换股票和日期 |
-| 查看回测 | 策略与基准净值、年度收益、波动率、夏普、最大回撤、换手、费用、持仓和成交 |
-| 查看因子评估 | IC／Rank IC、分组收益、因子相关性、覆盖情况及报告下载 |
-| 再用此配置 | 将原任务参数填回表单，修改后提交新任务 |
-| 下载 JSON 配置 | 保存这次网页请求参数；该文件不能直接作为 CLI 的 `--config` 文件 |
-
-数据到结果的关系是：**固定数据版本 → 按当日股票池计算因子 → 按方向计算百分位 → 加权综合评分 → Qlib按交易规则执行 → 保存结果与参数**。默认以此前交易日的评分决定下一交易日开盘交易。评分是股票池内的相对排名，不是上涨概率；更换股票池后需要重新计算。
-
-比较配置时，可先固定数据版本、股票池、日期与费用，每次只改变一个设置，例如动量窗口从20改为60。修改后检查任务卡片里的“运行参数”，再打开该任务结果。新任务不会覆盖旧结果；相同输入可能复用已有计算产物。
-
-### 选择全收益基准
-
-在“回测基础 → 评价基准”选择 **沪深300全收益指数**。它计入分红再投资，与价格指数的口径不同。需要的官方基准区间未缓存时，后台会联网补取。
-
-只切换评价基准时，策略成交、持仓和净值保持同一执行结果，重新计算基准及相对绩效。不要把列表中同一策略执行的不同基准视图当成两次独立策略实验。详见[基准说明](docs/total-return-benchmark.md)。
-
-### 开启行业中性化
-
-先准备历史行业数据。在项目根目录执行下方命令，它会联网下载并归档官方历史行业资料：
+任务 worker：
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 scripts\check_official_industries.py
+uv run python -m finance_quant.server worker --env-file .env.development
 ```
 
-完成后刷新“新建研究”，开启“按当日历史申万一级行业”中性化，确认所选版本覆盖研究日期，再提交任务。股票页可查看处理前后明细，回测页可查看持仓行业暴露。
-
-行业中性化去除因子中的行业平均差异，不保证收益提高，也不限制最终持仓的行业权重。需要刷新官方行业资料时，上述命令可加 `--refresh`，会保存新版本；旧任务仍绑定原版本。详见[行业中性化说明](docs/industry-neutralization.md)。
-
-## 7. 扩大股票池与日常更新
-
-### 使用沪深300历史成分
-
-1. 在“数据管理 → 共享行情与增量更新”选择“沪深300历史成分”。
-2. 设置研究区间和所需预热，**限定代码留空**，预览并确认下载。
-3. 完整版本发布后，在“新建研究”选择“沪深300历史成分股”，再选择对应的“历史成分数据版本”。
-4. 设置因子、回测日期和交易参数，提交研究任务。
-
-该模式按历史成员变化计算排名；调入前行情只用于预热，调出持仓会尝试退出，受阻时保留记录并重试。不要用今天的成分名单回测全部历史。下载面板填写限定代码得到的是子集，不会发布为完整沪深300动态研究版本。
-
-### 使用全市场或更大的自选范围
-
-在同一面板选择“全市场（沪深A股，含历史退市股）”，填写日期；限定代码留空表示全部，填写则仅处理子集。先检查预览中的缺口和请求量，再确认下载。
-
-沪深300、全市场和自选范围共用已有行情，重叠部分可复用。全市场归档不等于能够直接执行全市场选股回测：最多50只、全区间完整且固定池交易规则支持的版本才会提供固定池研究快照；完整沪深300版本走动态研究入口。固定池支持沪深主板与创业板，历史沪深300模式另支持科创板；北交所、B股、ETF不在这些回测入口的支持范围。
-
-### 增量更新已有范围
-
-再次选择相同范围和起点，将结束日期延长到已完成行情的日期，重新预览并确认。程序复用已核验数据，补抓缺口，必要时多取相邻日期检查价格和复权连续性，再发布新版本。
-
-在新研究中选择新版本；旧任务继续使用旧版本。共享更新是手动触发的，重复点击旧计划的“续传”只会完成原计划，不会自动把日期延长到今天。已有历史数值也不会因为补新日期而自动刷新为供应商的更正值。
-
-沪深300旧仓库的“开始／续传”入口用于旧计划恢复；配置新范围或新结束日期，请使用“共享行情与增量更新”。详细机制见[共享行情说明](docs/shared-market-data.md)。
-
-## 8. 数据在哪里，哪些文件需要保留
-
-使用本文的 `-Config configs\research.joint.json` 启动时，主要目录如下。换配置后，行情根目录和结果目录也可能不同。
-
-| 路径 | 内容 |
-| --- | --- |
-| `.env` | 本机数据源凭据 |
-| `configs/` | CLI研究配置和实验模板 |
-| `data/managed-joint/` | 原始响应、行情快照、校验记录和下载元数据 |
-| `data/managed-joint/shared-market/` | 共享行情目录、下载计划、增量捕获及版本清单 |
-| `data/managed-joint/research/downloads/` | 网页研究下载和共享版本生成的小股票池快照 |
-| `data/warehouse/csi300-2020/` | 旧沪深300历史仓库；共享目录可能引用这里的原文件 |
-| `data/industries/official-tushare/` | 历史行业原始资料和版本 |
-| `data/benchmarks/official-tushare/` | 独立价格／全收益基准版本 |
-| `runs/tasks/catalog.sqlite3` | 网页研究任务、配置、状态及结果引用 |
-| `runs/factors/`、`runs/backtests/`、`runs/evaluations/` | 因子、回测、评估的结果及明细 |
-| `runs/experiments/` | 分段实验计划、选择记录和结果引用 |
-
-**Git不包含 `data/`、`runs/` 和 `.env`。** 复制代码到另一台机器不会带上行情、Token或旧回测。保留整个数据目录和结果目录，不能只留下 `result.json` 或版本清单；它们可能引用其他Parquet、原始仓库或版本文件。备份时先等待任务结束并停止服务与下载进程，将数据、结果及所用配置一起备份，凭据单独妥善保存。移动到不同路径后还需核对路径引用，不能假定只复制一个子目录就能复现。
-
-## 9. 常见问题
-
-| 现象 | 处理方式 |
-| --- | --- |
-| 找不到 `uv` 或 `npm.cmd` | 完成工具安装后重开PowerShell，重新检查版本；确认已进入项目根目录 |
-| 缺少 `.venv` 或前端构建文件 | 重新执行第1节的依赖安装和构建命令，确认命令成功结束 |
-| PowerShell提示禁止运行脚本 | 可绕过启动脚本，直接执行下方的Python服务命令，不必修改全局执行策略 |
-| 启动后终端一直不退出 | 服务运行时会持续占用终端；看到启动完成后打开浏览器。普通启动不会先计算回测 |
-| 8000端口被占用 | 使用已有服务，或停止它后重启；确需换端口可加 `-Port 8001`。同一结果目录只允许一个调度器执行任务 |
-| 网页没有快照或下载后找不到数据 | 检查任务是否成功发布研究快照、范围是否支持回测，以及服务的数据根目录是否一致；刷新后重新选择 |
-| 提示历史预热不足 | 按因子需求补充更早的数据，或延后回测起点；日历天数不能替代交易日数 |
-| 提示有效评分股票不足 | 展开明细核对具体因子、日期和缺失原因；停牌、非正PE/PB、过长窗口都可能影响有效交集，不能将缺失填0 |
-| 提示权限、限频或网络错误 | 检查失败接口和本机Token配置；下载预算用尽时等待额度恢复后续传，保留已完成缓存 |
-| 提示复权或两源冲突 | 查看股票和日期明细，保留原始响应与隔离数据；不要手工改复权值或绕过检查来发布 |
-| 服务重启后研究任务显示中断 | “再用此配置”重新提交；已下载数据可复用。研究重新运行与下载计划续传是不同操作 |
-| 修改前端源码后页面没变 | 重新构建前端并刷新浏览器；修改Python代码后在任务结束时重启服务 |
-| 行业中性化不能开启或日期越界 | 下载／刷新历史行业数据，选择覆盖研究日期的版本，不用最新分类直接填补未知历史 |
-
-直接启动Python服务的等价命令：
-
-```powershell
-.\.venv\Scripts\python.exe -X utf8 -m finance_quant.cli serve --config configs\research.joint.json --port 8000
-```
-
-解释回测结果时，请查看结果页的“数据时点与成交边界”：历史成分采用月度快照次日生效约定，行业及PE/PB的历史首次公开和修订时点没有完整认证；日线开盘成交不能复刻盘中排队。冲击成本是比例扣费假设，复权等效持股也不等于券商逐笔分红到账和退市清算。相关口径见[时间与成交说明](docs/temporal-execution-audit.md)。
-
-## 10. 开发与命令行使用
-
-普通使用按前面的网页流程即可。本节用于修改项目或编写可复用CLI配置。
-
-### 本地开发与检查
-
-后端仍按第3节运行在8000端口；在另一个终端启动前端开发服务：
+前端开发服务器：
 
 ```powershell
 npm.cmd --prefix frontend run dev
 ```
 
-访问终端显示的5173端口地址。开发服务将 `/api` 代理到 `http://127.0.0.1:8000`；更换后端端口时，需要同步修改 `frontend/vite.config.ts` 的代理目标。
+打开 <http://127.0.0.1:5173>。Vite 将 `/api` 请求代理到 `127.0.0.1:8000`。
 
-运行测试和生产构建：
+### 4. 本地检查
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -c "from finance_quant.runtime import configure_runtime; configure_runtime(); import pytest; raise SystemExit(pytest.main(['-q']))"
+uv run pytest -q
 npm.cmd --prefix frontend test
 npm.cmd --prefix frontend run build
 ```
 
-Python测试命令先启用与正式CLI相同的运行环境兼容处理，再加载科学计算依赖。安装依赖后也可直接运行单项测试。大型回测与完整测试尽量分开运行，避免相互争用内存。
+真实 Tushare 下载不属于默认单元测试。进行真实数据验证时使用单独的开发数据库和短日期、小股票池配置。
 
-更新项目依赖或重新部署代码后，按锁文件同步环境并重新构建：
+## 私有镜像构建
 
-```powershell
-uv sync --locked --extra dev
-npm.cmd --prefix frontend ci --no-audit --no-fund
-npm.cmd --prefix frontend run build
+`.github/workflows/docker.yml` 在以下情况构建 `linux/amd64` 镜像并推送到私有 GHCR：
+
+- 推送到 `main`
+- 推送 `v*` 标签
+- 在 GitHub Actions 手动触发
+
+镜像名称：
+
+```text
+ghcr.io/quqionfree/my_quant_project
 ```
 
-### CLI配置流程
+镜像标签包括不可变提交标签 `sha-<commit>`、Git 标签和手动构建编号。正式部署应使用 `sha-*` 标签或工作流输出的镜像 digest，不依赖浮动的 `main` 标签。
 
-在 `configs/` 中复制 `research.joint.json` 为自己的配置，修改股票、数据日期、回测日期、因子和费用。JSON里的路径相对于配置文件所在目录解析，百分比参数使用小数；使用 `--config` 时不要再混用同类命令行覆盖参数。
+工作流只使用 GitHub 自动生成的 `GITHUB_TOKEN` 写入 GHCR，不保存服务器地址、SSH 密钥、Tushare Token 或数据库密码。完整测试可通过 `.github/workflows/full-tests.yml` 在 Pull Request 或手动触发时运行。
 
-以下以随项目提供的配置为例，`download` 会联网下载其中声明的完整区间，请先检查配置和计划再执行：
+## Linux 部署
 
-```powershell
-.\.venv\Scripts\python.exe -X utf8 -m finance_quant.cli plan --config configs\research.joint.json
-.\.venv\Scripts\python.exe -X utf8 -m finance_quant.cli download --config configs\research.joint.json
-.\.venv\Scripts\python.exe -X utf8 -m finance_quant.cli status --config configs\research.joint.json
-.\.venv\Scripts\python.exe -X utf8 -m finance_quant.cli real --config configs\research.joint.json
-.\.venv\Scripts\python.exe -X utf8 -m finance_quant.cli evaluate --config configs\research.joint.json
-```
+服务器只需要 Docker Engine、Docker Compose v2、`docker-compose.yaml` 和 `.env`，不需要 Git、Node.js 或 Python 开发环境。
 
-`plan`只按配置估算请求，不访问供应商，也不等同于网页共享覆盖预览。`real`从已有快照运行回测，`evaluate`计算因子诊断；数据不足时需要先下载，不会自动补造。选择独立评价基准时，如果缺少对应基准缓存，基准评价步骤会联网补取。
+### 1. 准备部署目录
 
-网页“方案比较”用于查看分段实验结果。创建实验需先编辑CLI研究配置和实验计划，再运行：
+从本地仓库复制不含凭据的 Compose 和环境模板：
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m finance_quant.cli experiment --config configs\research.joint.json --plan configs\experiment.historical.json
+scp docker-compose.yaml 用户名@服务器:~/finance-quant/
+scp .env.example 用户名@服务器:~/finance-quant/
 ```
 
-分段实验的输入、区间与选择规则见[方案比较使用说明](docs/historical-experiments.md)。不要把已经反复看过并据此调参的区间称作未见测试集。
+服务器上执行：
 
-### 代码入口
+```sh
+cd ~/finance-quant
+cp .env.example .env
+chmod 600 .env
+mkdir -p storage backups
+```
 
-| 目录／文件 | 职责 |
-| --- | --- |
-| `frontend/src/pages/`、`frontend/src/components/` | 网页表单、任务状态、评分与回测展示 |
-| `src/finance_quant/api.py`、`research_api.py` | 结果查询、研究及下载任务接口 |
-| `src/finance_quant/application/` | 下载、因子、回测、评估及后台任务编排 |
-| `src/finance_quant/data/` | 数据源适配、共享行情、历史成分、行业、基准与质量检查 |
-| `src/finance_quant/research/` | 因子定义、评分、中性化与评估 |
-| `src/finance_quant/integrations/` | Qlib数据导出、策略和交易规则适配 |
-| `tests/`、`frontend/tests/` | 后端与前端测试 |
-| `docs/` | 各功能的操作说明、公式和数据边界 |
+在 `.env` 中填写：
 
-新增因子时从 `research/factor_library.py` 的统一定义开始，同时核对输入字段、方向、窗口、预热和缺失规则；不要只往网页添加一个名称。更完整的设计说明见[项目架构](docs/architecture-plan.md)。
+```dotenv
+APP_IMAGE=ghcr.io/quqionfree/my_quant_project:sha-实际提交号
+TUSHARE_TOKEN=官方TushareToken
+POSTGRES_PASSWORD=独立强密码
+STORAGE_ROOT=/home/用户名/finance-quant-data/storage
+BACKUP_ROOT=/home/用户名/finance-quant-data/backups
+```
+
+### 2. 登录私有 GHCR
+
+GitHub Container Registry 当前要求服务器使用 classic personal access token 拉取私有镜像。Token 只授予 `read:packages`，对应账户需要拥有仓库读取权限。
+
+```sh
+read -s GHCR_TOKEN
+echo "$GHCR_TOKEN" | docker login ghcr.io -u GitHub用户名 --password-stdin
+unset GHCR_TOKEN
+```
+
+不要把 GHCR Token 写入项目 `.env`。
+
+### 3. 首次启动
+
+```sh
+docker compose --env-file .env -f docker-compose.yaml config
+docker compose --env-file .env -f docker-compose.yaml pull
+docker compose --env-file .env -f docker-compose.yaml up -d db
+docker compose --env-file .env -f docker-compose.yaml run --rm migrate
+docker compose --env-file .env -f docker-compose.yaml up -d api worker
+```
+
+检查状态：
+
+```sh
+docker compose --env-file .env -f docker-compose.yaml ps
+docker compose --env-file .env -f docker-compose.yaml logs --tail=100 api worker
+wget -qO- http://127.0.0.1:8000/api/v1/health
+```
+
+API 只绑定服务器的 `127.0.0.1:8000`。在 Windows 建立 SSH 隧道：
+
+```powershell
+ssh -N -L 8000:127.0.0.1:8000 用户名@服务器地址
+```
+
+然后打开 <http://127.0.0.1:8000>。
+
+### 4. 更新版本
+
+先确认网页中没有排队或运行中的任务，修改 `.env` 的 `APP_IMAGE`，再逐项执行：
+
+```sh
+docker compose --env-file .env -f docker-compose.yaml pull
+docker compose --env-file .env -f docker-compose.yaml stop -t 90 worker api
+docker compose --env-file .env -f docker-compose.yaml run --rm migrate
+docker compose --env-file .env -f docker-compose.yaml up -d api worker
+docker compose --env-file .env -f docker-compose.yaml ps
+docker compose --env-file .env -f docker-compose.yaml logs --tail=100 api worker
+```
+
+PostgreSQL 不需要停止。不要执行 `docker compose down -v`，它会删除数据库 volume。
+
+### 5. 回滚镜像
+
+把 `APP_IMAGE` 改回之前验证过的 tag 或 digest，然后重新执行 `pull` 和 `up -d api worker`。数据库迁移不一定可逆，因此结构变更应保持至少一个旧应用版本兼容；破坏性迁移前必须备份。
+
+完整操作见 [Linux 运维](docs/operations.md)。
+
+## 使用流程
+
+1. 在“数据管理 → 行情下载”选择自选股、沪深300历史成分股或全市场范围，设置区间与预热交易日，预览后确认下载。不超过 50 只且覆盖完整的版本会自动生成研究数据集。
+2. 在“新建研究”选择数据集与股票池、因子与权重、回测区间、调仓频率和交易成本；右侧摘要实时显示校验问题和最早可回测日期。
+3. 提交后在“任务中心”查看进度；worker 依次完成因子、回测和评估。
+4. 在“回测”“因子评分”“因子评估”查看净值、风险指标、持仓、成交、费用、行业暴露和 IC。
+5. 需要在多个因子方案之间做选择时，使用“方案比较”：按开发、验证、测试三段运行，只按验证段选方案，测试段只复核选中的方案。
+
+检查 Tushare 权限：`uv run python scripts/probe_tushare.py --date 20250930`。
+
+历史成分、行业和估值使用各自记录的可用时间规则。供应商无法证明严格历史可得时间的数据不会被标记为严格 PIT 认证。详细边界见 [历史时点审计](docs/temporal-execution-audit.md)。
+
+## 数据与结果
+
+PostgreSQL 保存市场事实、更新记录、数据发布、研究任务和结构化结果。`STORAGE_ROOT` 保存：
+
+- `raw/`：供应商原始响应。
+- `datasets/`：内容寻址的不可变研究输入。
+- `runs/`：持仓、因子明细、标签和报告。
+- `cache/`：可重建的 Qlib 缓存。
+- `logs/`：worker 子进程日志。
+
+每个研究结果都关联 `dataset_id`。大型 Parquet 文件在 PostgreSQL 登记相对路径、行数和 SHA-256，避免当前数据更新悄悄改变旧回测。
+
+## 备份与恢复
+
+没有排队或运行中的任务时：
+
+```sh
+sh scripts/backup.sh
+```
+
+备份包含 PostgreSQL dump、被研究结果实际引用的数据集和结果文件，以及 SHA-256 清单。Docker volume 负责持久化，但不能代替备份。
+
+恢复目标必须使用空数据库和不含同名文件的 storage：
+
+```sh
+sh scripts/restore.sh /path/to/backup-directory
+```
+
+## 文档
+
+- [系统架构](docs/architecture.md)
+- [Linux 运维](docs/operations.md)
+- [因子库](docs/factor-library.md)
+- [调仓与交易成本](docs/rebalance-and-costs.md)
+- [历史时点审计](docs/temporal-execution-audit.md)
+- [行业中性化](docs/industry-neutralization.md)
+- [全收益基准](docs/total-return-benchmark.md)
+- [共享市场数据](docs/shared-market-data.md)
+- [预热与日期校验](docs/warmup-validation.md)
+
+## 安全边界
+
+- `.env`、`.env.development`、Token、密码、数据和结果不得提交到 Git。
+- GitHub Actions 镜像构建不使用真实数据源凭据。
+- 私有 GHCR 拉取 Token 只授予 `read:packages`。
+- PostgreSQL 不发布宿主机端口，API 只监听服务器回环地址。
+- 项目不提供实盘下单功能。

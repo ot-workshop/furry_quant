@@ -1,18 +1,15 @@
-import copy
-import json
-
 import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from finance_quant.api import create_app
 from finance_quant.application.real_workflow import adjusted_quotes
 from finance_quant.data.market import SnapshotFetcher
 from finance_quant.integrations.qlib_runner import run_qlib
 from finance_quant.research.market_factors import market_factors
-from finance_quant.sample import sample_factors, sample_prices
 from finance_quant.storage import ResultStore
+from support.fakes import make_app
+from support.synthetic import sample_factors, sample_prices
 
 
 def sample_market():
@@ -37,10 +34,18 @@ def constant_signal(prices):
 
 def execute(prices, benchmark, factors, destination):
     quotes = adjusted_quotes(prices, benchmark)
-    return run_qlib(quotes, factors, destination, calendar=pd.bdate_range("2025-01-02", "2025-01-31"),
-                    start="2025-01-07", end="2025-01-17", initial_date="2025-01-06",
-                    names=prices.drop_duplicates("instrument").set_index("instrument")["name"].to_dict(), topk=1,
-                    limit_expressions=("$open >= $up_limit - 0.0001", "$open <= $down_limit + 0.0001"))
+    return run_qlib(
+        quotes,
+        factors,
+        destination,
+        calendar=pd.bdate_range("2025-01-02", "2025-01-31"),
+        start="2025-01-07",
+        end="2025-01-17",
+        initial_date="2025-01-06",
+        names=prices.drop_duplicates("instrument").set_index("instrument")["name"].to_dict(),
+        topk=1,
+        limit_expressions=("$open >= $up_limit - 0.0001", "$open <= $down_limit + 0.0001"),
+    )
 
 
 def test_qlib_split_preserves_wealth_and_converts_equivalent_shares(tmp_path):
@@ -90,8 +95,17 @@ def extended_market():
     records = []
     for index, code in enumerate(["SH600000", "SZ000001", "SH600519"]):
         for step, date in enumerate(pd.bdate_range("2025-01-02", periods=45)):
-            records.append({"instrument": code, "date": date, "close": 10 + index + step * 0.03 + np.sin(step * 0.4 + index) * 0.2,
-                            "adj_factor": 1.0, "pe_ttm": 10 + index * 5, "name": code, "industry": "test"})
+            records.append(
+                {
+                    "instrument": code,
+                    "date": date,
+                    "close": 10 + index + step * 0.03 + np.sin(step * 0.4 + index) * 0.2,
+                    "adj_factor": 1.0,
+                    "pe_ttm": 10 + index * 5,
+                    "name": code,
+                    "industry": "test",
+                }
+            )
     return pd.DataFrame(records)
 
 
@@ -148,7 +162,7 @@ def test_real_and_synthetic_results_are_distinct_and_real_is_default(tmp_path):
     real = market_factors(extended_market(), "fixture")
     real["metadata"]["id"] = "real"
     store.publish("factors", "real", real)
-    client = TestClient(create_app(tmp_path))
+    client = TestClient(make_app(tmp_path))
     assert client.get("/api/v1/overview").json()["mode"] == "mixed"
     assert client.get("/api/v1/factor-runs").json()["items"][0]["id"] == "real"
     response = client.get("/api/v1/factor-runs/real/scores?sort_by=volatility")
@@ -167,9 +181,16 @@ def test_full_account_interval_is_required(tmp_path):
     quotes = adjusted_quotes(prices, benchmark)
     missing_end = quotes[~((quotes["instrument"] == "SH600000") & (quotes["date"] == "2025-01-17"))]
     with pytest.raises(ValueError, match="full requested"):
-        run_qlib(missing_end, factors, tmp_path / "incomplete", calendar=pd.bdate_range("2025-01-02", "2025-01-31"),
-                 start="2025-01-07", end="2025-01-17", initial_date="2025-01-06",
-                 names=prices.drop_duplicates("instrument").set_index("instrument")["name"].to_dict())
+        run_qlib(
+            missing_end,
+            factors,
+            tmp_path / "incomplete",
+            calendar=pd.bdate_range("2025-01-02", "2025-01-31"),
+            start="2025-01-07",
+            end="2025-01-17",
+            initial_date="2025-01-06",
+            names=prices.drop_duplicates("instrument").set_index("instrument")["name"].to_dict(),
+        )
 
 
 def test_cache_is_scoped_to_provider_origin(tmp_path):

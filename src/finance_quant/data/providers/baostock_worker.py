@@ -58,19 +58,20 @@ def _baostock_code(code: str) -> str:
     if not isinstance(code, str) or len(code) != 9 or "." not in code:
         raise WorkerError("invalid request")
     number, suffix = code.split(".", 1)
-    if (
-        len(number) != 6
-        or not number.isdigit()
-        or suffix not in ("SH", "SZ")
-    ):
+    if len(number) != 6 or not number.isdigit() or suffix not in ("SH", "SZ"):
         raise WorkerError("invalid request")
     return f"{suffix.lower()}.{number}"
 
 
 def _request_parts(request: Any) -> tuple[str, str, str]:
-    if not isinstance(request, dict) or not {'code','start','end'}.issubset(request) or set(request)-{'code','start','end','adjusted_flag'}:
+    if (
+        not isinstance(request, dict)
+        or not {"code", "start", "end"}.issubset(request)
+        or set(request) - {"code", "start", "end", "adjusted_flag"}
+    ):
         raise WorkerError("invalid request")
-    if request.get('adjusted_flag','1') not in {'1','2'}:raise WorkerError('invalid adjustment basis')
+    if request.get("adjusted_flag", "1") not in {"1", "2"}:
+        raise WorkerError("invalid adjustment basis")
     code = _baostock_code(request["code"])
     start = _normalize_date(request["start"])
     end = _normalize_date(request["end"])
@@ -81,27 +82,33 @@ def _request_parts(request: Any) -> tuple[str, str, str]:
 
 def _sdk():
     from finance_quant.data.network_budget import NetworkBudget
-    NetworkBudget().assert_available('baostock','sdk_message',daily=10000)
+
+    NetworkBudget().assert_available("baostock", "sdk_message", daily=10000)
     with contextlib.redirect_stdout(io.StringIO()):
         import baostock
 
     # Every SDK message passes here, including login/logout and pagination.
     import baostock.util.socketutil as socketutil
+
     from finance_quant.data.network_budget import reserve_baostock
-    original=socketutil.send_msg
+
+    original = socketutil.send_msg
+
     def counted(message):
         reserve_baostock()
         return original(message)
-    socketutil.send_msg=counted
+
+    socketutil.send_msg = counted
 
     return baostock
 
 
 def _ok(result: Any) -> bool:
-    if str(getattr(result,'error_code',''))=='10001011':
-        from finance_quant.data.network_budget import NetworkBudget,DownloadPaused
-        NetworkBudget().hold('baostock')
-        raise DownloadPaused('BaoStock限制访问，下载已暂停')
+    if str(getattr(result, "error_code", "")) == "10001011":
+        from finance_quant.data.network_budget import DownloadPaused, NetworkBudget
+
+        NetworkBudget().hold("baostock")
+        raise DownloadPaused("BaoStock限制访问，下载已暂停")
     return result is not None and str(getattr(result, "error_code", "")) == "0"
 
 
@@ -154,7 +161,7 @@ def fetch_history(request: Any, sdk=None) -> dict[str, list[dict[str, str]]]:
         logged_in = True
 
         raw = _collect(_query(sdk, code, start, end, "3"))
-        adjusted = _collect(_query(sdk, code, start, end, request.get('adjusted_flag','1')))
+        adjusted = _collect(_query(sdk, code, start, end, request.get("adjusted_flag", "1")))
     finally:
         if logged_in:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -172,13 +179,12 @@ def main(argv=None) -> int:
         raw_request = sys.stdin.read()
         request = json.loads(raw_request)
         payload = fetch_history(request)
-        output = json.dumps(
-            payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False
-        )
+        output = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
     except Exception as error:
         from finance_quant.data.network_budget import DownloadPaused
-        if isinstance(error,DownloadPaused):
-            print(json.dumps({'error':_ERROR,'category':'quota_or_hold'}))
+
+        if isinstance(error, DownloadPaused):
+            print(json.dumps({"error": _ERROR, "category": "quota_or_hold"}))
             return 3
         print(json.dumps({"error": _ERROR}, separators=(",", ":")))
         return 1

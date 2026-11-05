@@ -4,15 +4,15 @@ from dataclasses import replace
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from test_managed_data import Provider
 
-from finance_quant.api import create_app
 from finance_quant.application.evaluation_workflow import evaluate_configured
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
-from finance_quant.data.managed import download_dataset
 from finance_quant.research.evaluation import evaluate_factors, forward_open_labels
 from finance_quant.research.registry import EvaluationConfig, FactorConfig, FactorSpec
 from finance_quant.storage import ResultStore
-from test_managed_data import Provider
+from support.fakes import make_app
+from support.fixed_pool import download_dataset
 
 
 def example():
@@ -21,21 +21,31 @@ def example():
     for index, instrument in enumerate(["SH600000", "SZ000001", "SH600519", "SH600036", "SZ000858"]):
         for day, date in enumerate(sessions):
             # T+1 entry=20, T+2 exit=22,24,...30: known returns .1 through .5.
-            opening = 10 if day == 0 else 20 if day == 1 else (22 + 2 * index) * (1 + .01 * (day - 2))
+            opening = 10 if day == 0 else 20 if day == 1 else (22 + 2 * index) * (1 + 0.01 * (day - 2))
             quotes.append({"instrument": instrument, "date": date, "open": opening, "adj_factor": 1.0})
-            history.append({"instrument": instrument, "date": date.strftime("%Y-%m-%d"),
-                            "available_at": (date.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=18)).isoformat(),
-                            "raw": {"momentum": index + 1.0}, "scores": {"momentum": (index + 1) * 20.0},
-                            "composite": (index + 1) * 20.0})
+            history.append(
+                {
+                    "instrument": instrument,
+                    "date": date.strftime("%Y-%m-%d"),
+                    "available_at": (date.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=18)).isoformat(),
+                    "raw": {"momentum": index + 1.0},
+                    "scores": {"momentum": (index + 1) * 20.0},
+                    "composite": (index + 1) * 20.0,
+                }
+            )
     return pd.DataFrame(quotes), {"metadata": {"weights": {"momentum": 1}}, "history": history}, sessions
 
 
 def evaluate(quotes=None, factors=None, sessions=None, config=None, end=None):
     base_quotes, base_factors, base_sessions = example()
-    return evaluate_factors(quotes if quotes is not None else base_quotes,
-                            factors if factors is not None else base_factors,
-                            sessions if sessions is not None else base_sessions,
-                            start="2025-01-03", end=end or "2025-01-10", config=config or EvaluationConfig(horizons=(1, 3)))
+    return evaluate_factors(
+        quotes if quotes is not None else base_quotes,
+        factors if factors is not None else base_factors,
+        sessions if sessions is not None else base_sessions,
+        start="2025-01-03",
+        end=end or "2025-01-10",
+        config=config or EvaluationConfig(horizons=(1, 3)),
+    )
 
 
 def test_known_next_open_labels_native_qlib_ic_and_directional_groups():
@@ -44,11 +54,11 @@ def test_known_next_open_labels_native_qlib_ic_and_directional_groups():
     assert first["date"] == "2025-01-02" and first["entry_date"] == "2025-01-03" and first["exit_date"] == "2025-01-06"
     assert first["ic"] == pytest.approx(1) and first["rank_ic"] == pytest.approx(1)
     assert first["group_counts"] == {"1": 2, "2": 1, "3": 2}
-    assert first["group_returns"] == pytest.approx({"1": .15, "2": .3, "3": .45})
-    assert first["high_minus_low"] == pytest.approx(.3)
+    assert first["group_returns"] == pytest.approx({"1": 0.15, "2": 0.3, "3": 0.45})
+    assert first["high_minus_low"] == pytest.approx(0.3)
     labels = result["labels"]["1"]["observations"]
     known = sorted(row["forward_return"] for row in labels if row["date"] == "2025-01-02")
-    assert known == pytest.approx([.1, .2, .3, .4, .5])
+    assert known == pytest.approx([0.1, 0.2, 0.3, 0.4, 0.5])
     assert result["methodology"]["ic_engine"] == "qlib.contrib.eva.alpha.calc_ic"
     json.dumps(result, allow_nan=False)
 
@@ -66,7 +76,7 @@ def test_labels_do_not_buy_at_signal_close_and_ignore_future_closes():
     quotes, factors, sessions = example()
     quotes["close"] = 1_000_000.0
     result = evaluate(quotes, factors, sessions)
-    quotes["close"] = .01
+    quotes["close"] = 0.01
     assert evaluate(quotes, factors, sessions) == result
 
 
@@ -75,14 +85,16 @@ def test_known_ic_summary_excludes_undefined_tail_instead_of_treating_it_as_zero
     quotes = quotes.loc[quotes.instrument.isin(["SH600000", "SZ000001", "SH600519"])].copy()
     factors["history"] = [row for row in factors["history"] if row["instrument"] in set(quotes.instrument)]
     for index, instrument in enumerate(["SH600000", "SZ000001", "SH600519"]):
-        quotes.loc[(quotes.instrument == instrument) & (quotes.date == sessions[3]), "open"] = (22 + index * 2) * (1.3 - index * .1)
+        quotes.loc[(quotes.instrument == instrument) & (quotes.date == sessions[3]), "open"] = (22 + index * 2) * (
+            1.3 - index * 0.1
+        )
     result = evaluate(quotes, factors, sessions, EvaluationConfig(horizons=(1,)), end="2025-01-07")
     summary = result["factors"]["momentum"]["horizons"]["1"]["summary"]
     assert summary["rank_ic"]["valid_dates"] == 2
     assert summary["rank_ic"]["mean"] == pytest.approx(0, abs=1e-12)
-    assert summary["rank_ic"]["std"] == pytest.approx(2 ** .5)
+    assert summary["rank_ic"]["std"] == pytest.approx(2**0.5)
     assert summary["rank_ic"]["ir"] == pytest.approx(0, abs=1e-12)
-    assert summary["rank_ic"]["positive_fraction"] == .5
+    assert summary["rank_ic"]["positive_fraction"] == 0.5
 
 
 def test_prices_after_evaluation_end_cannot_change_the_report():
@@ -149,7 +161,11 @@ def test_partial_ties_share_groups_and_constant_returns_have_no_ic():
 
 def test_minimum_cross_section_and_missing_signal_days_are_reported():
     quotes, factors, sessions = example()
-    factors["history"] = [row for row in factors["history"] if row["instrument"] in {"SH600000", "SZ000001"} and row["date"] != "2025-01-06"]
+    factors["history"] = [
+        row
+        for row in factors["history"]
+        if row["instrument"] in {"SH600000", "SZ000001"} and row["date"] != "2025-01-06"
+    ]
     result = evaluate(quotes, factors, sessions)
     assert result["factors"]["momentum"]["horizons"]["1"]["daily"][0]["ic_exclusion"] == "insufficient_cross_section"
     missing = [row for row in result["signal_coverage"] if row["signal_date"] == "2025-01-06"][0]
@@ -178,8 +194,11 @@ def test_input_boundaries():
 
 @pytest.fixture
 def research_config(tmp_path):
-    config = ResearchConfig(DataConfig(tmp_path / "data", "20241202", "20250228", ("600000.SH", "000001.SZ", "600519.SH")),
-                            BacktestConfig("2025-01-02", "2025-02-28", topk=1), tmp_path / "runs")
+    config = ResearchConfig(
+        DataConfig(tmp_path / "data", "20241202", "20250228", ("600000.SH", "000001.SZ", "600519.SH")),
+        BacktestConfig("2025-01-02", "2025-02-28", topk=1),
+        tmp_path / "runs",
+    )
     download_dataset(config.data, provider=Provider())
     return config
 
@@ -187,6 +206,7 @@ def research_config(tmp_path):
 def test_reproducible_diagnostics_reports_readonly_api_and_configuration_isolation(research_config, monkeypatch):
     def no_execution(*args, **kwargs):
         raise AssertionError("Evaluation must not run the trading engine")
+
     monkeypatch.setattr("finance_quant.integrations.qlib_runner.run_qlib", no_execution)
     first = evaluate_configured(research_config)
     assert not first["reused"]
@@ -203,7 +223,7 @@ def test_reproducible_diagnostics_reports_readonly_api_and_configuration_isolati
     assert changed["run_id"] != first["run_id"] and changed["factor_run_id"] == first["factor_run_id"]
     selected = evaluate_configured(replace(research_config, factors=FactorConfig((FactorSpec("momentum", 1, 5),))))
     assert selected["run_id"] != first["run_id"] and selected["factor_run_id"] != first["factor_run_id"]
-    client = TestClient(create_app(research_config.runs_dir))
+    client = TestClient(make_app(research_config.runs_dir))
     listing = client.get("/api/v1/evaluations").json()
     assert listing["total"] == 3
     assert client.get(f"/api/v1/evaluations/{first['run_id']}").json() == document
@@ -214,14 +234,3 @@ def test_reproducible_diagnostics_reports_readonly_api_and_configuration_isolati
     assert client.get("/api/v1/evaluations/..%5C..%5C.env").status_code == 404
     with pytest.raises(FileExistsError):
         store.publish_report(first["run_id"], "changed")
-
-
-def test_evaluation_cli_is_offline_and_does_not_change_active_backtest_config(research_config, monkeypatch, capsys):
-    from finance_quant.cli import main
-    path = research_config.runs_dir.parent / "config.json"
-    path.write_text(json.dumps(research_config.as_dict()), encoding="utf-8")
-    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
-    monkeypatch.setattr("sys.argv", ["finance-quant", "evaluate", "--config", str(path)])
-    main()
-    assert json.loads(capsys.readouterr().out)["run_id"].startswith("factor-eval-")
-    assert not (research_config.runs_dir / "active-research.json").exists()

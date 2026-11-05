@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
 from dataclasses import dataclass
 from numbers import Integral, Real
 from typing import Any
+
+from finance_quant.checksums import sha256_text
 from finance_quant.research.factor_library import FACTOR_LIBRARY
 
 __all__ = [
@@ -74,23 +75,47 @@ class FactorSpec:
         object.__setattr__(self, "window", window)
         skip = definition.default_skip if self.skip is None else self.skip
         if definition.default_skip is None:
-            if self.skip is not None: raise ValueError(f'{self.name} does not accept skip')
+            if self.skip is not None:
+                raise ValueError(f"{self.name} does not accept skip")
         else:
-            skip = _integer(skip, 'skip')
-            if not 0 <= skip < window: raise ValueError('skip must be nonnegative and smaller than window')
+            skip = _integer(skip, "skip")
+            if not 0 <= skip < window:
+                raise ValueError("skip must be nonnegative and smaller than window")
         baseline = definition.default_baseline_window if self.baseline_window is None else self.baseline_window
         if definition.default_baseline_window is None:
-            if self.baseline_window is not None: raise ValueError(f'{self.name} does not accept baseline_window')
+            if self.baseline_window is not None:
+                raise ValueError(f"{self.name} does not accept baseline_window")
         else:
-            baseline = _integer(baseline, 'baseline_window')
-            if not 2 <= baseline <= 252: raise ValueError('baseline_window must be between 2 and 252')
-        if self.id is not None and (not isinstance(self.id, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', self.id)
-                                   or self.id in {'composite','date','instrument','rank','entry_date','exit_date','forward_return','available_at','name','industry','exclusion','raw','scores','contributions'}
-                                   or (self.id in FACTOR_LIBRARY and self.id != self.name)):
-            raise ValueError('factor id must be a unique lowercase identifier, not a reserved result field')
-        object.__setattr__(self, 'skip', skip)
-        object.__setattr__(self, 'baseline_window', baseline)
-        if self.id == self.name: object.__setattr__(self, 'id', None)
+            baseline = _integer(baseline, "baseline_window")
+            if not 2 <= baseline <= 252:
+                raise ValueError("baseline_window must be between 2 and 252")
+        if self.id is not None and (
+            not isinstance(self.id, str)
+            or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", self.id)
+            or self.id
+            in {
+                "composite",
+                "date",
+                "instrument",
+                "rank",
+                "entry_date",
+                "exit_date",
+                "forward_return",
+                "available_at",
+                "name",
+                "industry",
+                "exclusion",
+                "raw",
+                "scores",
+                "contributions",
+            }
+            or (self.id in FACTOR_LIBRARY and self.id != self.name)
+        ):
+            raise ValueError("factor id must be a unique lowercase identifier, not a reserved result field")
+        object.__setattr__(self, "skip", skip)
+        object.__setattr__(self, "baseline_window", baseline)
+        if self.id == self.name:
+            object.__setattr__(self, "id", None)
 
     @property
     def key(self):
@@ -102,13 +127,18 @@ class FactorSpec:
 
     @property
     def parameters(self):
-        return {key: value for key in ('window','skip','baseline_window') if (value := getattr(self, key)) is not None}
+        return {
+            key: value for key in ("window", "skip", "baseline_window") if (value := getattr(self, key)) is not None
+        }
 
     def as_dict(self):
-        result = {'name': self.name, 'weight': self.weight, 'window': self.window}
-        if self.skip is not None and (self.name != 'momentum' or self.skip != 0): result['skip'] = self.skip
-        if self.baseline_window is not None: result['baseline_window'] = self.baseline_window
-        if self.id is not None: result['id'] = self.id
+        result = {"name": self.name, "weight": self.weight, "window": self.window}
+        if self.skip is not None and (self.name != "momentum" or self.skip != 0):
+            result["skip"] = self.skip
+        if self.baseline_window is not None:
+            result["baseline_window"] = self.baseline_window
+        if self.id is not None:
+            result["id"] = self.id
         return result
 
 
@@ -121,9 +151,7 @@ class FactorConfig:
     )
 
     def __post_init__(self) -> None:
-        if isinstance(self.specs, (str, bytes)) or not isinstance(
-            self.specs, (tuple, list)
-        ):
+        if isinstance(self.specs, (str, bytes)) or not isinstance(self.specs, (tuple, list)):
             raise ValueError("factor specs must be a sequence of FactorSpec")
         if not self.specs:
             raise ValueError("at least one factor must be selected")
@@ -132,7 +160,8 @@ class FactorConfig:
             if not isinstance(spec, FactorSpec):
                 raise ValueError("factor specs must be FactorSpec instances")
             specs.append(spec)
-        if len(specs) > 20: raise ValueError('at most 20 factor instances may be selected')
+        if len(specs) > 20:
+            raise ValueError("at most 20 factor instances may be selected")
         names = [spec.key for spec in specs]
         if len(set(names)) != len(names):
             raise ValueError("factor names must be unique")
@@ -150,7 +179,7 @@ class FactorConfig:
     @property
     def scheme(self) -> str:
         payload = json.dumps(self.as_list(), sort_keys=True)
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+        digest = sha256_text(payload)[:12]
         return f"market-{digest}"
 
 
@@ -161,9 +190,7 @@ class EvaluationConfig:
     min_cross_section: int = 3
 
     def __post_init__(self) -> None:
-        if isinstance(self.horizons, (str, bytes)) or not isinstance(
-            self.horizons, (tuple, list)
-        ):
+        if isinstance(self.horizons, (str, bytes)) or not isinstance(self.horizons, (tuple, list)):
             raise ValueError("horizons must be a sequence of integers")
         if not self.horizons:
             raise ValueError("horizons must not be empty")

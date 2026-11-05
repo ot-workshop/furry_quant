@@ -1,15 +1,18 @@
-"""Local configuration and queued execution endpoints, separate from result queries."""
+"""Research submission, data download control and task status endpoints."""
 
 import json
+import os
+import uuid
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
+from filelock import Timeout
 from starlette.concurrency import run_in_threadpool
 
 from finance_quant.application.research_requests import research_options
 from finance_quant.application.tasks import TaskConflict
-from finance_quant.application.calendar_plans import plan_dates
-from filelock import Timeout
+
+RESULT_TASK_KINDS = {"research", "experiment"}
 
 
 def research_router(service):
@@ -28,10 +31,13 @@ def research_router(service):
             try:
                 parsed = urlsplit(origin)
                 same_origin = origin == f"{request.url.scheme}://{host}"
-                development = parsed.hostname in {"localhost", "127.0.0.1"} and parsed.scheme == "http" and parsed.port == 5173
+                development = (
+                    parsed.hostname in {"localhost", "127.0.0.1"} and parsed.scheme == "http" and parsed.port == 5173
+                )
+                configured = {item.strip() for item in os.environ.get("ALLOWED_ORIGINS", "").split(",") if item.strip()}
             except ValueError:
                 raise HTTPException(403, "请求来源无效") from None
-            if not same_origin and not development:
+            if not (origin in configured if configured else same_origin or development):
                 raise HTTPException(403, "请从本机研究工作台提交任务")
         if request.headers.get("sec-fetch-site") == "cross-site":
             raise HTTPException(403, "请从本机研究工作台提交任务")
@@ -48,6 +54,7 @@ def research_router(service):
                     raise ValueError("duplicate")
                 result[key] = value
             return result
+
         try:
             return json.loads(encoded, object_pairs_hook=unique)
         except (ValueError, UnicodeError):
@@ -59,77 +66,103 @@ def research_router(service):
 
     @router.get("/tasks")
     def tasks():
-        return service.store.list()
+        """Research and experiment tasks; data downloads are reported by their own panels."""
+        result = service.store.list()
+        items = [r for r in result["items"] if r.get("kind", "research") in RESULT_TASK_KINDS]
+        return {"items": items, "total": len(items)}
 
-    @router.get('/market-download')
+    @router.get("/market-download")
     def market_download_status():
-        from finance_quant.application.market_download import status,shared_root
-        try:return status(shared_root(service.data_root))
-        except (OSError,ValueError,KeyError):
-            raise HTTPException(503,'共享下载状态暂不可读，请稍后刷新；现有数据版本保持不变') from None
+        from finance_quant.application.market_download import shared_root, status
 
-    @router.post('/market-download/{action}')
-    async def market_download_action(action:str,request:Request):
-        document=await body(request)
-        from finance_quant.application import market_download as downloads
-        root=downloads.shared_root(service.data_root)
         try:
-            if action=='preview':return await run_in_threadpool(downloads.prepare,root,document)
-            if action=='start' and isinstance(document,dict) and set(document)=={'plan_id'}:
-                return await run_in_threadpool(downloads.start,root,document['plan_id'])
-            if action=='pause' and document=={}:
-                root.mkdir(parents=True,exist_ok=True);(root/'PAUSE').write_text('pause',encoding='utf-8')
-                return {'status':'pause_requested'}
-            raise ValueError('仅支持预览、确认下载、续传和暂停')
-        except Timeout:raise HTTPException(409,'共享数据管理正在处理，请稍后重试') from None
-        except (ValueError,TypeError) as error:
-            raise HTTPException(422,str(error) if isinstance(error,ValueError) else '下载参数类型无效') from None
-        except (OSError,RuntimeError):
-            raise HTTPException(503,'共享下载暂不可用，请查看本机日志；旧版本保持可用') from None
+            return status(shared_root(service.data_root))
+        except (OSError, ValueError, KeyError):
+            raise HTTPException(503, "共享下载状态暂不可读，请稍后刷新；现有数据版本保持不变") from None
 
-    @router.get('/index-download')
+    @router.post("/market-download/{action}")
+    async def market_download_action(action: str, request: Request):
+        document = await body(request)
+        from finance_quant.application import market_download as downloads
+
+        root = downloads.shared_root(service.data_root)
+        try:
+            if action == "preview":
+                return await run_in_threadpool(downloads.prepare, root, document)
+            if action == "start" and isinstance(document, dict) and set(document) == {"plan_id"}:
+                if downloads.active(root):
+                    raise ValueError("已有共享下载任务运行，请先暂停或等待完成")
+                _, plan = downloads.load_plan(root, document["plan_id"])
+                result = service.store.create_download(
+                    "market_download",
+                    {"name": "共享行情下载", "plan_id": document["plan_id"]},
+                    {"root": str(root.resolve()), "plan_id": document["plan_id"]},
+                    "download-" + uuid.uuid4().hex,
+                    total=len(plan["tasks"]),
+                )
+                return {"id": document["plan_id"], "task_id": result["id"], "status": "queued"}
+            if action == "pause" and document == {}:
+                root.mkdir(parents=True, exist_ok=True)
+                (root / "PAUSE").write_text("pause", encoding="utf-8")
+                return {"status": "pause_requested"}
+            raise ValueError("仅支持预览、确认下载、续传和暂停")
+        except Timeout:
+            raise HTTPException(409, "共享数据管理正在处理，请稍后重试") from None
+        except (ValueError, TypeError) as error:
+            raise HTTPException(422, str(error) if isinstance(error, ValueError) else "下载参数类型无效") from None
+        except (OSError, RuntimeError):
+            raise HTTPException(503, "共享下载暂不可用，请查看本机日志；旧版本保持可用") from None
+
+    @router.get("/index-download")
     def index_status():
         from finance_quant.application.index_download_manager import status
+
         return status()
 
-    @router.get('/index-download/report')
-    @router.get('/index-download/report/download')
+    @router.get("/index-download/report")
+    @router.get("/index-download/report/download")
     def index_handling_report(request: Request):
+        from starlette.responses import JSONResponse
+
         from finance_quant.application.index_download_manager import warehouse_root
         from finance_quant.application.index_download_reports import refresh_handling_report
-        from starlette.responses import JSONResponse
-        try:
-            report=refresh_handling_report(warehouse_root())
-        except Timeout:
-            raise HTTPException(409,'处理报告正在生成，请稍后刷新') from None
-        except (OSError,ValueError,KeyError):
-            raise HTTPException(503,'处理报告读取失败，原下载状态未改变，请检查本机报告及来源文件') from None
-        headers={'Cache-Control':'no-store'}
-        if request.url.path.endswith('/download'):
-            headers['Content-Disposition']='attachment; filename="index-handling-report.json"'
-        return JSONResponse(report,headers=headers)
 
-    @router.post('/index-download/{action}')
-    async def index_action(action: str,request: Request):
-        document=await body(request)
-        if document!={} or action not in {'start','pause'}:
-            raise HTTPException(422,'仅支持开始/续传或暂停，不接受额外参数')
-        from finance_quant.application.index_download_manager import start,pause
-        try:return await run_in_threadpool(start if action=='start' else pause)
-        except Timeout:raise HTTPException(409,'下载管理正在处理，请稍后重试') from None
-        except (RuntimeError,OSError):raise HTTPException(503,'无法启动下载进程，请检查本机日志') from None
-
-    @router.post('/date-plan')
-    async def date_plan(request: Request):
-        document=await body(request)
         try:
-            return await run_in_threadpool(plan_dates,document,service.data_root)
+            report = refresh_handling_report(warehouse_root())
         except Timeout:
-            raise HTTPException(409,'交易日历正在查询，请稍后重试') from None
-        except (ValueError,TypeError):
-            raise HTTPException(422,'日期、窗口或日历覆盖不满足要求，请检查区间及因子参数') from None
-        except (RuntimeError,OSError):
-            raise HTTPException(503,'交易日历查询失败，请检查数据服务配置或稍后重试；尚未下载股票行情') from None
+            raise HTTPException(409, "处理报告正在生成，请稍后刷新") from None
+        except (OSError, ValueError, KeyError):
+            raise HTTPException(503, "处理报告读取失败，原下载状态未改变，请检查本机报告及来源文件") from None
+        headers = {"Cache-Control": "no-store"}
+        if request.url.path.endswith("/download"):
+            headers["Content-Disposition"] = 'attachment; filename="index-handling-report.json"'
+        return JSONResponse(report, headers=headers)
+
+    @router.post("/index-download/{action}")
+    async def index_action(action: str, request: Request):
+        document = await body(request)
+        if document != {} or action not in {"start", "pause"}:
+            raise HTTPException(422, "仅支持开始/续传或暂停，不接受额外参数")
+        from finance_quant.application import index_download_manager as manager
+
+        try:
+            if action == "pause":
+                return await run_in_threadpool(manager.pause)
+            root = manager.warehouse_root()
+            current = manager.status(root)
+            if current.get("worker_running"):
+                return current
+            service.store.create_download(
+                "index_download",
+                {"name": "沪深300历史下载"},
+                {"root": str(root.resolve())},
+                "index-" + uuid.uuid4().hex,
+            )
+            return {**current, "status": "queued"}
+        except Timeout:
+            raise HTTPException(409, "下载管理正在处理，请稍后重试") from None
+        except (RuntimeError, OSError):
+            raise HTTPException(503, "无法提交下载任务，请检查服务日志") from None
 
     @router.get("/tasks/{identifier}")
     def task(identifier: str):
@@ -138,20 +171,27 @@ def research_router(service):
         except FileNotFoundError:
             raise HTTPException(404, "研究任务不存在") from None
 
-    @router.post("/tasks", status_code=202)
-    async def submit(request: Request):
+    async def queue(request: Request, submit):
         document = await body(request)
         key = request.headers.get("idempotency-key", "")
         try:
-            return await run_in_threadpool(service.submit, document, key)
+            return await run_in_threadpool(submit, document, key)
         except TaskConflict as error:
             raise HTTPException(409, str(error)) from None
         except (ValueError, TypeError) as error:
             # Only validation messages from our parameter layer are returned;
             # TypeError is kept generic for malformed JSON types.
-            raise HTTPException(422, str(error) if isinstance(error, ValueError) else "研究配置类型不正确") from None
+            raise HTTPException(422, str(error) if isinstance(error, ValueError) else "配置字段类型不正确") from None
         except RuntimeError:
-            raise HTTPException(503, service.last_error or "任务服务暂不可用，请重启本机服务") from None
+            raise HTTPException(503, "任务服务暂不可用，请检查数据库连接") from None
+
+    @router.post("/tasks", status_code=202)
+    async def submit(request: Request):
+        return await queue(request, service.submit)
+
+    @router.post("/experiments", status_code=202)
+    async def submit_experiment(request: Request):
+        return await queue(request, service.submit_experiment)
 
     @router.post("/tasks/{identifier}/cancel")
     async def cancel(identifier: str, request: Request):

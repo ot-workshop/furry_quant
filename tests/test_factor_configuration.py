@@ -13,15 +13,17 @@ def sample_market(days=40):
     records = []
     for index, code in enumerate(["SH600000", "SZ000001", "SH600519"]):
         for step, date in enumerate(pd.bdate_range("2025-01-02", periods=days)):
-            records.append({
-                "instrument": code,
-                "date": date,
-                "close": 10 + index + step * 0.03 + np.sin(step * 0.4 + index) * 0.2,
-                "adj_factor": 1.0,
-                "pe_ttm": 10 + index * 5,
-                "name": code,
-                "industry": "test",
-            })
+            records.append(
+                {
+                    "instrument": code,
+                    "date": date,
+                    "close": 10 + index + step * 0.03 + np.sin(step * 0.4 + index) * 0.2,
+                    "adj_factor": 1.0,
+                    "pe_ttm": 10 + index * 5,
+                    "name": code,
+                    "industry": "test",
+                }
+            )
     return pd.DataFrame(records)
 
 
@@ -32,18 +34,20 @@ def window_market(days=40):
             if index == 0:
                 close = 10.0 if step < 30 else 13.0
             elif index == 1:
-                close = 10.0 * 1.02 ** step
+                close = 10.0 * 1.02**step
             else:
                 close = 10.0 - 0.01 * step
-            records.append({
-                "instrument": code,
-                "date": date,
-                "close": close,
-                "adj_factor": 1.0,
-                "pe_ttm": 10 + index * 5,
-                "name": code,
-                "industry": "test",
-            })
+            records.append(
+                {
+                    "instrument": code,
+                    "date": date,
+                    "close": close,
+                    "adj_factor": 1.0,
+                    "pe_ttm": 10 + index * 5,
+                    "name": code,
+                    "industry": "test",
+                }
+            )
     return pd.DataFrame(records)
 
 
@@ -86,11 +90,13 @@ def test_default_config_preserves_backwards_weights_and_values():
 
 
 def test_config_orders_specs_deterministically_and_hashes_canonical_payload():
-    config = FactorConfig([
-        FactorSpec("volatility", 0.3, 10),
-        FactorSpec("momentum", 0.4, 20),
-        FactorSpec("value", 0.3),
-    ])
+    config = FactorConfig(
+        [
+            FactorSpec("volatility", 0.3, 10),
+            FactorSpec("momentum", 0.4, 20),
+            FactorSpec("value", 0.3),
+        ]
+    )
     assert tuple(spec.name for spec in config.specs) == ("momentum", "value", "volatility")
     assert [item["name"] for item in config.as_list()] == ["momentum", "value", "volatility"]
     assert list(config.weights) == ["momentum", "value", "volatility"]
@@ -100,11 +106,13 @@ def test_config_orders_specs_deterministically_and_hashes_canonical_payload():
 
 
 def test_weighted_composite_scores_use_configured_weights():
-    config = FactorConfig((
-        FactorSpec("momentum", 0.5, 10),
-        FactorSpec("value", 0.25),
-        FactorSpec("volatility", 0.25, 5),
-    ))
+    config = FactorConfig(
+        (
+            FactorSpec("momentum", 0.5, 10),
+            FactorSpec("value", 0.25),
+            FactorSpec("volatility", 0.25, 5),
+        )
+    )
     result = market_factors(sample_market(), "fixture", config)
     assert result["metadata"]["weights"] == {"momentum": 0.5, "value": 0.25, "volatility": 0.25}
     assert result["history"]
@@ -235,16 +243,20 @@ def test_load_config_rejects_unknown_and_invalid_sections(tmp_path, mutate):
 
 
 def test_changed_window_changes_scores_and_scheme():
-    base = FactorConfig((
-        FactorSpec("momentum", 0.6, 20),
-        FactorSpec("value", 0.2),
-        FactorSpec("volatility", 0.2, 10),
-    ))
-    shortened = FactorConfig((
-        FactorSpec("momentum", 0.6, 5),
-        FactorSpec("value", 0.2),
-        FactorSpec("volatility", 0.2, 10),
-    ))
+    base = FactorConfig(
+        (
+            FactorSpec("momentum", 0.6, 20),
+            FactorSpec("value", 0.2),
+            FactorSpec("volatility", 0.2, 10),
+        )
+    )
+    shortened = FactorConfig(
+        (
+            FactorSpec("momentum", 0.6, 5),
+            FactorSpec("value", 0.2),
+            FactorSpec("volatility", 0.2, 10),
+        )
+    )
     assert base.scheme != shortened.scheme
     market = window_market()
     baseline = market_factors(market, "fixture", base)
@@ -258,10 +270,12 @@ def test_changed_window_changes_scores_and_scheme():
 
 
 def test_future_prices_do_not_change_earlier_scores():
-    config = FactorConfig((
-        FactorSpec("momentum", 0.5, 10),
-        FactorSpec("volatility", 0.5, 5),
-    ))
+    config = FactorConfig(
+        (
+            FactorSpec("momentum", 0.5, 10),
+            FactorSpec("volatility", 0.5, 5),
+        )
+    )
     market = sample_market()
     baseline = market_factors(market, "fixture", config)
     changed = market.copy()

@@ -8,7 +8,16 @@
       name="description"
       content="本地量化研究结果查看器：股票因子、因子排名与回测结果。"
     />
-    <title>量化研究台 · 本地视图</title>
+    <script>
+      (() => {
+        let mode = 'system'; let redUp = 'true';
+        try { mode = localStorage.getItem('quant-theme') || 'system'; redUp = localStorage.getItem('quant-red-up') || 'true'; } catch {}
+        document.documentElement.dataset.theme = mode === 'dark' || (mode !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+        document.documentElement.dataset.redUp = redUp;
+      })();
+    </script>
+    <style>html{background:#f4f6fa;color:#111827}html[data-theme="dark"]{background:#0b1220;color:#e5e7eb}</style>
+    <title>量化研究台</title>
   </head>
   <body>
     <div id="root"></div>

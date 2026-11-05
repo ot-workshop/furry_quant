@@ -4,52 +4,70 @@ from dataclasses import replace
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from test_managed_data import Provider
 
-from finance_quant.api import create_app
 from finance_quant.application import experiment_workflow as workflow
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
-from finance_quant.data.managed import download_dataset
 from finance_quant.research.evaluation import forward_open_labels
-from finance_quant.research.experiments import ExperimentPlan, experiment_markdown, load_experiment_plan, select_candidate
+from finance_quant.research.experiments import (
+    ExperimentPlan,
+    experiment_markdown,
+    load_experiment_plan,
+    select_candidate,
+)
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.registry import EvaluationConfig
 from finance_quant.storage import ResultStore
-from test_managed_data import Provider
+from support.fakes import make_app
+from support.fixed_pool import download_dataset
 
 
 def plan_document():
-    return {"name": "工程分段测试", "selection_metric": "validation_excess_return",
-            "periods": {"development": {"start": "2025-01-02", "end": "2025-01-17"},
-                        "validation": {"start": "2025-01-20", "end": "2025-02-04"},
-                        "test": {"start": "2025-02-05", "end": "2025-02-28"}},
-            "candidates": [{"id": "value", "name": "估值", "factors": [{"name": "value", "weight": 1}]},
-                           {"id": "momentum", "name": "动量", "factors": [{"name": "momentum", "weight": 1, "window": 5}]}]}
+    return {
+        "name": "工程分段测试",
+        "selection_metric": "validation_excess_return",
+        "periods": {
+            "development": {"start": "2025-01-02", "end": "2025-01-17"},
+            "validation": {"start": "2025-01-20", "end": "2025-02-04"},
+            "test": {"start": "2025-02-05", "end": "2025-02-28"},
+        },
+        "candidates": [
+            {"id": "value", "name": "估值", "factors": [{"name": "value", "weight": 1}]},
+            {"id": "momentum", "name": "动量", "factors": [{"name": "momentum", "weight": 1, "window": 5}]},
+        ],
+    }
 
 
 @pytest.fixture
 def setup(tmp_path):
-    config = ResearchConfig(DataConfig(tmp_path / "data", "20241202", "20250228",
-                                       ("600000.SH", "000001.SZ", "600519.SH")),
-                            BacktestConfig("2025-01-02", "2025-02-28", topk=1, initial_cash=150000,
-                                           open_cost=.002, close_cost=.003, min_cost=8),
-                            tmp_path / "runs", evaluation=EvaluationConfig(horizons=(1, 3)))
+    config = ResearchConfig(
+        DataConfig(tmp_path / "data", "20241202", "20250228", ("600000.SH", "000001.SZ", "600519.SH")),
+        BacktestConfig(
+            "2025-01-02", "2025-02-28", topk=1, initial_cash=150000, open_cost=0.002, close_cost=0.003, min_cost=8
+        ),
+        tmp_path / "runs",
+        evaluation=EvaluationConfig(horizons=(1, 3)),
+    )
     download_dataset(config.data, provider=Provider())
     return config, ExperimentPlan.from_dict(plan_document())
 
 
-@pytest.mark.parametrize("change", [
-    lambda d: d.update(unexpected=True),
-    lambda d: d.update(selection_metric="test_return"),
-    lambda d: d["periods"]["validation"].update(start="2025-01-17"),
-    lambda d: d["periods"]["test"].update(end="2025-02-30"),
-    lambda d: d["periods"]["test"].update(start="20250205"),
-    lambda d: d["candidates"][0].update(id="../bad"),
-    lambda d: d["candidates"][0].update(id="momentum"),
-    lambda d: d["candidates"][0].update(factors=d["candidates"][1]["factors"]),
-    lambda d: d["candidates"][0]["factors"][0].update(weight=True),
-    lambda d: d.update(candidates=d["candidates"][:1]),
-    lambda d: d["candidates"][0]["factors"][0].update(training_end="2025-02-28"),
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda d: d.update(unexpected=True),
+        lambda d: d.update(selection_metric="test_return"),
+        lambda d: d["periods"]["validation"].update(start="2025-01-17"),
+        lambda d: d["periods"]["test"].update(end="2025-02-30"),
+        lambda d: d["periods"]["test"].update(start="20250205"),
+        lambda d: d["candidates"][0].update(id="../bad"),
+        lambda d: d["candidates"][0].update(id="momentum"),
+        lambda d: d["candidates"][0].update(factors=d["candidates"][1]["factors"]),
+        lambda d: d["candidates"][0]["factors"][0].update(weight=True),
+        lambda d: d.update(candidates=d["candidates"][:1]),
+        lambda d: d["candidates"][0]["factors"][0].update(training_end="2025-02-28"),
+    ],
+)
 def test_invalid_plans_fail_before_running(change):
     document = plan_document()
     change(document)
@@ -63,30 +81,37 @@ def test_plan_json_duplicate_keys_bom_and_round_trip(tmp_path):
     plan = load_experiment_plan(path)
     assert ExperimentPlan.from_dict(plan.as_dict()) == plan
     path.write_text('{"name":"a","name":"b"}', encoding="utf-8")
-    with pytest.raises(ValueError, match="duplicate"):
+    with pytest.raises(ValueError, match="重复"):
         load_experiment_plan(path)
 
 
-def metric_row(candidate, period, total, benchmark=.01):
-    return {"candidate_id": candidate, "period": period,
-            "metrics": {"total_return": total, "benchmark_return": benchmark, "excess_return": 999}}
+def metric_row(candidate, period, total, benchmark=0.01):
+    return {
+        "candidate_id": candidate,
+        "period": period,
+        "metrics": {"total_return": total, "benchmark_return": benchmark, "excess_return": 999},
+    }
 
 
 def test_selection_uses_only_validation_returns_and_deterministic_tie_rule():
-    rows = [metric_row("b", "validation", .08), metric_row("a", "validation", .08),
-            metric_row("b", "test", 100), metric_row("b", "development", 100)]
+    rows = [
+        metric_row("b", "validation", 0.08),
+        metric_row("a", "validation", 0.08),
+        metric_row("b", "test", 100),
+        metric_row("b", "development", 100),
+    ]
     result = select_candidate(rows, ["b", "a"])
-    assert result["candidate_id"] == "a" and result["score"] == pytest.approx(.07)
+    assert result["candidate_id"] == "a" and result["score"] == pytest.approx(0.07)
     rows[-2]["metrics"] = {"total_return": float("nan")}
     rows[-1]["metrics"] = {}
     assert select_candidate(rows, ["a", "b"]) == result
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError, match="恰好"):
         select_candidate(rows + [rows[0]], ["a", "b"])
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError, match="恰好"):
         select_candidate(rows, ["a", "b", "c"])
     for invalid in (float("nan"), float("inf"), True, "0.2"):
         rows[0]["metrics"]["total_return"] = invalid
-        with pytest.raises(ValueError, match="finite"):
+        with pytest.raises(ValueError, match="有限"):
             select_candidate(rows, ["a", "b"])
 
 
@@ -95,7 +120,7 @@ def fake_engines(monkeypatch, config, *, fail_test=False):
     calls = []
     state = {"fail_test": fail_test}
 
-    def backtest(research):
+    def backtest(research, **kwargs):
         is_test = research.backtest.start == "2025-02-05"
         if is_test:
             checkpoints = list((config.runs_dir / "experiments").glob("*/selection.json"))
@@ -110,12 +135,25 @@ def fake_engines(monkeypatch, config, *, fail_test=False):
         fid = "factor-" + research.factors.scheme
         bid = "backtest-" + research.factors.scheme + research.backtest.start
         store.publish("factors", fid, {"history": []})
-        total = .05 if research.factors.specs[0].name == "value" else -.02
-        store.publish("backtests", bid, {"summary": {"metrics": {"total_return": total, "benchmark_return": .01,
-                      "max_drawdown": -.03, "total_cost_amount": 80.0, "avg_turnover": .1}}})
+        total = 0.05 if research.factors.specs[0].name == "value" else -0.02
+        store.publish(
+            "backtests",
+            bid,
+            {
+                "summary": {
+                    "metrics": {
+                        "total_return": total,
+                        "benchmark_return": 0.01,
+                        "max_drawdown": -0.03,
+                        "total_cost_amount": 80.0,
+                        "avg_turnover": 0.1,
+                    }
+                }
+            },
+        )
         return {"run_id": bid, "factor_run_id": fid}
 
-    def evaluation(research):
+    def evaluation(research, **kwargs):
         fid = "factor-" + research.factors.scheme
         eid = "eval-" + research.factors.scheme + research.backtest.start
         store.publish("evaluations", eid, {"metadata": {"factor_run_id": fid}})
@@ -148,7 +186,7 @@ def test_orchestration_freezes_selection_preserves_common_parameters_and_reuses(
     assert len(calls) == 5
     row = result["rows"][0]
     store.path("backtests", row["backtest_run_id"]).write_text("{}", encoding="utf-8")
-    with pytest.raises(ValueError, match="artifact has changed"):
+    with pytest.raises(ValueError, match="已被改动"):
         workflow.run_experiment(config, plan)
 
 
@@ -166,13 +204,16 @@ def test_interrupted_test_resumes_same_locked_selection(setup, monkeypatch):
     assert len(calls) == 9
 
 
-@pytest.mark.parametrize("change,message", [
-    (lambda d: d["periods"]["validation"].update(start="2025-01-21"), "without gaps"),
-    (lambda d: d["periods"]["validation"].update(start="2025-01-19"), "actual trading"),
-    (lambda d: d["periods"]["test"].update(end="2025-03-03"), "configured backtest"),
-    (lambda d: d["periods"]["test"].update(end="2025-02-07"), "longest evaluation"),
-    (lambda d: d["candidates"][1]["factors"][0].update(window=252), "lacks scores"),
-])
+@pytest.mark.parametrize(
+    "change,message",
+    [
+        (lambda d: d["periods"]["validation"].update(start="2025-01-21"), "首尾相接"),
+        (lambda d: d["periods"]["validation"].update(start="2025-01-19"), "实际交易日"),
+        (lambda d: d["periods"]["test"].update(end="2025-03-03"), "回测区间之内"),
+        (lambda d: d["periods"]["test"].update(end="2025-02-07"), "最长评估持有期"),
+        (lambda d: d["candidates"][1]["factors"][0].update(window=252), "评分"),
+    ],
+)
 def test_preflight_rejects_unfair_or_unusable_intervals(setup, monkeypatch, change, message):
     config, _ = setup
     document = plan_document()
@@ -192,7 +233,9 @@ def test_future_prices_do_not_change_validation_signals_and_labels_cannot_exit_p
         future = changed.date > pd.Timestamp("2025-02-04")
         changed.loc[future, ["open", "close", "adj_factor", "pe_ttm"]] *= 100
         after = market_factors(changed, "fixture", candidate.factors)
-        assert [r for r in before["history"] if r["date"] <= "2025-02-04"] == [r for r in after["history"] if r["date"] <= "2025-02-04"]
+        assert [r for r in before["history"] if r["date"] <= "2025-02-04"] == [
+            r for r in after["history"] if r["date"] <= "2025-02-04"
+        ]
     labels = forward_open_labels(market, calendar.loc[calendar.is_open, "date"], horizon=3, end="2025-02-04")
     valid = labels.loc[labels.forward_return.notna()]
     assert (pd.to_datetime(valid.exit_date) <= pd.Timestamp("2025-02-04")).all()
@@ -209,13 +252,13 @@ def test_native_split_accounts_diagnostics_report_and_readonly_api(setup):
         assert len(backtest["equity"]) == row["trading_days"] + 1
         assert backtest["equity"][0]["equity"] == 1
         assert backtest["metadata"]["config"]["account"] == 150000
-        assert backtest["metadata"]["provenance"]["open_cost"] == .002
+        assert backtest["metadata"]["provenance"]["open_cost"] == 0.002
         evaluation = store.get("evaluations", row["evaluation_run_id"])
         period = result["plan"]["periods"][row["period"]]
         for label in evaluation["labels"].values():
             for observation in label["observations"]:
                 assert period["start"] <= observation["entry_date"] <= observation["exit_date"] <= period["end"]
-    client = TestClient(create_app(config.runs_dir))
+    client = TestClient(make_app(config.runs_dir))
     url = "/api/v1/experiments/" + completed["run_id"]
     assert client.get("/api/v1/experiments").json()["total"] == 1
     assert client.get(url).json() == result
@@ -238,3 +281,48 @@ def test_experiment_checkpoints_are_immutable_and_identifier_guarded(tmp_path):
         store.publish_experiment_record("split-test", "../../escape", {})
     with pytest.raises(ValueError):
         store.publish_experiment_record("../escape", "selection", {})
+
+
+def experiment_request(snapshot_id):
+    document = plan_document()
+    return {
+        "name": document["name"],
+        "data": {"mode": "snapshot", "snapshot_id": snapshot_id, "codes": ["600000.SH", "000001.SZ", "600519.SH"]},
+        "backtest": {"topk": 1, "initial_cash": 150000},
+        "plan": {"periods": document["periods"], "candidates": document["candidates"]},
+        "evaluation": {"horizons": [1, 3]},
+    }
+
+
+def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path):
+    from support.fakes import make_service, run_claimed
+    from support.fixed_pool import publish_fixture_snapshot
+
+    data, runs = tmp_path / "data", tmp_path / "runs"
+    manifest = publish_fixture_snapshot(
+        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
+    )
+    service = make_service(runs, data)
+    client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
+    body = experiment_request(manifest["id"])
+    invalid = json.loads(json.dumps(body))
+    invalid["plan"]["periods"]["validation"]["start"] = "2025-01-21"
+    response = client.post(
+        "/api/v1/research/experiments", json=invalid, headers={"Idempotency-Key": "experiment-bad-1"}
+    )
+    assert response.status_code == 422 and "首尾相接" in response.json()["detail"]
+    assert service.store.list()["total"] == 0 and not runs.exists()
+    response = client.post("/api/v1/research/experiments", json=body, headers={"Idempotency-Key": "experiment-ok-1"})
+    assert response.status_code == 202, response.text
+    task = response.json()
+    assert task["kind"] == "experiment" and task["progress"] == {"completed": 0, "total": 6}
+    assert [t["id"] for t in client.get("/api/v1/research/tasks").json()["items"]] == [task["id"]]
+    assert service.store.claim() == task["id"]
+    finished = run_claimed(service, task["id"])
+    assert finished["status"] == "succeeded", finished["error"]
+    assert finished["progress"] == {"completed": 6, "total": 6}
+    run_id = finished["result"]["experiment_run_id"]
+    saved = client.get("/api/v1/experiments/" + run_id).json()
+    assert saved["selection"]["candidate_id"] == finished["result"]["selected_candidate"]
+    assert len(saved["rows"]) == 5 and client.get("/api/v1/experiments").json()["total"] == 1
+    assert all(client.get("/api/v1/backtests/" + row["backtest_run_id"]).status_code == 200 for row in saved["rows"])

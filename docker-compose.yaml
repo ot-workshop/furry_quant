@@ -1,0 +1,83 @@
+name: ${COMPOSE_PROJECT_NAME:-finance-quant}
+
+x-app: &app
+  image: ${APP_IMAGE:?Set APP_IMAGE in .env}
+  init: true
+  environment: &app-env
+    POSTGRES_HOST: db
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: ${POSTGRES_DB:-finance_quant}
+    POSTGRES_USER: ${POSTGRES_USER:-quant}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    STORAGE_ROOT: /app/storage
+    FINANCE_QUANT_RUNS: /app/storage/runs
+    FINANCE_QUANT_DATA: /app/storage/data
+    FINANCE_QUANT_WAREHOUSE: /app/storage/data/warehouse/csi300
+    FINANCE_QUANT_QUOTA_DB: /app/storage/network/quota.sqlite3
+    TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+    TUSHARE_HTTP_URL: https://api.tushare.pro
+    FRONTEND_DIST: /app/frontend/dist
+    HTTP_HOST: 0.0.0.0
+    HTTP_PORT: "8000"
+    ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://127.0.0.1:8000,http://localhost:8000}
+    TZ: Asia/Shanghai
+  volumes:
+    - ${STORAGE_ROOT:-./storage}:/app/storage
+  stop_grace_period: 90s
+
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:18.6-bookworm}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-finance_quant}
+      POSTGRES_USER: ${POSTGRES_USER:-quant}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      TZ: Asia/Shanghai
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    shm_size: 256mb
+
+  migrate:
+    <<: *app
+    command: [alembic, upgrade, head]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    command: [python, -m, finance_quant.server, api]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    <<: *app
+    command: [python, -m, finance_quant.server, worker]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+      TUSHARE_HTTP_URL: https://api.tushare.pro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres:

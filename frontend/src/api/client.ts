@@ -5,87 +5,21 @@ import type {
   EquityResponse,
   EvaluationList,
   EvaluationResult,
+  ExecutionEventPage,
   FactorHistoryResponse,
   FactorRunList,
   FactorScoresResponse,
+  IndustryReport,
   InstrumentList,
   Overview,
   PositionResponse,
   TradeResponse,
 } from "../types";
+import { API_BASE, query, request } from "./http";
 
-const API_BASE = "/api/v1";
+export { ApiError, describeError, isAbortError } from "./http";
 
-export class ApiError extends Error {
-  readonly status: number;
-
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-  }
-}
-
-type QueryValue = string | number | boolean | null | undefined;
-
-function queryString(params: Record<string, QueryValue>): string {
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null || value === "") continue;
-    search.set(key, String(value));
-  }
-  const text = search.toString();
-  return text ? `?${text}` : "";
-}
-
-async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}${path}`, {
-      signal,
-      headers: { Accept: "application/json" },
-    });
-  } catch (error) {
-    if (isAbortError(error)) throw error;
-    throw new ApiError("无法连接后端服务，请确认本地 API 已启动", 0);
-  }
-
-  if (!response.ok) {
-    let detail = `请求失败（HTTP ${response.status}）`;
-    try {
-      const body = (await response.json()) as { detail?: unknown };
-      if (typeof body.detail === "string" && body.detail.trim()) {
-        detail = body.detail;
-      }
-    } catch {
-      // 非 JSON 错误响应，保留通用提示。
-    }
-    throw new ApiError(detail, response.status);
-  }
-
-  try {
-    return (await response.json()) as T;
-  } catch {
-    throw new ApiError("后端返回了无法解析的数据", response.status);
-  }
-}
-
-export function isAbortError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    (error as { name?: unknown }).name === "AbortError"
-  );
-}
-
-export function describeError(error: unknown): string {
-  if (error instanceof ApiError) {
-    return error.status > 0 ? `${error.message}（HTTP ${error.status}）` : error.message;
-  }
-  if (error instanceof Error) return error.message;
-  return "发生未知错误";
-}
+const id = encodeURIComponent;
 
 export interface ScoreQuery {
   date?: string;
@@ -101,128 +35,90 @@ export interface PageQuery {
   limit?: number;
 }
 
-export interface PositionQuery extends PageQuery {
-  date?: string;
-}
-
 export const api = {
-  getOverview(signal?: AbortSignal): Promise<Overview> {
-    return request<Overview>("/overview", signal);
-  },
+  overview: (signal?: AbortSignal) =>
+    request<Overview>("/overview", { signal }),
+  dataStatus: (signal?: AbortSignal) =>
+    request<DataStatus>("/data-status", { signal }),
 
-  getInstruments(q?: string, signal?: AbortSignal, runId?: string): Promise<InstrumentList> {
-    return request<InstrumentList>(`/instruments${queryString({ q, run_id: runId })}`, signal);
-  },
-
-  getFactorRuns(signal?: AbortSignal): Promise<FactorRunList> {
-    return request<FactorRunList>("/factor-runs", signal);
-  },
-
-  getDataStatus(signal?: AbortSignal): Promise<DataStatus> {
-    return request<DataStatus>("/data-status", signal);
-  },
-
-  getFactorScores(
+  instruments: (runId: string, q = "", signal?: AbortSignal) =>
+    request<InstrumentList>(`/instruments${query({ q, run_id: runId })}`, {
+      signal,
+    }),
+  factorRuns: (signal?: AbortSignal) =>
+    request<FactorRunList>("/factor-runs", { signal }),
+  factorScores: (
     runId: string,
     params: ScoreQuery = {},
     signal?: AbortSignal,
-  ): Promise<FactorScoresResponse> {
-    return request<FactorScoresResponse>(
-      `/factor-runs/${encodeURIComponent(runId)}/scores${queryString({
-        instrument: params.instrument,
-        date: params.date,
-        sort_by: params.sort_by,
-        descending: params.descending,
-        offset: params.offset,
-        limit: params.limit,
-      })}`,
-      signal,
-    );
-  },
-
-  getFactorHistory(
+  ) =>
+    request<FactorScoresResponse>(
+      `/factor-runs/${id(runId)}/scores${query({ ...params })}`,
+      { signal },
+    ),
+  factorHistory: (
     instrument: string,
     scheme: string,
+    runId: string,
     signal?: AbortSignal,
-    runId?: string,
-  ): Promise<FactorHistoryResponse> {
-    return request<FactorHistoryResponse>(
-      `/instruments/${encodeURIComponent(instrument)}/factor-history${queryString({
-        scheme,
-        run_id: runId,
-      })}`,
-      signal,
-    );
-  },
-
-  getEvaluations(signal?: AbortSignal): Promise<EvaluationList> {
-    return request<EvaluationList>("/evaluations", signal);
-  },
-
-  getEvaluation(id: string, signal?: AbortSignal): Promise<EvaluationResult> {
-    return request<EvaluationResult>(
-      `/evaluations/${encodeURIComponent(id)}`,
-      signal,
-    );
-  },
-
-  evaluationDownloadUrl(id: string): string {
-    return `${API_BASE}/evaluations/${encodeURIComponent(id)}/download`;
-  },
-
-  evaluationReportUrl(id: string): string {
-    return `${API_BASE}/evaluations/${encodeURIComponent(id)}/report`;
-  },
-
-  getBacktests(signal?: AbortSignal): Promise<BacktestList> {
-    return request<BacktestList>("/backtests", signal);
-  },
-
-  getBacktest(id: string, signal?: AbortSignal): Promise<BacktestDetail> {
-    return request<BacktestDetail>(`/backtests/${encodeURIComponent(id)}`, signal);
-  },
-
-  getExecutionEvents(id:string,offset=0,signal?:AbortSignal):Promise<{items:Array<{date:string;instrument:string;action:string;reason:string;status:string;block_reason:string|null}>;total:number;offset:number;limit:number}> {
-    return request(`/backtests/${encodeURIComponent(id)}/execution-events?offset=${offset}&limit=50`,signal);
-  },
-
-  getBacktestEquity(id: string, signal?: AbortSignal): Promise<EquityResponse> {
-    return request<EquityResponse>(
-      `/backtests/${encodeURIComponent(id)}/equity`,
-      signal,
-    );
-  },
-
-  getBacktestPositions(
-    id: string,
-    params: PositionQuery = {},
+  ) =>
+    request<FactorHistoryResponse>(
+      `/instruments/${id(instrument)}/factor-history${query({ scheme, run_id: runId })}`,
+      { signal },
+    ),
+  industries: (
+    kind: "factor-runs" | "backtests",
+    runId: string,
+    date?: string | null,
     signal?: AbortSignal,
-  ): Promise<PositionResponse> {
-    return request<PositionResponse>(
-      `/backtests/${encodeURIComponent(id)}/positions${queryString({
-        date: params.date,
-        offset: params.offset,
-        limit: params.limit,
-      })}`,
-      signal,
-    );
-  },
+  ) =>
+    request<IndustryReport>(
+      `/${kind}/${id(runId)}/industries${query({ date })}`,
+      {
+        signal,
+      },
+    ),
+  factorTableUrl: (runId: string, name: "history" | "diagnostics") =>
+    `${API_BASE}/factor-runs/${id(runId)}/tables/${name}`,
 
-  getBacktestTrades(
-    id: string,
-    params: PageQuery = {},
+  backtests: (signal?: AbortSignal) =>
+    request<BacktestList>("/backtests", { signal }),
+  backtest: (runId: string, signal?: AbortSignal) =>
+    request<BacktestDetail>(`/backtests/${id(runId)}`, { signal }),
+  equity: (runId: string, signal?: AbortSignal) =>
+    request<EquityResponse>(`/backtests/${id(runId)}/equity`, { signal }),
+  positions: (
+    runId: string,
+    params: PageQuery & { date?: string },
     signal?: AbortSignal,
-  ): Promise<TradeResponse> {
-    return request<TradeResponse>(
-      `/backtests/${encodeURIComponent(id)}/trades${queryString({
-        offset: params.offset,
-        limit: params.limit,
-      })}`,
-      signal,
-    );
-  },
+  ) =>
+    request<PositionResponse>(
+      `/backtests/${id(runId)}/positions${query({ ...params })}`,
+      {
+        signal,
+      },
+    ),
+  trades: (runId: string, params: PageQuery, signal?: AbortSignal) =>
+    request<TradeResponse>(
+      `/backtests/${id(runId)}/trades${query({ ...params })}`,
+      { signal },
+    ),
+  executionEvents: (runId: string, params: PageQuery, signal?: AbortSignal) =>
+    request<ExecutionEventPage>(
+      `/backtests/${id(runId)}/execution-events${query({ ...params })}`,
+      { signal },
+    ),
+  backtestDownloadUrl: (runId: string) =>
+    `${API_BASE}/backtests/${id(runId)}/download`,
 
-  downloadUrl(id: string): string {
-    return `${API_BASE}/backtests/${encodeURIComponent(id)}/download`;
-  },
+  evaluations: (signal?: AbortSignal) =>
+    request<EvaluationList>("/evaluations", { signal }),
+  evaluation: (runId: string, signal?: AbortSignal) =>
+    request<EvaluationResult>(`/evaluations/${id(runId)}`, { signal }),
+  evaluationDownloadUrl: (runId: string) =>
+    `${API_BASE}/evaluations/${id(runId)}/download`,
+  evaluationReportUrl: (runId: string) =>
+    `${API_BASE}/evaluations/${id(runId)}/report`,
+  evaluationLabelsUrl: (runId: string, horizon: string) =>
+    `${API_BASE}/evaluations/${id(runId)}/labels/${id(horizon)}/download`,
 };
