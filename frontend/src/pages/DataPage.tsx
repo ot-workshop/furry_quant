@@ -11,7 +11,6 @@ import {
   Input,
   InputNumber,
   List,
-  Popconfirm,
   Progress,
   Segmented,
   Statistic,
@@ -24,14 +23,12 @@ import {
   CloudDownloadOutlined,
   EyeOutlined,
   PauseCircleOutlined,
-  PlayCircleOutlined,
   ReloadOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { api } from "../api/client";
 import {
   dataApi,
-  type IndexHandlingReport,
   type MarketJob,
   type MarketPlan,
   type MarketScope,
@@ -49,7 +46,11 @@ import {
   StatusTag,
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
-import type { ResearchDataset, StockCoverage } from "../types";
+import type {
+  HistoricalDataset,
+  ResearchDataset,
+  StockCoverage,
+} from "../types";
 import { dateText, formatDateTime, formatNumber } from "../utils/format";
 
 const SCOPES: Record<MarketScope, string> = {
@@ -83,11 +84,6 @@ export default function DataPage({ tab }: { tab: string | null }) {
         items={[
           { key: "datasets", label: "研究数据集", children: <Datasets /> },
           { key: "market", label: "行情下载", children: <MarketDownload /> },
-          {
-            key: "csi300",
-            label: "沪深300历史仓库",
-            children: <IndexWarehouse />,
-          },
           { key: "database", label: "数据库", children: <Database /> },
         ]}
       />
@@ -100,7 +96,7 @@ function Datasets() {
   return (
     <Section
       title="研究数据集"
-      description="行情下载完成后自动生成（最多 50 只、覆盖完整）；“新建研究”中可直接选择"
+      description="自选股票下载完成后生成固定股票池（最多 50 只、覆盖完整）；沪深300下载完成后生成历史成分动态股票池。“新建研究”中可直接选择"
       extra={
         <Button
           icon={<ReloadOutlined />}
@@ -114,10 +110,10 @@ function Datasets() {
       <Resource
         state={status}
         empty={(data) =>
-          data.snapshots.length ? null : (
+          data.snapshots.length || data.historical_indices?.length ? null : (
             <EmptyState
               title="还没有研究数据集"
-              description="在“行情下载”中选择自选股票，预览并确认下载后即会生成。"
+              description="在“行情下载”中选择自选股票或沪深300，预览并确认下载后即会生成。"
               action={
                 <Button
                   type="primary"
@@ -131,83 +127,154 @@ function Datasets() {
         }
       >
         {(data) => (
-          <Table<ResearchDataset>
-            rowKey="id"
-            dataSource={data.snapshots}
-            pagination={{ pageSize: 20, hideOnSinglePage: true }}
-            expandable={{
-              expandedRowRender: (row) => <DatasetDetail dataset={row} />,
-            }}
-            columns={[
-              {
-                title: "数据集",
-                render: (_, row) => (
-                  <Flex vertical>
-                    <Typography.Text strong>
-                      {row.is_subset ? "研究股票子集" : "行情下载"} ·{" "}
-                      {row.codes.length} 只
-                    </Typography.Text>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {row.id}
-                    </Typography.Text>
-                  </Flex>
-                ),
-              },
-              {
-                title: "范围",
-                render: (_, row) =>
-                  `${dateText(row.start)} ~ ${dateText(row.end)}`,
-              },
-              { title: "交易日", align: "right", dataIndex: "trading_days" },
-              {
-                title: "覆盖",
-                render: (_, row) => (
-                  <StatusTag
-                    status={row.coverage.status ?? "incomplete"}
-                    label={
-                      row.coverage.status === "complete" ? "完整" : "不完整"
-                    }
-                  />
-                ),
-              },
-              {
-                title: "核验",
-                render: (_, row) =>
-                  row.validation_counts ? (
-                    Object.entries(row.validation_counts)
-                      .filter(([, count]) => count)
-                      .map(([level, count]) => (
-                        <Tag key={level}>
-                          {VALIDATION[level] ?? level} {count}
-                        </Tag>
-                      ))
-                  ) : row.cross_validation ? (
-                    <Tag>
-                      {CROSS_STATUS[row.cross_validation.status] ??
-                        row.cross_validation.status}
-                    </Tag>
-                  ) : (
-                    "—"
-                  ),
-              },
-              {
-                title: "",
-                align: "right",
-                render: () => (
-                  <Button
-                    size="small"
-                    type="link"
-                    onClick={() => navigate(paths.newResearch())}
-                  >
-                    用于研究
-                  </Button>
-                ),
-              },
-            ]}
-          />
+          <Flex vertical gap={24}>
+            {data.historical_indices?.length ? (
+              <HistoricalDatasets items={data.historical_indices} />
+            ) : null}
+            {data.snapshots.length ? (
+              <SnapshotDatasets items={data.snapshots} />
+            ) : null}
+          </Flex>
         )}
       </Resource>
     </Section>
+  );
+}
+
+function HistoricalDatasets({ items }: { items: HistoricalDataset[] }) {
+  return (
+    <Flex vertical gap={8}>
+      <Typography.Text strong>沪深300历史成分（动态股票池）</Typography.Text>
+      <Table<HistoricalDataset>
+        rowKey="id"
+        dataSource={items}
+        pagination={false}
+        columns={[
+          {
+            title: "数据集",
+            render: (_, row) => (
+              <Flex vertical>
+                <Typography.Text strong>
+                  沪深300历史成分 · 累计 {row.codes_count} 只
+                </Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {row.shared_version ?? row.id}
+                </Typography.Text>
+              </Flex>
+            ),
+          },
+          {
+            title: "研究范围",
+            render: (_, row) => `${row.start} ~ ${row.end}`,
+          },
+          {
+            title: "行情起点（含预热）",
+            render: (_, row) => row.data_start,
+          },
+          { title: "交易日", align: "right", dataIndex: "trading_days" },
+          {
+            title: "说明",
+            render: (_, row) => (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {row.note}
+              </Typography.Text>
+            ),
+          },
+          {
+            title: "",
+            align: "right",
+            render: () => (
+              <Button
+                size="small"
+                type="link"
+                onClick={() => navigate(paths.newResearch())}
+              >
+                用于研究
+              </Button>
+            ),
+          },
+        ]}
+      />
+    </Flex>
+  );
+}
+
+function SnapshotDatasets({ items }: { items: ResearchDataset[] }) {
+  return (
+    <Flex vertical gap={8}>
+      <Typography.Text strong>固定股票池</Typography.Text>
+      <Table<ResearchDataset>
+        rowKey="id"
+        dataSource={items}
+        pagination={{ pageSize: 20, hideOnSinglePage: true }}
+        expandable={{
+          expandedRowRender: (row) => <DatasetDetail dataset={row} />,
+        }}
+        columns={[
+          {
+            title: "数据集",
+            render: (_, row) => (
+              <Flex vertical>
+                <Typography.Text strong>
+                  {row.is_subset ? "研究股票子集" : "行情下载"} ·{" "}
+                  {row.codes.length} 只
+                </Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {row.id}
+                </Typography.Text>
+              </Flex>
+            ),
+          },
+          {
+            title: "范围",
+            render: (_, row) => `${dateText(row.start)} ~ ${dateText(row.end)}`,
+          },
+          { title: "交易日", align: "right", dataIndex: "trading_days" },
+          {
+            title: "覆盖",
+            render: (_, row) => (
+              <StatusTag
+                status={row.coverage.status ?? "incomplete"}
+                label={row.coverage.status === "complete" ? "完整" : "不完整"}
+              />
+            ),
+          },
+          {
+            title: "核验",
+            render: (_, row) =>
+              row.validation_counts ? (
+                Object.entries(row.validation_counts)
+                  .filter(([, count]) => count)
+                  .map(([level, count]) => (
+                    <Tag key={level}>
+                      {VALIDATION[level] ?? level} {count}
+                    </Tag>
+                  ))
+              ) : row.cross_validation ? (
+                <Tag>
+                  {CROSS_STATUS[row.cross_validation.status] ??
+                    row.cross_validation.status}
+                </Tag>
+              ) : (
+                "—"
+              ),
+          },
+          {
+            title: "",
+            align: "right",
+            render: () => (
+              <Button
+                size="small"
+                type="link"
+                onClick={() => navigate(paths.newResearch())}
+              >
+                用于研究
+              </Button>
+            ),
+          },
+        ]}
+      />
+    </Flex>
   );
 }
 
@@ -660,324 +727,6 @@ function MarketDownload() {
         </Resource>
       </Section>
     </Flex>
-  );
-}
-
-const INDEX_STATUS: Record<string, string> = {
-  not_started: "未开始",
-  running: "下载中",
-  partial: "部分通过，有待复核",
-  complete: "已完成",
-  paused: "已暂停",
-  interrupted: "已中断，可续传",
-};
-
-function IndexWarehouse() {
-  const { message } = App.useApp();
-  const status = useApiResource((signal) => dataApi.index(signal), [], {
-    pollMs: 5000,
-  });
-  const [busy, setBusy] = useState(false);
-  const [reportOpen, setReportOpen] = useState(false);
-
-  async function act(kind: "start" | "pause") {
-    setBusy(true);
-    try {
-      await (kind === "start" ? dataApi.startIndex() : dataApi.pauseIndex());
-      message.success(
-        kind === "start"
-          ? "已加入队列，后台工作进程会开始或续传下载"
-          : "已请求暂停",
-      );
-      status.reload();
-    } catch (e) {
-      message.error(describeError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Resource state={status}>
-      {(data) => {
-        const total = data.total ?? 0;
-        const bao = data.budget.requests
-          .filter((r) => r.source === "baostock")
-          .reduce((sum, r) => sum + r.count, 0);
-        return (
-          <Flex vertical gap={16}>
-            <Card>
-              <Flex justify="space-between" align="center" wrap gap={16}>
-                <Flex gap={32} wrap>
-                  <Statistic
-                    title="状态"
-                    value={
-                      data.worker_running
-                        ? data.pause_requested
-                          ? "暂停中"
-                          : "下载中"
-                        : (INDEX_STATUS[data.status] ?? data.status)
-                    }
-                  />
-                  <Statistic
-                    title="已核验"
-                    value={data.verified}
-                    suffix={total ? `/ ${total}` : undefined}
-                  />
-                  <Statistic title="待复核" value={data.failed} />
-                  <Statistic
-                    title="BaoStock 今日请求"
-                    value={bao}
-                    suffix={`/ ${data.limits.baostock_daily_requests}`}
-                  />
-                </Flex>
-                <Flex gap={8}>
-                  <Popconfirm
-                    title="开始或续传沪深300历史下载？"
-                    description="会在后台排队执行，大约需要较长时间；已完成的股票不会重复下载。"
-                    onConfirm={() => void act("start")}
-                    disabled={data.worker_running || data.status === "complete"}
-                  >
-                    <Button
-                      type="primary"
-                      icon={<PlayCircleOutlined />}
-                      loading={busy}
-                      disabled={
-                        data.worker_running || data.status === "complete"
-                      }
-                    >
-                      {data.verified ? "续传" : "开始下载"}
-                    </Button>
-                  </Popconfirm>
-                  <Button
-                    icon={<PauseCircleOutlined />}
-                    disabled={!data.worker_running || data.pause_requested}
-                    onClick={() => void act("pause")}
-                  >
-                    暂停
-                  </Button>
-                </Flex>
-              </Flex>
-              {total ? (
-                <Progress
-                  style={{ marginTop: 16 }}
-                  percent={Math.round((data.verified / total) * 100)}
-                  status={data.worker_running ? "active" : undefined}
-                />
-              ) : null}
-              {data.worker_running && data.current_code ? (
-                <Typography.Text type="secondary">
-                  当前：{data.current_code}
-                </Typography.Text>
-              ) : null}
-              {data.budget.holds.length ? (
-                <Alert
-                  style={{ marginTop: 12 }}
-                  type="warning"
-                  showIcon
-                  title="辅助数据源暂时限制访问，依赖它的抽样核验与补缺需等待"
-                />
-              ) : null}
-            </Card>
-            {data.plan ? (
-              <Section title="下载计划">
-                <Descriptions
-                  size="small"
-                  column={{ xs: 1, md: 3 }}
-                  items={[
-                    {
-                      key: "range",
-                      label: "研究区间",
-                      children: `${data.plan.start} ~ ${data.plan.end}`,
-                    },
-                    {
-                      key: "data",
-                      label: "数据起点",
-                      children: data.plan.data_start,
-                    },
-                    {
-                      key: "warmup",
-                      label: "预热",
-                      children: `${data.plan.warmup_sessions} 个交易日`,
-                    },
-                    {
-                      key: "snapshots",
-                      label: "成分快照",
-                      children: `${data.plan.snapshots} 期`,
-                    },
-                  ]}
-                />
-                <Notes
-                  items={[
-                    "官方 Tushare 为主源；按代码固定抽样约 10% 做 BaoStock 双源核验，异常时额外核验或补缺。",
-                    "成分快照从其日期后的下一交易日起使用，不回填当月；该口径可能滞后实际调样日。",
-                    data.validation_counts
-                      ? `单源 ${data.validation_counts.single_source_passed} 只，双源 ${data.validation_counts.dual_source_verified} 只，补缺 ${data.validation_counts.secondary_fallback_passed} 只。`
-                      : null,
-                  ]}
-                />
-              </Section>
-            ) : null}
-            {data.failures.length ? (
-              <Section
-                title="待复核股票"
-                description="前 30 只；原始响应已保留，不进入已核验数据集"
-              >
-                <Table
-                  size="small"
-                  rowKey="code"
-                  pagination={false}
-                  dataSource={data.failures}
-                  columns={[
-                    { title: "股票", dataIndex: "code" },
-                    { title: "原因", dataIndex: "reason" },
-                    {
-                      title: "日期",
-                      render: (_, row) =>
-                        row.dates?.slice(0, 5).join("、") ?? "—",
-                    },
-                  ]}
-                />
-              </Section>
-            ) : null}
-            <Section
-              title="自动处理报告"
-              extra={
-                <Button
-                  onClick={() => setReportOpen(true)}
-                  disabled={reportOpen}
-                >
-                  查看报告
-                </Button>
-              }
-            >
-              {reportOpen ? (
-                <HandlingReport />
-              ) : (
-                <Typography.Text type="secondary">
-                  逐只说明下载中发现的问题及处理方式；读取报告不会联网。
-                </Typography.Text>
-              )}
-            </Section>
-          </Flex>
-        );
-      }}
-    </Resource>
-  );
-}
-
-const ACTION_KIND: Record<string, { color: string; label: string }> = {
-  handled: { color: "success", label: "已自动处理" },
-  warning: { color: "warning", label: "已说明限制" },
-  info: { color: "default", label: "信息" },
-  unresolved: { color: "error", label: "待复核" },
-};
-
-function HandlingReport() {
-  const report = useApiResource((signal) => dataApi.indexReport(signal), []);
-  const [filter, setFilter] = useState<"issues" | "review" | "all">("issues");
-  return (
-    <Resource state={report}>
-      {(data: IndexHandlingReport) => {
-        const stocks = data.stocks.filter((s) =>
-          filter === "all"
-            ? true
-            : filter === "review"
-              ? s.outcome === "needs_review"
-              : s.outcome !== "passed",
-        );
-        return (
-          <Flex vertical gap={12}>
-            <Flex gap={32} wrap>
-              <Statistic
-                title="已通过"
-                value={data.summary.passed}
-                suffix={`/ ${data.summary.total}`}
-              />
-              <Statistic title="自动处理" value={data.summary.auto_handled} />
-              <Statistic title="待复核" value={data.summary.needs_review} />
-              <Statistic title="未处理" value={data.summary.pending} />
-            </Flex>
-            <Flex justify="space-between" wrap gap={8}>
-              <Segmented
-                value={filter}
-                onChange={(value) => setFilter(value as typeof filter)}
-                options={[
-                  { value: "issues", label: "有问题的股票" },
-                  { value: "review", label: "仅待复核" },
-                  { value: "all", label: "全部" },
-                ]}
-              />
-              <Button href={dataApi.indexReportUrl}>下载完整 JSON</Button>
-            </Flex>
-            <Table
-              size="small"
-              rowKey="code"
-              dataSource={stocks}
-              pagination={{ pageSize: 20, hideOnSinglePage: true }}
-              expandable={{
-                rowExpandable: (row) => row.actions.length > 0,
-                expandedRowRender: (row) => (
-                  <List
-                    size="small"
-                    dataSource={row.actions}
-                    renderItem={(action) => (
-                      <List.Item>
-                        <Flex vertical gap={2}>
-                          <Flex gap={8}>
-                            <Tag color={ACTION_KIND[action.kind]?.color}>
-                              {ACTION_KIND[action.kind]?.label ?? action.kind}
-                            </Tag>
-                            <Typography.Text strong>
-                              {action.title}
-                            </Typography.Text>
-                          </Flex>
-                          <Typography.Text>
-                            发现：{action.reason}
-                          </Typography.Text>
-                          <Typography.Text type="secondary">
-                            处理：{action.handling}
-                          </Typography.Text>
-                          {action.dates.length ? (
-                            <Typography.Text
-                              type="secondary"
-                              style={{ fontSize: 12 }}
-                            >
-                              涉及 {action.dates.length} 天：
-                              {action.dates.slice(0, 8).join("、")}
-                              {action.dates.length > 8 ? " 等" : ""}
-                            </Typography.Text>
-                          ) : null}
-                        </Flex>
-                      </List.Item>
-                    )}
-                  />
-                ),
-              }}
-              columns={[
-                {
-                  title: "股票",
-                  render: (_, row) => `${row.name} ${row.code}`,
-                },
-                {
-                  title: "核验等级",
-                  render: (_, row) =>
-                    row.validation_level
-                      ? (VALIDATION[row.validation_level] ??
-                        row.validation_level)
-                      : "—",
-                },
-                { title: "结果", dataIndex: "result" },
-              ]}
-            />
-            <Notes
-              title="处理规则与边界"
-              items={[...data.rules, data.scope, data.job_handling]}
-            />
-          </Flex>
-        );
-      }}
-    </Resource>
   );
 }
 

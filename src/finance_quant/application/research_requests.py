@@ -127,7 +127,17 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
         if selected
         else {"mode": "snapshot", "snapshot_id": None, "codes": []}
     )
-    if selected:
+    from finance_quant.application.market_download import warehouse_roots
+    from finance_quant.data.historical_warehouse import warehouse_option
+
+    historical_indices = [option for root in warehouse_roots(data_root) if (option := warehouse_option(root))]
+    if not selected and historical_indices:
+        # Only a CSI 300 version exists: default to its newest research range.
+        latest = historical_indices[0]
+        end = latest["end"]
+        start = max(latest["start"], str(int(end[:4]) - 1) + "-03-03")
+        start = next((day for day in latest["trading_dates"] if day >= start), latest["start"])
+    elif selected:
         calendar = registry[selected["id"]][2]
         days = pd.DatetimeIndex(
             calendar.loc[
@@ -140,21 +150,15 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
         end = selected["end"]
     else:
         start = str(int(end[:4]) - 1) + "-03-03"
-    backtest = BacktestConfig(start, end, topk=max(1, min(3, len(data["codes"]))))
+    backtest = BacktestConfig(start, end, topk=min(3, len(data["codes"]) or 3))
     factors, evaluation = FactorConfig(), EvaluationConfig()
     neutralization = parse_neutralization()
-    from finance_quant.application.index_download_manager import warehouse_root
     from finance_quant.data.benchmarks import benchmark_options
-    from finance_quant.data.historical_warehouse import warehouse_option
     from finance_quant.data.industries import optional_industries
 
     industry = optional_industries()
-    from finance_quant.application.market_download import warehouse_roots
-
-    historical_indices = [option for root in warehouse_roots(data_root) if (option := warehouse_option(root))]
     return {
         "snapshots": snapshots,
-        "historical_index": warehouse_option(warehouse_root()),
         "historical_indices": historical_indices,
         "comparison_benchmarks": benchmark_options(),
         "industry_data": (
@@ -218,17 +222,16 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
         raise ValueError("请选择数据集：固定股票池快照或沪深300历史成分仓库")
     if obj["mode"] == "index_warehouse":
         _fields(obj, ("mode", "warehouse_id"), label="历史成分仓库")
-        from finance_quant.application.index_download_manager import warehouse_root
         from finance_quant.application.market_download import warehouse_roots
         from finance_quant.data.historical_warehouse import warehouse_header, warehouse_option
 
         root = next(
             (r for r in warehouse_roots(data_root) if (o := warehouse_option(r)) and o["id"] == obj["warehouse_id"]),
-            warehouse_root(),
+            None,
         )
-        option = warehouse_option(root)
+        option = warehouse_option(root) if root is not None else None
         if option is None or obj["warehouse_id"] != option["id"]:
-            raise ValueError("历史成分仓库未完成或版本已变化，请刷新数据列表")
+            raise ValueError("沪深300历史成分版本不存在或已变化，请刷新数据列表")
         _, calendar, digest = warehouse_header(root)
         if not option["start"] <= backtest.start <= backtest.end <= option["end"]:
             raise ValueError("回测区间超出历史仓库研究范围")

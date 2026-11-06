@@ -32,14 +32,15 @@ export default function DashboardPage() {
   });
   const backtests = useApiResource((signal) => api.backtests(signal), []);
 
-  const datasets =
-    status.data?.snapshots.filter((item) => !item.is_subset) ?? [];
+  const fixed = status.data?.snapshots.filter((item) => !item.is_subset) ?? [];
+  const historical = status.data?.historical_indices ?? [];
+  const datasetCount = fixed.length + historical.length;
   const database = status.data?.database;
   const active =
     tasks.data?.items.filter(
       (t) => t.status === "queued" || t.status === "running",
     ) ?? [];
-  const noData = status.data !== null && datasets.length === 0;
+  const noData = status.data !== null && datasetCount === 0;
 
   return (
     <>
@@ -86,10 +87,15 @@ export default function DashboardPage() {
         <Card>
           <Statistic
             title="研究数据集"
-            value={datasets.length}
+            value={datasetCount}
             suffix="个"
             loading={status.loading}
           />
+          {status.data ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              固定股票池 {fixed.length} · 沪深300历史成分 {historical.length}
+            </Typography.Text>
+          ) : null}
         </Card>
         <Card>
           <Statistic

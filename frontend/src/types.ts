@@ -391,8 +391,24 @@ export interface DatabaseStatus {
   };
 }
 
+/** Published CSI 300 dynamic-universe version as listed by `/data-status`. */
+export interface HistoricalDataset {
+  id: string;
+  label: string;
+  shared_version?: string;
+  start: string;
+  end: string;
+  data_start: string;
+  trading_days: number;
+  codes_count: number;
+  membership_policy: string;
+  point_in_time_certified: boolean;
+  note: string;
+}
+
 export interface DataStatus {
   snapshots: ResearchDataset[];
+  historical_indices?: HistoricalDataset[];
   database: DatabaseStatus | null;
 }
 

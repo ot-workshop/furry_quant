@@ -202,7 +202,6 @@ export interface ResearchOptions {
     point_in_time_certified: boolean;
     data_asof?: string | null;
   } | null;
-  historical_index?: HistoricalIndexOption | null;
   historical_indices?: HistoricalIndexOption[];
   snapshots: Snapshot[];
   factor_definitions: FactorDefinition[];

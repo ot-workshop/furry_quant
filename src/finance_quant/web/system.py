@@ -42,6 +42,20 @@ def research_snapshots(data_root) -> list[dict]:
     return items
 
 
+def historical_indices(data_root) -> list[dict]:
+    """Published CSI 300 dynamic-universe versions, newest first, without the per-day calendar."""
+    from finance_quant.application.market_download import warehouse_roots
+    from finance_quant.data.historical_warehouse import warehouse_option
+
+    items = []
+    for root in warehouse_roots(data_root):
+        option = warehouse_option(root)
+        if option:
+            dates = option.pop("trading_dates")
+            items.append({**option, "trading_days": len(dates)})
+    return items
+
+
 def system_router(store, data_root, *, database_probe=None, market_status=None) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
 
@@ -60,6 +74,7 @@ def system_router(store, data_root, *, database_probe=None, market_status=None) 
         try:
             return {
                 "snapshots": research_snapshots(data_root),
+                "historical_indices": historical_indices(data_root),
                 "database": market_status() if market_status is not None else None,
             }
         except (SQLAlchemyError, OSError, ValueError):

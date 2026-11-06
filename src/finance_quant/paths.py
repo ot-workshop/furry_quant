@@ -29,10 +29,6 @@ def data_root() -> Path:
     return _configured("FINANCE_QUANT_DATA", storage_root() / "data")
 
 
-def warehouse_root() -> Path:
-    return _configured("FINANCE_QUANT_WAREHOUSE", data_root() / "warehouse" / "csi300")
-
-
 def quota_database() -> Path:
     return _configured("FINANCE_QUANT_QUOTA_DB", storage_root() / "network" / "quota.sqlite3")
 

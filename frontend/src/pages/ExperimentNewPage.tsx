@@ -28,7 +28,7 @@ import {
   type ResearchOptions,
 } from "../api/research";
 import { navigate, paths } from "../app/routes";
-import { ErrorState, Loading, PageHeader } from "../components/ui";
+import { EmptyState, ErrorState, Loading, PageHeader } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import {
   buildBacktest,
@@ -83,6 +83,40 @@ export default function ExperimentNewPage() {
       <ErrorState message={options.error} onRetry={options.reload} />
     ) : (
       <Loading rows={10} />
+    );
+  if (!options.data.snapshots.length)
+    return (
+      <>
+        <PageHeader
+          title="新建方案比较"
+          back={{ to: paths.experiments(), label: "全部方案比较" }}
+        />
+        <Card>
+          <EmptyState
+            title="方案比较需要固定股票池数据集"
+            description={
+              options.data.historical_indices?.length
+                ? "方案比较目前只支持固定股票池（自选股票，最多 50 只），暂不支持沪深300历史成分动态股票池。沪深300数据可以在“新建研究”中直接使用。"
+                : "请先在数据管理中下载自选股票行情（最多 50 只），完成后即可比较方案。"
+            }
+            action={
+              <Space>
+                <Button
+                  type="primary"
+                  onClick={() => navigate(paths.data("market"))}
+                >
+                  去下载行情
+                </Button>
+                {options.data.historical_indices?.length ? (
+                  <Button onClick={() => navigate(paths.newResearch())}>
+                    新建研究
+                  </Button>
+                ) : null}
+              </Space>
+            }
+          />
+        </Card>
+      </>
     );
   return <ExperimentForm options={options.data} />;
 }
@@ -218,7 +252,6 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
             form={{ ...form, sourceMode: "snapshot" }}
             options={{
               ...options,
-              historical_index: null,
               historical_indices: [],
             }}
             update={update}

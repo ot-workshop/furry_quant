@@ -134,11 +134,7 @@ function ResearchForm({
     }
   }
 
-  if (
-    !options.snapshots.length &&
-    !options.historical_indices?.length &&
-    !options.historical_index
-  )
+  if (!options.snapshots.length && !options.historical_indices?.length)
     return (
       <>
         <PageHeader title="新建研究" />

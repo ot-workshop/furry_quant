@@ -35,10 +35,25 @@ def make_engine() -> Engine:
     )
 
 
+class SchemaNotReady(RuntimeError):
+    """The database is reachable but has not been migrated to this application's schema."""
+
+
+MIGRATE_HINT = (
+    "Run the migration first: `uv run python -m finance_quant.server migrate --env-file .env.development` "
+    "(Docker: `docker compose run --rm migrate`)."
+)
+
+
 def check_schema(engine: Engine | None = None):
     """Fail explicitly until the one-shot migration has completed."""
     with (engine or make_engine()).connect() as connection:
-        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        exists = connection.execute(text("SELECT to_regclass('alembic_version')")).scalar_one()
+        if exists is None:
+            raise SchemaNotReady("Database has no schema yet. " + MIGRATE_HINT)
+        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
         if revision != SCHEMA_REVISION:
-            raise RuntimeError("Database schema differs from application; run the migration service")
+            raise SchemaNotReady(
+                f"Database schema revision {revision!r} differs from application ({SCHEMA_REVISION}). " + MIGRATE_HINT
+            )
     return {"database": "postgresql", "revision": revision}

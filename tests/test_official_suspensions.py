@@ -7,9 +7,10 @@ import pytest
 from test_index_download import setup_plan
 from test_joint_data import Primary, Secondary, bundle, market_frame
 
-from finance_quant.application import index_download as module
+from finance_quant.application import quote_capture as module
 from finance_quant.data.official_suspensions import full_day_halts
 from finance_quant.data.providers import TushareProvider, TushareSettings
+from support import warehouse
 
 
 def status(day="20250106", kind="S", timing=None, code="600000.SH"):
@@ -85,7 +86,7 @@ def test_official_halts_complete_warehouse_without_baostock_and_keep_intraday_tr
             return replace(item, raw=raw, adjusted=adjusted)
 
     secondary = HaltSecondary() if ambiguous else Secondary(error=True)
-    result = module.run_index_download(root, provider=provider, secondary=secondary)
+    result = warehouse.run_index_download(root, provider=provider, secondary=secondary)
     assert result["status"] == "complete"
     assert bool(secondary.calls) == ambiguous
     assert result["validation_counts"]["single_source_passed"] == 2
@@ -106,5 +107,5 @@ def test_official_halts_complete_warehouse_without_baostock_and_keep_intraday_tr
             assert evidence["source"] == "tushare_suspend_d"
             assert evidence["requests"][0]["sha256"]
     requests = len(provider.fixture.calls)
-    again = module.run_index_download(root, provider=provider, secondary=secondary)
+    again = warehouse.run_index_download(root, provider=provider, secondary=secondary)
     assert again["status"] == "complete" and len(provider.fixture.calls) == requests

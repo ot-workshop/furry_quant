@@ -129,12 +129,24 @@ def consume(store, root, runs, data, stop, lock_connection):
             raise
 
 
+def migrate():
+    """Apply Alembic migrations with the already-loaded environment (same as `alembic upgrade head`)."""
+    from alembic import command
+    from alembic.config import Config
+
+    from finance_quant.paths import PROJECT_ROOT
+
+    config = Config(str(PROJECT_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+    command.upgrade(config, "head")
+
+
 def main():
     from finance_quant.runtime import configure_runtime
 
     configure_runtime()
     parser = argparse.ArgumentParser()
-    parser.add_argument("role", choices=["api", "worker", "check"])
+    parser.add_argument("role", choices=["migrate", "api", "worker", "check"])
     parser.add_argument("--env-file", type=Path, help="Load development or server settings from this file")
     parser.add_argument("--host", help="API listen address; defaults to HTTP_HOST or 0.0.0.0")
     parser.add_argument("--port", type=int, help="API listen port; defaults to HTTP_PORT or 8000")
@@ -149,9 +161,16 @@ def main():
     logging.basicConfig(level=logging.INFO)
     if not os.environ.get("POSTGRES_HOST"):
         parser.error("POSTGRES_HOST is required; configure a native development database or Docker Compose")
-    from finance_quant.persistence.database import check_schema
+    if args.role == "migrate":
+        migrate()
+        print("Database schema is up to date")
+        return
+    from finance_quant.persistence.database import SchemaNotReady, check_schema
 
-    check_schema()
+    try:
+        check_schema()
+    except SchemaNotReady as error:
+        parser.exit(2, f"{error}\n")
     root, runs, data = paths()
     if args.role == "check":
         print("Database schema and storage are ready")

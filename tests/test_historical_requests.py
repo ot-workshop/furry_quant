@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from test_historical_workflow import request, warehouse_fixture
 
-from finance_quant.application import index_download_manager as manager
+from finance_quant.application import market_download
 from finance_quant.application.research_requests import validate_request
 from finance_quant.data.historical_warehouse import warehouse_option
 from support.fakes import make_app, make_service, run_claimed
@@ -13,7 +13,7 @@ from support.fakes import make_app, make_service, run_claimed
 def setup(tmp_path, monkeypatch):
     root = tmp_path / "warehouse"
     warehouse_fixture(root)
-    monkeypatch.setattr(manager, "warehouse_root", lambda: root)
+    monkeypatch.setattr(market_download, "warehouse_roots", lambda data_root: [root.resolve()])
     body = request()
     body["data"]["warehouse_id"] = warehouse_option(root)["id"]
     return root, body
@@ -42,6 +42,22 @@ def test_historical_request_strict_bounds_and_pinned_version(tmp_path, monkeypat
         validate_request(body, tmp_path / "data", tmp_path / "runs")
 
 
+def test_csi300_version_counts_as_a_dataset_and_sets_option_defaults(tmp_path, monkeypatch):
+    _, body = setup(tmp_path, monkeypatch)
+    runs, data = tmp_path / "runs", tmp_path / "data"
+    client = TestClient(make_app(runs, data_root=data), base_url="http://127.0.0.1")
+    status = client.get("/api/v1/data-status").json()
+    assert status["snapshots"] == []
+    [listed] = status["historical_indices"]
+    assert listed["id"] == body["data"]["warehouse_id"]
+    assert "trading_dates" not in listed and listed["trading_days"] > 0
+    options = client.get("/api/v1/research/options").json()
+    option, backtest = options["historical_indices"][0], options["defaults"]["backtest"]
+    assert option["start"] <= backtest["start"] <= backtest["end"] == option["end"]
+    assert backtest["start"] in option["trading_dates"]
+    assert backtest["topk"] == 3
+
+
 def test_web_submit_worker_results_and_correct_result_links(tmp_path, monkeypatch):
     root, body = setup(tmp_path, monkeypatch)
     runs = tmp_path / "runs"
@@ -49,7 +65,7 @@ def test_web_submit_worker_results_and_correct_result_links(tmp_path, monkeypatc
     service = make_service(runs, data)
     client = TestClient(make_app(runs, data_root=data, service=service), base_url="http://127.0.0.1")
     options = client.get("/api/v1/research/options").json()
-    assert options["historical_index"]["id"] == body["data"]["warehouse_id"]
+    assert options["historical_indices"][0]["id"] == body["data"]["warehouse_id"]
     response = client.post("/api/v1/research/tasks", json=body, headers={"Idempotency-Key": "historical-valid-12345"})
     assert response.status_code == 202, response.text
     identifier = response.json()["id"]

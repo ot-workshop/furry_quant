@@ -83,16 +83,17 @@ def test_numeric_batch_input_and_streamed_horizons_keep_all_labels_and_diagnosti
 def test_worker_persists_internal_error_stage_without_values_or_credentials(tmp_path, monkeypatch, exception):
     from test_historical_workflow import request
 
-    from finance_quant.application import historical_workflow, index_download_manager
+    from finance_quant.application import historical_workflow, market_download
     from support.fakes import make_service, run_claimed
 
+    monkeypatch.setattr(market_download, "warehouse_roots", lambda data_root: [(tmp_path / "warehouse").resolve()])
     service = make_service(tmp_path / "runs", tmp_path / "data")
     store = service.store
     task = store.create(
         request(),
         {
             "mode": "index_warehouse",
-            "warehouse_dir": str(index_download_manager.warehouse_root().resolve()),
+            "warehouse_dir": str((tmp_path / "warehouse").resolve()),
             "manifest_sha256": "pinned",
         },
         "runtime-error-12345",

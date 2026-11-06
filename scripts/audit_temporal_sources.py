@@ -28,10 +28,17 @@ def main():
     pa.set_io_thread_count(1)
     parser = argparse.ArgumentParser()
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--warehouse", type=Path, help="沪深300历史成分视图目录；默认取最新发布的共享下载版本")
     args = parser.parse_args()
-    root = Path("data/audits") / ("temporal-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f"))
+    from finance_quant.application.market_download import warehouse_roots
+    from finance_quant.paths import data_root
+
+    views = [args.warehouse] if args.warehouse else warehouse_roots(data_root())
+    if not views:
+        parser.error("没有已发布的沪深300历史成分视图，请先在数据管理中完成沪深300行情下载")
+    warehouse = views[0]
+    root = data_root() / "audits" / ("temporal-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f"))
     root.mkdir(parents=True)
-    warehouse = Path("data/warehouse/csi300-2020")
     manifest = json.loads((warehouse / "manifest.json").read_text(encoding="utf-8"))
     report = {
         "created_at": datetime.now(timezone.utc).isoformat(),

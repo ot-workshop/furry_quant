@@ -12,7 +12,6 @@ x-app: &app
     STORAGE_ROOT: /app/storage
     FINANCE_QUANT_RUNS: /app/storage/runs
     FINANCE_QUANT_DATA: /app/storage/data
-    FINANCE_QUANT_WAREHOUSE: /app/storage/data/warehouse/csi300
     FINANCE_QUANT_QUOTA_DB: /app/storage/network/quota.sqlite3
     TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
     TUSHARE_HTTP_URL: https://api.tushare.pro

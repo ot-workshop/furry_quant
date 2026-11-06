@@ -111,7 +111,6 @@ def workspace(tmp_path, monkeypatch, market_store):
             "reference_files": {p.name: shared.digest(p) for p in reference.glob("*.parquet")},
         },
     )
-    monkeypatch.setattr(downloads, "default_warehouse", lambda: old)
     original = downloads.normalize_memberships
     monkeypatch.setattr(
         downloads, "normalize_memberships", lambda raw, calendar: original(raw, calendar, expected_count=2)
@@ -426,3 +425,40 @@ def test_mixed_segment_validation_never_upgrades_single_source_rows():
         "dual_source_verified": 0,
         "secondary_fallback_passed": 1,
     }
+
+
+YEAR_END_HALT = ["2025-12-30", "2025-12-31", "2026-01-01", "2026-01-02"]
+
+
+class HaltedSecondary(Secondary):
+    def fetch(self, code, start, end):
+        result = super().fetch(code, start, end)
+        for frame in (result.raw, result.adjusted):
+            mask = frame.date.isin(YEAR_END_HALT)
+            frame.loc[mask, "tradestatus"] = "0"
+            frame.loc[mask, ["volume", "amount", "pctChg"]] = ""
+        return result
+
+
+def test_segment_starting_inside_a_suspension_is_extended_to_the_pre_halt_close(workspace, monkeypatch):
+    _, root, _, provider = workspace
+    halted = {day.replace("-", "") for day in YEAR_END_HALT}
+    original = provider.query
+
+    def query(api, **params):
+        frame = original(api, **params)
+        if api in {"daily", "daily_basic"} and "trade_date" in frame:
+            frame = frame.loc[~frame.trade_date.isin(halted)].reset_index(drop=True)
+        return frame
+
+    monkeypatch.setattr(provider, "query", query)
+    plan = downloads.prepare(root, spec(end="2026-01-06", codes=["600000.SH"]), provider=provider)
+    result = downloads.run(root, plan["id"], provider=provider, secondary=HaltedSecondary())
+    assert result["status"] == "complete", result["failures"]
+    repair = next(r for r in result["repairs"] if r["action"] == "extended_before_suspension")
+    # The 2026 segment's anchor (2025-12-31) is halted, so the request reaches back before the halt.
+    assert repair["start"] < "20251230" and repair["end"] == "20260106"
+    sessions = pd.bdate_range(plan["data_start"], "2026-01-06")
+    frame, _ = shared.read_asset(root, "600000.SH", sessions, plan["provider_id"])
+    suspended = frame.loc[frame.is_suspended, "date"].dt.strftime("%Y-%m-%d").tolist()
+    assert suspended == YEAR_END_HALT and frame.loc[frame.is_suspended, "close"].eq(10.0).all()

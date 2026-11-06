@@ -5,9 +5,9 @@ import pandas as pd
 import pytest
 from test_joint_data import Primary, Secondary
 
-from finance_quant.application import index_download as module
 from finance_quant.data.index_universe import normalize_memberships
 from finance_quant.data.network_budget import DownloadPaused
+from support import warehouse
 
 
 def setup_plan(root, provider):
@@ -72,21 +72,21 @@ def test_download_resume_lifecycle_history_and_daily_reader(tmp_path):
     root = tmp_path / "warehouse"
     provider = SparsePrimary()
     setup_plan(root, provider)
-    first = module.run_index_download(root, provider=provider, secondary=Secondary(), limit=1)
+    first = warehouse.run_index_download(root, provider=provider, secondary=Secondary(), limit=1)
     assert first["status"] == "partial" and first["completed"] == 1 and not (root / "manifest.json").exists()
     count = len(provider.calls)
-    final = module.run_index_download(root, provider=provider, secondary=Secondary())
+    final = warehouse.run_index_download(root, provider=provider, secondary=Secondary())
     assert final["status"] == "complete" and final["completed"] == 2 and len(provider.calls) == count + 4
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     for code, asset in manifest["assets"].items():
         frame = pd.read_parquet(root / asset["file"])
         assert frame.adjustment_source.eq("baostock").all()
         assert frame.date.min() >= pd.Timestamp(asset["start"])
-    day = module.index_observations_on(root, "2020-01-02")
+    day = warehouse.index_observations_on(root, "2020-01-02")
     assert day["pool_size"] == 2 and day["excluded"] == {"000001.SZ": "insufficient_pre_history"}
     assert day["rows"].instrument.tolist() == ["SH600000"]
-    assert module.index_observations_on(root, "2020-01-02", require_history=False)["rows"].shape[0] == 2
-    again = module.run_index_download(root, provider=provider, secondary=Secondary())
+    assert warehouse.index_observations_on(root, "2020-01-02", require_history=False)["rows"].shape[0] == 2
+    again = warehouse.run_index_download(root, provider=provider, secondary=Secondary())
     assert again["status"] == "complete" and len(provider.calls) == count + 4
 
 
@@ -102,10 +102,10 @@ def test_pause_keeps_raw_partitions_and_resume_does_not_redownload_them(tmp_path
     root = tmp_path / "warehouse"
     provider = Pausing()
     setup_plan(root, provider)
-    result = module.run_index_download(root, provider=provider, secondary=Secondary())
+    result = warehouse.run_index_download(root, provider=provider, secondary=Secondary())
     assert result["status"] == "paused" and not (root / "manifest.json").exists()
     provider.pause = False
-    result = module.run_index_download(root, provider=provider, secondary=Secondary())
+    result = warehouse.run_index_download(root, provider=provider, secondary=Secondary())
     assert result["status"] == "complete"
 
 
@@ -113,10 +113,10 @@ def test_corrupt_receipt_is_not_counted_as_completed(tmp_path):
     root = tmp_path / "warehouse"
     provider = Primary()
     setup_plan(root, provider)
-    result = module.run_index_download(root, provider=provider, secondary=Secondary())
+    result = warehouse.run_index_download(root, provider=provider, secondary=Secondary())
     record = result["assets"]["600000.SH"]
     (root / record["file"]).write_bytes(b"corrupt")
-    result = module.run_index_download(root, provider=provider, secondary=Secondary())
+    result = warehouse.run_index_download(root, provider=provider, secondary=Secondary())
     assert result["status"] == "partial" and result["completed"] == 1 and "600000.SH" in result["failures"]
 
 
@@ -125,9 +125,9 @@ def test_frozen_plan_rejects_silent_start_or_history_changes(tmp_path):
     provider = Primary()
     setup_plan(root, provider)
     with pytest.raises(ValueError):
-        module.run_index_download(root, start="2019-01-01", provider=provider, secondary=Secondary())
+        warehouse.run_index_download(root, start="2019-01-01", provider=provider, secondary=Secondary())
     with pytest.raises(ValueError):
-        module.run_index_download(root, warmup=21, provider=provider, secondary=Secondary())
+        warehouse.run_index_download(root, warmup=21, provider=provider, secondary=Secondary())
 
 
 def test_lifecycle_end_does_not_create_prices_or_use_a_future_replacement(tmp_path):
@@ -136,8 +136,8 @@ def test_lifecycle_end_does_not_create_prices_or_use_a_future_replacement(tmp_pa
     plan = setup_plan(root, provider)
     plan["tasks"][0]["end"] = "20200115"
     (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
-    result = module.run_index_download(root, provider=provider, secondary=Secondary())
+    result = warehouse.run_index_download(root, provider=provider, secondary=Secondary())
     assert result["status"] == "complete"
-    view = module.index_observations_on(root, "2020-01-16", require_history=False)
+    view = warehouse.index_observations_on(root, "2020-01-16", require_history=False)
     assert view["pool_size"] == 2 and view["rows"].instrument.tolist() == ["SZ000001"]
     assert view["excluded"] == {"600000.SH": "outside_stored_listing_lifecycle"}

@@ -52,11 +52,7 @@ export function DataSection({
 }) {
   const snapshot = snapshotOf(options, form.snapshotId);
   const historical = historicalOption(options, form.warehouseId);
-  const historicalChoices = options.historical_indices?.length
-    ? options.historical_indices
-    : options.historical_index
-      ? [options.historical_index]
-      : [];
+  const historicalChoices = options.historical_indices ?? [];
   const exports = options.snapshots.filter((item) => !item.is_subset);
   const subsets = options.snapshots.filter((item) => item.is_subset);
 

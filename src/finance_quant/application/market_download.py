@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from filelock import FileLock, Timeout
 
-from finance_quant.application.index_download import download_asset, validation_signature
+from finance_quant.application.quote_capture import download_asset, validation_signature
 from finance_quant.checksums import sha256_text
 from finance_quant.data import shared_market as shared
 from finance_quant.data.catalog import Catalog, utc_now
@@ -23,6 +23,7 @@ from finance_quant.data.market import SnapshotFetcher
 from finance_quant.data.network_budget import DownloadPaused, NetworkBudget
 from finance_quant.data.providers import TushareProvider, TushareSettings, normalize_calendar, normalize_index_daily
 from finance_quant.data.providers.baostock import BaoStockProvider
+from finance_quant.data.suspensions import LeadingHaltError
 
 POLICY = "shared-incremental-v1"
 INDEX_SIZE = 300
@@ -43,12 +44,6 @@ class IncrementalFetcher(ManagedFetcher):
 
 def shared_root(data_root):
     return Path(data_root) / "shared-market"
-
-
-def default_warehouse():
-    from finance_quant.application.index_download_manager import warehouse_root
-
-    return warehouse_root()
 
 
 def official_provider():
@@ -385,6 +380,82 @@ def status(root):
     }
 
 
+# Extra sessions requested before a segment that starts inside a suspension.
+LEADING_HALT_LOOKBACK = (20, 60, 250)
+
+
+class SegmentFetch:
+    """Download and validate one contiguous quote segment into its own capture directory."""
+
+    def __init__(self, root, plan, provider, secondary, calendar, sessions):
+        self.root, self.plan, self.provider, self.secondary = root, plan, provider, secondary
+        self.calendar, self.sessions = calendar, sessions
+
+    def fetch(self, task, start, end, *, suffix="", job_prefix="shared"):
+        """Return ``(record, key, capture_root)``.
+
+        A segment whose first session is a confirmed full-day halt has no prior traded close
+        to value the halt with. The start is then moved back over the suspension, by
+        progressively larger steps, until the pre-halt close is inside the request.
+        """
+        first = self.sessions.get_loc(pd.Timestamp(start))
+        for extra in (0, *LEADING_HALT_LOOKBACK):
+            left = self.sessions[max(0, first - extra)]
+            try:
+                return self._fetch(task, left, pd.Timestamp(end), suffix, job_prefix)
+            except LeadingHaltError:
+                if first - extra <= 0:
+                    break
+        raise ValueError(
+            f"{task['code']}在 {pd.Timestamp(start):%Y-%m-%d} 处于停牌，"
+            f"向前补查 {LEADING_HALT_LOOKBACK[-1]} 个交易日仍未找到停牌前报价；请把下载开始日期提前后重新预览"
+        )
+
+    def _fetch(self, task, left, right, suffix, job_prefix):
+        plan = self.plan
+        segment = {**task, "start": left.strftime("%Y%m%d"), "end": right.strftime("%Y%m%d")}
+        key = (
+            sha256_text(
+                f"{task['code']}:{segment['start']}:{segment['end']}:{plan['provider_id']}:{plan.get('refresh_id') or ''}"
+            )[:24]
+            + suffix
+        )
+        capture = self.root / "captures" / key
+        capture.mkdir(parents=True, exist_ok=True)
+        # Quote validation has no index membership. Price-limit gaps remain explicit flags.
+        intervals = pd.DataFrame(
+            {
+                "code": pd.Series(dtype=str),
+                "effective_from": pd.Series(dtype="datetime64[ns]"),
+                "effective_until": pd.Series(dtype="datetime64[ns]"),
+            }
+        )
+        atomic_json(
+            capture / "plan.json",
+            {
+                "start": left.strftime("%Y-%m-%d"),
+                "warmup_sessions": 0,
+                "reference_files": {"memberships.parquet": POLICY},
+            },
+        )
+        catalog = Catalog(capture)
+        job = f"{job_prefix}-{uuid.uuid4().hex}"
+        catalog.begin_job(job, segment, 4)
+        try:
+            fetch = IncrementalFetcher(
+                self.provider, capture, catalog, job, False, {"validation": {"mode": "fallback"}}
+            )
+            fetch.pause_file = self.root / "PAUSE"
+            fetch.validation_sha256 = validation_signature()
+            if fetch.provider_id != plan["provider_id"]:
+                raise ValueError("下载来源与计划不一致")
+            record = download_asset(capture, segment, self.calendar, intervals, fetch, self.secondary)
+            catalog.finish(job, "complete", {"code": task["code"]})
+            return record, key, capture
+        finally:
+            catalog.close()
+
+
 def run(root, identifier, *, provider=None, secondary=None):
     from finance_quant.application.update_service import publish_references
     from finance_quant.data import postgres_market
@@ -445,118 +516,53 @@ def run(root, identifier, *, provider=None, secondary=None):
                         j = expected.get_loc(b)
                         left = expected[max(0, i - 1)]
                         right = expected[min(len(expected) - 1, j + 1)]
-                        gap = {**task, "start": left.strftime("%Y%m%d"), "end": right.strftime("%Y%m%d")}
-                        key = sha256_text(
-                            f"{task['code']}:{gap['start']}:{gap['end']}:{plan['provider_id']}:{plan.get('refresh_id') or ''}"
-                        )[:24]
-                        gap_root = root / "captures" / key
-                        gap_root.mkdir(parents=True, exist_ok=True)
-                        # Quote validation has no index membership. Price-limit gaps remain explicit flags.
-                        intervals = pd.DataFrame(
-                            {
-                                "code": pd.Series(dtype=str),
-                                "effective_from": pd.Series(dtype="datetime64[ns]"),
-                                "effective_until": pd.Series(dtype="datetime64[ns]"),
-                            }
-                        )
-                        atomic_json(
-                            gap_root / "plan.json",
-                            {
-                                "start": left.strftime("%Y-%m-%d"),
-                                "warmup_sessions": 0,
-                                "reference_files": {"memberships.parquet": POLICY},
-                            },
-                        )
-                        cat = Catalog(gap_root)
-                        job = "shared-" + uuid.uuid4().hex
-                        cat.begin_job(job, gap, 4)
-                        try:
-                            fetch = IncrementalFetcher(
-                                provider, gap_root, cat, job, False, {"validation": {"mode": "fallback"}}
-                            )
-                            fetch.pause_file = root / "PAUSE"
-                            fetch.validation_sha256 = validation_signature()
-                            if fetch.provider_id != plan["provider_id"]:
-                                raise ValueError("下载来源与计划不一致")
-                            record = download_asset(gap_root, gap, calendar, intervals, fetch, secondary)
-                            try:
-                                shared.register_segment(
-                                    root, record, gap_root / record["file"], batch_id=identifier + "-" + key
-                                )
-                            except postgres_market.FullHistoryRequired as change:
-                                # Validation above established a coherent candidate, but a
-                                # scale/source change needs the full known history in one unit.
-                                if expanded:
-                                    raise
-                                expanded = True
-                                full_start = min(change.start, expected.min())
-                                full_end = max(change.end, expected.max())
-                                full_sessions = sessions[(sessions >= full_start) & (sessions <= full_end)]
-                                if (
-                                    full_sessions.empty
-                                    or full_sessions[0] != full_start
-                                    or full_sessions[-1] != full_end
-                                ):
-                                    raise ValueError(
-                                        f"{task['code']}复权修订超出当前日历，需按已存历史完整日期范围深度复核"
-                                    ) from None
-                                full = {
-                                    **task,
-                                    "start": full_start.strftime("%Y%m%d"),
-                                    "end": full_end.strftime("%Y%m%d"),
+                        segment = SegmentFetch(root, plan, provider, secondary, calendar, sessions)
+                        record, key, capture = segment.fetch(task, left, right)
+                        if record["start"] != left.strftime("%Y%m%d"):
+                            progress.setdefault("repairs", []).append(
+                                {
+                                    "code": task["code"],
+                                    "action": "extended_before_suspension",
+                                    "start": record["start"],
+                                    "end": record["end"],
+                                    "reason": "分段起点处于停牌期，已自动向前补取停牌前的最后报价",
                                 }
-                                full_root = root / "captures" / (key + "-full")
-                                full_root.mkdir(parents=True, exist_ok=True)
-                                atomic_json(
-                                    full_root / "plan.json",
-                                    {
-                                        "start": full_start.strftime("%Y-%m-%d"),
-                                        "warmup_sessions": 0,
-                                        "reference_files": {"memberships.parquet": POLICY},
-                                    },
-                                )
-                                full_cat = Catalog(full_root)
-                                full_job = "revision-" + uuid.uuid4().hex
-                                full_cat.begin_job(full_job, full, 4)
-                                try:
-                                    full_fetch = IncrementalFetcher(
-                                        provider,
-                                        full_root,
-                                        full_cat,
-                                        full_job,
-                                        False,
-                                        {"validation": {"mode": "fallback"}},
-                                    )
-                                    full_fetch.pause_file = root / "PAUSE"
-                                    full_fetch.validation_sha256 = validation_signature()
-                                    replacement = download_asset(
-                                        full_root, full, calendar, intervals, full_fetch, secondary
-                                    )
-                                    shared.register_segment(
-                                        root,
-                                        replacement,
-                                        full_root / replacement["file"],
-                                        batch_id=identifier + "-" + key + "-full",
-                                    )
-                                    full_cat.finish(
-                                        full_job,
-                                        "complete",
-                                        {"code": task["code"], "reason": "adjustment_revision_full_history"},
-                                    )
-                                    progress.setdefault("repairs", []).append(
-                                        {
-                                            "code": task["code"],
-                                            "action": "full_history_recheck",
-                                            "start": full["start"],
-                                            "end": full["end"],
-                                            "reason": "复权口径或价格来源修订，已重新校验完整已存历史",
-                                        }
-                                    )
-                                finally:
-                                    full_cat.close()
-                            cat.finish(job, "complete", {"code": task["code"]})
-                        finally:
-                            cat.close()
+                            )
+                        try:
+                            shared.register_segment(
+                                root, record, capture / record["file"], batch_id=identifier + "-" + key
+                            )
+                        except postgres_market.FullHistoryRequired as change:
+                            # Validation above established a coherent candidate, but a
+                            # scale/source change needs the full known history in one unit.
+                            if expanded:
+                                raise
+                            expanded = True
+                            full_start = min(change.start, expected.min())
+                            full_end = max(change.end, expected.max())
+                            full_sessions = sessions[(sessions >= full_start) & (sessions <= full_end)]
+                            if full_sessions.empty or full_sessions[0] != full_start or full_sessions[-1] != full_end:
+                                raise ValueError(
+                                    f"{task['code']}复权修订超出当前日历，需按已存历史完整日期范围深度复核"
+                                ) from None
+                            replacement, full_key, full_capture = segment.fetch(
+                                task, full_start, full_end, suffix="-full", job_prefix="revision"
+                            )
+                            shared.register_segment(
+                                root,
+                                replacement,
+                                full_capture / replacement["file"],
+                                batch_id=identifier + "-" + full_key,
+                            )
+                            progress.setdefault("repairs", []).append(
+                                {
+                                    "code": task["code"],
+                                    "action": "full_history_recheck",
+                                    "start": replacement["start"],
+                                    "end": replacement["end"],
+                                    "reason": "复权口径或价格来源修订，已重新校验完整已存历史",
+                                }
+                            )
                     # Verifies all slices and overlap before declaring a stock covered.
                     shared.read_asset(root, task["code"], expected, plan["provider_id"])
                     progress["downloaded_rows"] += len(expected) - len(covered)
@@ -720,11 +726,14 @@ def publish_index_view(root, identifier, version_id):
 
 
 def warehouse_roots(data_root):
-    roots = [default_warehouse().resolve()]
-    for path in (shared_root(data_root) / "versions").glob("*/index-view/manifest.json"):
-        if (path.parent.parent / "version.json").exists():
-            roots.append(path.parent.resolve())
-    return roots
+    """Complete CSI300 versions published by the shared download, newest first."""
+    published = [
+        path.parent
+        for path in (shared_root(data_root) / "versions").glob("*/index-view/manifest.json")
+        if (path.parent.parent / "version.json").exists()
+    ]
+    published.sort(key=lambda view: (view.parent / "version.json").stat().st_mtime, reverse=True)
+    return [view.resolve() for view in published]
 
 
 def export_snapshot(root, identifier, version_id):

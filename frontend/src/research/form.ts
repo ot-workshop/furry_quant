@@ -85,9 +85,6 @@ export function historicalOption(
 ): HistoricalIndexOption | undefined {
   return (
     options.historical_indices?.find((item) => item.id === id) ??
-    (options.historical_index && (!id || options.historical_index.id === id)
-      ? options.historical_index
-      : undefined) ??
     options.historical_indices?.[0]
   );
 }

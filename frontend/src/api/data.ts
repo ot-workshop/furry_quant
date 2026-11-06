@@ -1,4 +1,4 @@
-import { API_BASE, request } from "./http";
+import { request } from "./http";
 
 export type MarketScope = "csi300" | "all_market" | "custom";
 
@@ -77,90 +77,6 @@ export interface MarketStatus {
   budget?: NetworkBudget;
 }
 
-export interface IndexDownloadStatus {
-  validation_counts?: {
-    single_source_passed: number;
-    dual_source_verified: number;
-    secondary_fallback_passed: number;
-  };
-  status: string;
-  worker_running: boolean;
-  pause_requested: boolean;
-  total?: number;
-  verified: number;
-  failed: number;
-  raw_captures?: number;
-  current_code?: string;
-  message?: string;
-  updated_at?: string;
-  plan?: {
-    start: string;
-    end: string;
-    data_start: string;
-    warmup_sessions: number;
-    snapshots: number;
-    membership_policy: string;
-  };
-  budget: NetworkBudget;
-  failures: Array<{
-    code: string;
-    type: string;
-    reason: string;
-    dates?: string[];
-  }>;
-  limits: {
-    baostock_daily_requests: number;
-    baostock_per_minute: number;
-    tushare_per_minute: number;
-    tushare_daily_per_api: number;
-  };
-}
-
-export interface IndexHandlingAction {
-  rule: string;
-  title: string;
-  reason: string;
-  handling: string;
-  dates: string[];
-  kind: "handled" | "warning" | "info" | "unresolved";
-  evidence: Array<{
-    source: string;
-    api?: string;
-    file?: string;
-    sha256?: string | Record<string, string>;
-    url?: string;
-    known_by?: string;
-  }>;
-}
-
-export interface IndexHandlingReport {
-  schema_version: string;
-  source_id: string;
-  status: string;
-  source_updated_at: string | null;
-  generated_at: string;
-  scope: string;
-  job_handling?: string;
-  summary: {
-    total: number;
-    passed: number;
-    needs_review: number;
-    pending: number;
-    auto_handled: number;
-    action_counts: Record<string, number>;
-    validation_counts: Record<string, number>;
-  };
-  rules: string[];
-  stocks: Array<{
-    code: string;
-    name: string;
-    validation_level: string | null;
-    result: string;
-    outcome: "auto_handled" | "passed" | "needs_review";
-    actions: IndexHandlingAction[];
-  }>;
-}
-
 export const dataApi = {
   market: (signal?: AbortSignal) =>
     request<MarketStatus>("/research/market-download", { signal }),
@@ -182,20 +98,4 @@ export const dataApi = {
       method: "POST",
       body: {},
     }),
-
-  index: (signal?: AbortSignal) =>
-    request<IndexDownloadStatus>("/research/index-download", { signal }),
-  startIndex: () =>
-    request<IndexDownloadStatus>("/research/index-download/start", {
-      method: "POST",
-      body: {},
-    }),
-  pauseIndex: () =>
-    request<IndexDownloadStatus>("/research/index-download/pause", {
-      method: "POST",
-      body: {},
-    }),
-  indexReport: (signal?: AbortSignal) =>
-    request<IndexHandlingReport>("/research/index-download/report", { signal }),
-  indexReportUrl: `${API_BASE}/research/index-download/report/download`,
 };

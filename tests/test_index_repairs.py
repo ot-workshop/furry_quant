@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from test_joint_data import Secondary, bundle, market_frame
 
-from finance_quant.application.index_download import _quality, _secondary_evidence
+from finance_quant.application.quote_capture import _quality, _secondary_evidence
 from finance_quant.data.providers.baostock import BaoStockProvider
 from finance_quant.data.reconciliation import CrosscheckError, normalize_baostock, reconcile_market
 from finance_quant.data.reviewed_events import REVIEWED_EVENTS

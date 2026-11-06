@@ -114,7 +114,7 @@ def run_task(
         if task["status"] != "running":
             raise ValueError("Only a claimed task can execute")
         kind = task.get("kind", "research")
-        if kind in {"market_download", "index_download"}:
+        if kind == "market_download":
             return run_download_task(store, task, data_root)
         context = TaskContext(
             identifier, store, runs_root, data_root, storage_root, result_store_factory, market_repository
@@ -236,16 +236,10 @@ def run_download_task(store, task, data_root):
     try:
         store.stage(identifier, "download", "下载并检查数据", 0)
         (root / "PAUSE").unlink(missing_ok=True)
-        if task["kind"] == "market_download":
-            from finance_quant.application.market_download import run
+        from finance_quant.application.market_download import run
 
-            result = run(root, task["execution"]["plan_id"])
-            succeeded = result["status"] == "complete"
-        else:
-            from finance_quant.application.index_download import run_index_download
-
-            result = run_index_download(root)
-            succeeded = result.get("status") in {"complete", "completed"}
+        result = run(root, task["execution"]["plan_id"])
+        succeeded = result["status"] == "complete"
         store.finish(
             identifier,
             "succeeded" if succeeded else "interrupted",

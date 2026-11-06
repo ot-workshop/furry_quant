@@ -13,7 +13,7 @@ import pandas as pd
 from finance_quant.data.providers.baostock import BaoStockBundle, BaoStockProviderError
 from finance_quant.data.quality import adjustment_discontinuities
 from finance_quant.data.reviewed_events import verified_event_moves
-from finance_quant.data.suspensions import carry_halt_rows, confirmed_halts, invalid_halt_rows
+from finance_quant.data.suspensions import LeadingHaltError, carry_halt_rows, confirmed_halts, invalid_halt_rows
 from finance_quant.data.symbols import to_baostock, to_qlib
 
 POLICY = "baostock-crosscheck-v1"
@@ -221,6 +221,9 @@ def reconcile_market(
             one["valuation_source"], one["limit_source"] = "tushare", "tushare"
             one.index.name = "date"
             output.append(one.reset_index())
+        except LeadingHaltError:
+            # Not a source conflict: the caller widens the range to include the pre-halt close.
+            raise
         except (BaoStockProviderError, CrosscheckError, ValueError, KeyError, TypeError) as error:
             # Keep structured evidence; never persist arbitrary provider exception text.
             record["status"] = "conflict"

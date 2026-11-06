@@ -6,8 +6,9 @@ import pytest
 from test_index_download import SparsePrimary, setup_plan
 from test_joint_data import Primary, Secondary, bundle, market_frame
 
-from finance_quant.application import index_download as module
+from finance_quant.application import quote_capture as module
 from finance_quant.data.network_budget import DownloadPaused
+from support import warehouse
 
 
 def test_clean_unsampled_official_data_never_contacts_secondary(tmp_path, monkeypatch):
@@ -16,7 +17,7 @@ def test_clean_unsampled_official_data_never_contacts_secondary(tmp_path, monkey
     provider = Primary()
     setup_plan(root, provider)
     secondary = Secondary(error=True)
-    result = module.run_index_download(root, provider=provider, secondary=secondary)
+    result = warehouse.run_index_download(root, provider=provider, secondary=secondary)
     assert result["status"] == "complete" and secondary.calls == []
     assert result["validation_counts"] == {
         "single_source_passed": 2,
@@ -44,7 +45,7 @@ def test_optional_sample_failure_keeps_only_single_source_label(tmp_path, monkey
     root = tmp_path / "warehouse"
     provider = Primary()
     setup_plan(root, provider)
-    result = module.run_index_download(root, provider=provider, secondary=Unavailable(error=True))
+    result = warehouse.run_index_download(root, provider=provider, secondary=Unavailable(error=True))
     assert result["status"] == "complete" and result["validation_counts"]["single_source_passed"] == 2
     for asset in result["assets"].values():
         receipt = json.loads((root / asset["file"]).with_name("receipt.json").read_text(encoding="utf-8"))
@@ -57,7 +58,7 @@ def test_sample_success_is_distinct_from_secondary_fallback(tmp_path, monkeypatc
     for provider, level in [(Primary(), "dual_source_verified"), (SparsePrimary(), "secondary_fallback_passed")]:
         root = tmp_path / level
         setup_plan(root, provider)
-        result = module.run_index_download(root, provider=provider, secondary=Secondary())
+        result = warehouse.run_index_download(root, provider=provider, secondary=Secondary())
         assert result["status"] == "complete" and result["validation_counts"][level] == 2
         assert all(a["validation_level"] == level for a in result["assets"].values())
 
@@ -67,7 +68,7 @@ def test_invalid_primary_cannot_be_saved_as_single_source_when_secondary_fails(t
     root = tmp_path / "warehouse"
     provider = SparsePrimary()
     setup_plan(root, provider)
-    result = module.run_index_download(root, provider=provider, secondary=Secondary(error=True))
+    result = warehouse.run_index_download(root, provider=provider, secondary=Secondary(error=True))
     assert result["completed"] == 0 and len(result["failures"]) == 2 and not (root / "manifest.json").exists()
 
 
@@ -83,7 +84,7 @@ def test_detected_plausible_source_conflict_remains_quarantined(tmp_path, monkey
     root = tmp_path / "warehouse"
     provider = Primary()
     setup_plan(root, provider)
-    result = module.run_index_download(root, provider=provider, secondary=Conflicting())
+    result = warehouse.run_index_download(root, provider=provider, secondary=Conflicting())
     assert result["completed"] == 0 and len(result["failures"]) == 2
     assert not (root / "manifest.json").exists()
 
@@ -120,7 +121,7 @@ def test_confirmed_halt_does_not_require_secondary_adjusted_prices_to_be_correct
     root = tmp_path / "warehouse"
     provider = HaltPrimary()
     setup_plan(root, provider)
-    result = module.run_index_download(root, provider=provider, secondary=BrokenAdjusted())
+    result = warehouse.run_index_download(root, provider=provider, secondary=BrokenAdjusted())
     assert result["status"] == "complete" and result["validation_counts"]["single_source_passed"] == 2
     for asset in result["assets"].values():
         frame = pd.read_parquet(root / asset["file"])

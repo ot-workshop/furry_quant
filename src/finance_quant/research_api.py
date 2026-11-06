@@ -113,57 +113,6 @@ def research_router(service):
         except (OSError, RuntimeError):
             raise HTTPException(503, "共享下载暂不可用，请查看本机日志；旧版本保持可用") from None
 
-    @router.get("/index-download")
-    def index_status():
-        from finance_quant.application.index_download_manager import status
-
-        return status()
-
-    @router.get("/index-download/report")
-    @router.get("/index-download/report/download")
-    def index_handling_report(request: Request):
-        from starlette.responses import JSONResponse
-
-        from finance_quant.application.index_download_manager import warehouse_root
-        from finance_quant.application.index_download_reports import refresh_handling_report
-
-        try:
-            report = refresh_handling_report(warehouse_root())
-        except Timeout:
-            raise HTTPException(409, "处理报告正在生成，请稍后刷新") from None
-        except (OSError, ValueError, KeyError):
-            raise HTTPException(503, "处理报告读取失败，原下载状态未改变，请检查本机报告及来源文件") from None
-        headers = {"Cache-Control": "no-store"}
-        if request.url.path.endswith("/download"):
-            headers["Content-Disposition"] = 'attachment; filename="index-handling-report.json"'
-        return JSONResponse(report, headers=headers)
-
-    @router.post("/index-download/{action}")
-    async def index_action(action: str, request: Request):
-        document = await body(request)
-        if document != {} or action not in {"start", "pause"}:
-            raise HTTPException(422, "仅支持开始/续传或暂停，不接受额外参数")
-        from finance_quant.application import index_download_manager as manager
-
-        try:
-            if action == "pause":
-                return await run_in_threadpool(manager.pause)
-            root = manager.warehouse_root()
-            current = manager.status(root)
-            if current.get("worker_running"):
-                return current
-            service.store.create_download(
-                "index_download",
-                {"name": "沪深300历史下载"},
-                {"root": str(root.resolve())},
-                "index-" + uuid.uuid4().hex,
-            )
-            return {**current, "status": "queued"}
-        except Timeout:
-            raise HTTPException(409, "下载管理正在处理，请稍后重试") from None
-        except (RuntimeError, OSError):
-            raise HTTPException(503, "无法提交下载任务，请检查服务日志") from None
-
     @router.get("/tasks/{identifier}")
     def task(identifier: str):
         try:

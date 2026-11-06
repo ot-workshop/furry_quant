@@ -54,6 +54,10 @@ def confirmed_halts(bundle, code: str, sessions: pd.DatetimeIndex) -> pd.Datetim
     return sessions[masks[0]]
 
 
+class LeadingHaltError(ValueError):
+    """The requested range starts inside a suspension, so no prior traded close is available."""
+
+
 def carry_halt_rows(frame: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:
     """Only declared dates are carried; active-session holes remain missing."""
     out = frame.copy()
@@ -66,7 +70,7 @@ def carry_halt_rows(frame: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFram
         raise ValueError("Primary trading activity conflicts with suspension evidence")
     prior_close = out["close"].where(~mask & out["close"].gt(0)).ffill()
     if prior_close.loc[mask].isna().any():
-        raise ValueError("停牌区间缺少此前的有效报价，请把数据开始日期提前")
+        raise LeadingHaltError("停牌区间缺少此前的有效报价，请把数据开始日期提前")
     for field in ("open", "high", "low", "close", "pre_close"):
         out.loc[mask, field] = prior_close.loc[mask]
     for field in ("volume", "amount", "change"):
