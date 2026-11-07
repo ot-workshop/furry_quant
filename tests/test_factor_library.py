@@ -32,7 +32,7 @@ def settings():
         "max_drawdown": {"window": 15},
         "amount_anomaly": {"window": 5, "baseline_window": 10},
     }
-    return FactorConfig(tuple(FactorSpec(name, 0.1, **params[name]) for name in FACTOR_LIBRARY))
+    return FactorConfig(tuple(FactorSpec(name, 0.1, **params[name]) for name in params))
 
 
 def frame(size=7, days=180):
@@ -276,4 +276,4 @@ def test_ten_factors_through_queued_task_native_qlib_and_evaluation(tmp_path, mo
     assert backtest["metadata"]["factor_run_id"] == evaluation["metadata"]["factor_run_id"] == result["factor_run_id"]
     assert evaluation["methodology"]["directions"]["downside_volatility"] == "lower"
     assert evaluation["methodology"]["directions"]["max_drawdown"] == "higher"
-    assert set(factors["history"][-1]["contributions"]) == set(FACTOR_LIBRARY)
+    assert set(factors["history"][-1]["contributions"]) == set(settings().weights)

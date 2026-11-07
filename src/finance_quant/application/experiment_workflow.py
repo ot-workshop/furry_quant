@@ -15,6 +15,7 @@ from finance_quant.application.evaluation_workflow import evaluate_configured
 from finance_quant.application.factor_workflow import fingerprint, load_configured_snapshot, source_provenance
 from finance_quant.application.real_workflow import run_configured
 from finance_quant.research.experiments import ExperimentPlan, experiment_markdown, select_candidate
+from finance_quant.research.fundamentals import financial_provenance, fundamentals_for
 from finance_quant.research.market_factors import market_factors
 from finance_quant.storage import ResultStore
 
@@ -25,7 +26,7 @@ LIMITATIONS = [
     "每个方案、每个区间从相同初始资金和空仓开始；区间之间不承接持仓，不拼接净值，期末按收盘估值且未强制清仓。",
     "收益差是累计净收益减基准累计收益，未做风险调整，不是 alpha；未做多重试验校正或显著性检验。",
     "因子只使用信号日及以前数据，可使用上一区间的历史预热；标签仅保留本区间内的入场和离场，尾部不足持有期的样本剔除。",
-    "固定股票池由用户事后选择，不能代表全市场或历史指数成分，存在选股和幸存者偏差；未使用财报修订数据。",
+    "固定股票池由用户事后选择，不能代表全市场或历史指数成分，存在选股和幸存者偏差。",
     "Qlib 模拟含当前配置费用、固定比例冲击成本、整手约束和涨跌停限制；尚无成交量容量、排队成交或独立现金分红台账。",
     "策略按复权收益口径计算，基准是价格指数，分红口径不同；收益差不能直接解释为选股能力。",
     "BaoStock 回退仅覆盖行情与复权；估值仍来自 Tushare，未独立核验估值披露时点。",
@@ -58,7 +59,12 @@ def _preflight(config, plan: ExperimentPlan, market, calendar) -> dict[str, int]
     universe = set(market["instrument"].unique())
     for candidate in plan.candidates:
         try:
-            factors = market_factors(market, "preflight", candidate.factors)
+            factors = market_factors(
+                market,
+                "preflight",
+                candidate.factors,
+                financials=fundamentals_for(config.financials, candidate.factors, market),
+            )
         except ValueError as exc:
             raise ValueError(f"候选方案 {candidate.id} 无法计算评分：{exc}") from None
         coverage = {}
@@ -94,7 +100,12 @@ def run_experiment(config, plan: ExperimentPlan, *, result_store=None, progress=
         "data_checksums": manifest["files"],
         "plan": plan.as_dict(),
         "shared_parameters": shared,
+        **({"financial_version": config.financials.version} if config.financials else {}),
     }
+    for candidate in plan.candidates:
+        provenance.setdefault("candidate_financials", {})[candidate.id] = financial_provenance(
+            config.financials, candidate.factors
+        )
     run_id = "split-" + fingerprint(provenance)
     store = result_store or ResultStore(config.runs_dir)
     total_runs = 2 * len(plan.candidates) + 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 from finance_quant.application.research_requests import (
     MAX_CODES,
     _fields,
+    pin_financials_for,
     request_config,
     snapshot_registry,
     validate_request,
@@ -44,6 +45,16 @@ def _research_document(document: dict, plan: ExperimentPlan) -> dict:
     return research
 
 
+def _pin_candidates(research: dict, execution: dict, plan: ExperimentPlan, data_root) -> None:
+    """Every candidate shares one financial version, including when only a later one needs it."""
+    if "financials" in research:
+        return
+    binding = pin_financials_for([candidate.factors for candidate in plan.candidates], data_root)
+    if binding is not None:
+        research["financials"] = {"version": binding.version}
+        execution["financials"] = binding.as_dict()
+
+
 def validate_experiment_request(document: dict, data_root, runs_root) -> tuple[dict, dict]:
     """Validate everything the worker will need before anything is queued or written."""
     from finance_quant.application.experiment_workflow import _preflight
@@ -54,8 +65,9 @@ def validate_experiment_request(document: dict, data_root, runs_root) -> tuple[d
         raise ValueError("方案比较需要固定股票池快照；沪深300动态成分仓库暂不支持分段实验")
     plan = _plan(document)
     research, execution = validate_request(_research_document(document, plan), data_root, runs_root)
+    _pin_candidates(research, execution, plan, data_root)
     market, _, calendar, manifest = snapshot_registry(data_root)[research["data"]["snapshot_id"]]
-    config = request_config(research, _data_config(manifest, research["data"]["codes"]), runs_root)
+    config = request_config(research, _data_config(manifest, research["data"]["codes"]), runs_root, data_root)
     if len(config.data.codes) > MAX_CODES:
         raise ValueError(f"单次实验最多选择{MAX_CODES}只股票")
     selected = market.loc[market.instrument.isin({to_qlib(code) for code in config.data.codes})]
@@ -67,6 +79,7 @@ def validate_experiment_request(document: dict, data_root, runs_root) -> tuple[d
         "plan": {key: value for key, value in plan.as_dict().items() if key in {"periods", "candidates"}},
         "evaluation": research["evaluation"],
         **({"neutralization": research["neutralization"]} if "neutralization" in research else {}),
+        **({"financials": research["financials"]} if "financials" in research else {}),
     }
     return normalized, execution
 
@@ -96,7 +109,7 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
     plan = _plan(request)
     context.stage("prepare", "准备股票池并检查各候选方案的历史预热", 0)
     _, _, manifest, data, dataset_record = prepare_snapshot(context, request, execution)
-    config = request_config(_research_document(request, plan), data, context.runs_root)
+    config = request_config(_research_document(request, plan), data, context.runs_root, context.data_root)
     store = context.result_store_factory(dataset_record["id"] if dataset_record else None)
 
     def progress(completed, total, message):

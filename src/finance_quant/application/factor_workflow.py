@@ -7,8 +7,10 @@ from pathlib import Path
 
 from filelock import FileLock, Timeout
 
+from finance_quant.data.financials import FinancialBinding
 from finance_quant.data.market import load_market
 from finance_quant.provenance import fingerprint, source_provenance
+from finance_quant.research.fundamentals import financial_provenance, fundamentals_for
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.registry import FactorConfig
 from finance_quant.storage import ResultStore
@@ -40,6 +42,7 @@ def publish_factor_run(
     neutralization=None,
     *,
     result_store=None,
+    financials: FinancialBinding | None = None,
 ) -> dict:
     config = config or FactorConfig()
     from finance_quant.research.neutralization import NeutralizationConfig, industry_context
@@ -51,6 +54,7 @@ def publish_factor_run(
         "data_version": manifest["id"],
         "factors": config.as_list(),
         "neutralization": neutralization.as_dict(),
+        **financial_provenance(financials, config),
     }
     if industry:
         provenance["industry_version"] = industry.manifest["id"]
@@ -66,7 +70,12 @@ def publish_factor_run(
                     raise ValueError("Factor artifact provenance conflict")
                 return existing
             result = market_factors(
-                market, manifest["id"], config, neutralization=neutralization, industry_history=industry
+                market,
+                manifest["id"],
+                config,
+                neutralization=neutralization,
+                industry_history=industry,
+                financials=fundamentals_for(financials, config, market),
             )
             result["metadata"].update(
                 id=run_id, provenance=provenance, created_at=datetime.now(timezone.utc).isoformat()

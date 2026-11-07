@@ -116,6 +116,8 @@ def run_task(
         kind = task.get("kind", "research")
         if kind == "market_download":
             return run_download_task(store, task, data_root)
+        if kind == "financial_download":
+            return run_financial_download_task(store, task, data_root)
         context = TaskContext(
             identifier, store, runs_root, data_root, storage_root, result_store_factory, market_repository
         )
@@ -147,6 +149,13 @@ class TaskContext:
         self.store.stage(self.identifier, phase, message, completed)
 
 
+def financial_binding(execution: dict, data_root):
+    from finance_quant.data.financials import FinancialBinding, financial_root
+
+    pinned = execution.get("financials", {}).get("version")
+    return FinancialBinding(financial_root(data_root), pinned) if pinned else None
+
+
 def _run_historical(context: TaskContext, request: dict, execution: dict) -> dict:
     from finance_quant.application.historical_workflow import run_historical_research
     from finance_quant.application.market_download import warehouse_roots
@@ -154,6 +163,7 @@ def _run_historical(context: TaskContext, request: dict, execution: dict) -> dic
     root = Path(execution["warehouse_dir"]).resolve()
     if root not in warehouse_roots(context.data_root):
         raise ValueError("历史数据仓路径不合法")
+    binding = financial_binding(execution, context.data_root)
     dataset_record = None
     if context.repository is not None:
         dataset_record = context.repository.freeze_historical_warehouse(
@@ -168,6 +178,7 @@ def _run_historical(context: TaskContext, request: dict, execution: dict) -> dic
         expected_sha=execution["manifest_sha256"],
         stage=context.stage,
         result_store=result_store,
+        financials=binding,
     )
     if dataset_record:
         attach_outputs(result_store, dataset_record["id"], result)
@@ -200,12 +211,18 @@ def prepare_snapshot(context: TaskContext, request: dict, execution: dict):
 def _run_snapshot(context: TaskContext, request: dict, execution: dict) -> dict:
     context.stage("prepare", "准备所选股票池并检查预热数据", 0)
     market, calendar, manifest, data, dataset_record = prepare_snapshot(context, request, execution)
-    config = request_config(request, data, context.runs_root)
+    config = request_config(request, data, context.runs_root, context.data_root)
     validate_research_data(config, market, calendar)
     result_store = context.result_store_factory(dataset_record["id"] if dataset_record else None)
     context.stage("factors", "计算因子原始值、评分与排名", 1)
     factors = publish_factor_run(
-        market, manifest, context.runs_root, config.factors, config.neutralization, result_store=result_store
+        market,
+        manifest,
+        context.runs_root,
+        config.factors,
+        config.neutralization,
+        result_store=result_store,
+        financials=config.financials,
     )
     context.stage("backtest", "Qlib 正在模拟交易、费用和账户净值", 2)
     backtest = run_configured(config, result_store=result_store)
@@ -249,6 +266,30 @@ def run_download_task(store, task, data_root):
                 if key in result
             },
             error=None if succeeded else result.get("message", "数据尚未完整，请查看下载明细后续传"),
+        )
+    except Exception as error:
+        details = runtime_failure_details(error, "download", identifier)
+        store.finish(identifier, "failed", error=details["summary"], error_details=details)
+
+
+def run_financial_download_task(store, task, data_root):
+    identifier = task["id"]
+    execution = task["execution"]
+    try:
+        store.stage(identifier, "download", "按股票下载并核对财务报表", 0)
+        from finance_quant.application import financial_download
+
+        result = financial_download.run(data_root, execution["plan_id"])
+        succeeded = result["status"] == "complete"
+        store.finish(
+            identifier,
+            "succeeded" if succeeded else "interrupted",
+            result={
+                key: result[key]
+                for key in ("id", "status", "version_id", "completed", "total", "skipped", "message")
+                if key in result
+            },
+            error=None if succeeded else result.get("message", "财务数据尚未完整，请查看下载明细后续传"),
         )
     except Exception as error:
         details = runtime_failure_details(error, "download", identifier)

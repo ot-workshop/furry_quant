@@ -19,6 +19,36 @@ def _aware_timestamp(value, name: str) -> pd.Timestamp:
     return stamp.tz_convert("UTC")
 
 
+EXCHANGE_TZ = "Asia/Shanghai"
+SESSION_OPEN = pd.Timedelta(hours=9, minutes=30)
+
+
+def _sessions(trading_sessions: Sequence) -> pd.DatetimeIndex:
+    sessions = pd.DatetimeIndex(pd.to_datetime(list(trading_sessions), errors="raise"))
+    if sessions.tz is not None or sessions.hasnans or not sessions.equals(sessions.normalize()):
+        raise ValueError("trading_sessions must contain exchange-local dates")
+    return sessions.sort_values().unique()
+
+
+def availability_from_announcement_dates(announcement_dates, trading_sessions: Sequence) -> pd.Series:
+    """Vectorized :func:`availability_from_announcement_date`.
+
+    Returns UTC timestamps; ``NaT`` where the date is missing or the calendar does not
+    extend beyond it. Callers decide whether such rows are quarantined.
+    """
+    days = pd.Series(pd.to_datetime(pd.Series(announcement_dates), errors="raise"))
+    if days.dt.tz is not None or not days.dropna().equals(days.dropna().dt.normalize()):
+        raise ValueError("announcement dates must be dates without an assumed publication time")
+    sessions = _sessions(trading_sessions)
+    positions = sessions.searchsorted(days.to_numpy(), side="right")
+    known = days.notna().to_numpy() & (positions < len(sessions))
+    result = pd.Series(pd.NaT, index=days.index, dtype="datetime64[ns, UTC]")
+    if known.any():
+        opens = (sessions[positions[known]] + SESSION_OPEN).tz_localize(EXCHANGE_TZ).tz_convert("UTC")
+        result.loc[known] = pd.Series(opens, index=days.index[known])
+    return result
+
+
 def availability_from_announcement_date(announcement_date: str | date, trading_sessions: Sequence) -> pd.Timestamp:
     """Conservatively make date-only announcements usable next session at open.
 
@@ -28,13 +58,10 @@ def availability_from_announcement_date(announcement_date: str | date, trading_s
     day = pd.Timestamp(announcement_date)
     if pd.isna(day) or day.tzinfo is not None or day != day.normalize():
         raise ValueError("announcement_date must be a date without an assumed publication time")
-    sessions = pd.DatetimeIndex(pd.to_datetime(list(trading_sessions), errors="raise"))
-    if sessions.tz is not None or sessions.hasnans or not sessions.equals(sessions.normalize()):
-        raise ValueError("trading_sessions must contain exchange-local dates")
-    future = sessions[sessions > day].sort_values().unique()
-    if len(future) == 0:
+    available = availability_from_announcement_dates([day], trading_sessions).iloc[0]
+    if pd.isna(available):
         raise ValueError("Trading calendar does not extend beyond the announcement date")
-    return future[0].tz_localize("Asia/Shanghai") + pd.Timedelta(hours=9, minutes=30)
+    return available.tz_convert(EXCHANGE_TZ)
 
 
 def financial_history_as_of(reports: pd.DataFrame, as_of, periods: int | None = None) -> pd.DataFrame:

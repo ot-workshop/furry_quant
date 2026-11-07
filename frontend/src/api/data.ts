@@ -77,6 +77,64 @@ export interface MarketStatus {
   budget?: NetworkBudget;
 }
 
+/* ------------------------------------------------------- financial data */
+
+export interface FinancialSpec {
+  market_version: string;
+  refresh_days: number;
+}
+
+export interface FinancialPlan {
+  id: string;
+  spec: FinancialSpec;
+  codes: Array<{ code: string; rows: number }>;
+  skipped: number;
+  estimated_requests: number;
+  requests_per_stock: number;
+  note: string;
+  point_in_time_certified: boolean;
+}
+
+export interface FinancialJob {
+  id: string;
+  status: string;
+  total: number;
+  completed: number;
+  skipped: number;
+  downloaded_rows: number;
+  current_code?: string;
+  message?: string;
+  version_id?: string;
+  updated_at?: string;
+  failures: Array<{ code: string; type?: string; reason: string }>;
+}
+
+export interface FinancialVersion {
+  id: string;
+  created_at?: string;
+  codes: number;
+  rows: number;
+  quarantined: number;
+  latest_report_period: string | null;
+  current?: boolean;
+}
+
+export interface FinancialStatus {
+  worker_running: boolean;
+  version: FinancialVersion | null;
+  versions: FinancialVersion[];
+  jobs: FinancialJob[];
+  market_versions: Array<{
+    id: string;
+    scope: MarketScope;
+    start: string;
+    end: string;
+    codes_count: number;
+    restricted: boolean;
+  }>;
+  budget?: NetworkBudget;
+}
+
 export const dataApi = {
   market: (signal?: AbortSignal) =>
     request<MarketStatus>("/research/market-download", { signal }),
@@ -95,6 +153,26 @@ export const dataApi = {
     ),
   pauseMarket: () =>
     request<{ status: string }>("/research/market-download/pause", {
+      method: "POST",
+      body: {},
+    }),
+  financial: (signal?: AbortSignal) =>
+    request<FinancialStatus>("/research/financial-download", { signal }),
+  previewFinancial: (spec: FinancialSpec) =>
+    request<FinancialPlan>("/research/financial-download/preview", {
+      method: "POST",
+      body: spec,
+    }),
+  startFinancial: (planId: string) =>
+    request<{ id: string; task_id: string; status: string }>(
+      "/research/financial-download/start",
+      {
+        method: "POST",
+        body: { plan_id: planId },
+      },
+    ),
+  pauseFinancial: () =>
+    request<{ status: string }>("/research/financial-download/pause", {
       method: "POST",
       body: {},
     }),

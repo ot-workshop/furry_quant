@@ -121,6 +121,19 @@ def factor_temporal_audit(metadata):
             ),
         },
         {
+            "key": "financials",
+            "label": "财务报表",
+            "status": "unverified" if metadata.get("financial_data") else "not_used",
+            "detail": (
+                "使用财务数据版本 "
+                + metadata["financial_data"]["version"]
+                + "：报表只有公告日期，按下一交易日09:30可见；就地更正按调整前原始数、次年调整数或首次观测时间推迟可见。"
+                "供应商未留痕的历史更正无法还原，因此不是严格PIT。"
+                if metadata.get("financial_data")
+                else "本次入选因子不使用财务报表。"
+            ),
+        },
+        {
             "key": "signal",
             "label": "信号与交易时序",
             "status": "guarded",

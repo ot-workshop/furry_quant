@@ -19,11 +19,13 @@ from finance_quant.application.research_readiness import validate_warmup
 from finance_quant.checksums import file_sha256, sha256_text
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
 from finance_quant.data.execution_universe import validate_execution_universe
+from finance_quant.data.financials import financial_root
 from finance_quant.data.managed import atomic_json, coverage_report
 from finance_quant.data.market import load_market
 from finance_quant.data.symbols import to_qlib
 from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.factor_library import FACTOR_LIBRARY
+from finance_quant.research.fundamentals import fundamentals_for
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.neutralization import industry_context, parse_neutralization
 from finance_quant.research.registry import EvaluationConfig, FactorConfig, FactorSpec
@@ -157,9 +159,17 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
     from finance_quant.data.industries import optional_industries
 
     industry = optional_industries()
+    financial = financial_summary(data_root)
     return {
-        "snapshots": snapshots,
-        "historical_indices": historical_indices,
+        "snapshots": [
+            {**row, "financial_coverage": coverage_row(financial, [code["code"] for code in row["codes"]], data_root)}
+            for row in snapshots
+        ],
+        "historical_indices": [
+            {**row, "financial_coverage": coverage_row(financial, row["codes"], data_root)}
+            for row in historical_indices
+        ],
+        "financial_data": financial,
         "comparison_benchmarks": benchmark_options(),
         "industry_data": (
             {
@@ -184,6 +194,47 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
         },
         "limits": {"max_codes": MAX_CODES, "max_queued_tasks": 20},
     }
+
+
+def financial_summary(data_root: Path) -> dict | None:
+    """Current financial version, described for the research form and the data page."""
+    from finance_quant.data.financials import FinancialStore
+
+    store = FinancialStore(financial_root(data_root))
+    try:
+        manifest = store.current()
+    except (OSError, ValueError):
+        return None
+    if manifest is None:
+        return None
+    stocks = manifest["stocks"]
+    periods = sorted(entry["latest_period"] for entry in stocks.values() if entry["latest_period"])
+    return {
+        "version": manifest["id"],
+        "created_at": manifest.get("created_at"),
+        "codes": len(stocks),
+        "rows": sum(entry["rows"] for entry in stocks.values()),
+        "quarantined": sum(entry["quarantined"] for entry in stocks.values()),
+        "latest_report_period": periods[-1] if periods else None,
+        "earliest_report_period": periods[0] if periods else None,
+        "calendar_start": manifest["calendar"]["start"],
+        "calendar_end": manifest["calendar"]["end"],
+        "policy": manifest["policy"],
+        "point_in_time_certified": False,
+    }
+
+
+def coverage_row(financial: dict | None, codes, data_root: Path) -> dict | None:
+    """How many of these codes hold a usable report in the current financial version."""
+    if financial is None:
+        return None
+    from finance_quant.data.financials import FinancialStore, covered_codes
+
+    try:
+        manifest = FinancialStore(financial_root(data_root)).version(financial["version"])
+    except (OSError, ValueError, KeyError):
+        return {"covered": 0, "total": len(set(codes))}
+    return {"covered": len(covered_codes(manifest, codes)), "total": len(set(codes))}
 
 
 def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[dict, dict]:
@@ -217,6 +268,8 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
             for item in factor_list
         )
     )
+    binding = pin_financials(factors, data_root)
+    financial_extra = {"financials": {"version": binding.version}} if binding else {}
     obj = document["data"]
     if not isinstance(obj, dict) or obj.get("mode") not in {"snapshot", "index_warehouse"}:
         raise ValueError("请选择数据集：固定股票池快照或沪深300历史成分仓库")
@@ -245,6 +298,7 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
         if backtest.topk > 300 or backtest.initial_cash > 1e12:
             raise ValueError("目标持股最多300只，资金不超过一万亿元")
         validate_warmup(option["data_start"], option["end"], backtest.start, factors, calendar)
+        require_financial_coverage(binding, option["codes"])
         normalized = {
             "name": name.strip(),
             "data": {"mode": "index_warehouse", "warehouse_id": option["id"]},
@@ -253,7 +307,11 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
             "evaluation": evaluation.as_dict(),
         }
         normalized.update(neutral_extra)
-        return normalized, {"mode": "index_warehouse", "warehouse_dir": str(root.resolve()), "manifest_sha256": digest}
+        normalized.update(financial_extra)
+        pins = {"mode": "index_warehouse", "warehouse_dir": str(root.resolve()), "manifest_sha256": digest}
+        if binding:
+            pins["financials"] = binding.as_dict()
+        return normalized, pins
     _fields(obj, ("mode", "snapshot_id", "codes"), label="快照")
     identifier = obj["snapshot_id"]
     if not isinstance(identifier, str) or identifier not in (registry := snapshot_registry(data_root)):
@@ -274,6 +332,7 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
         "snapshot_dir": str(data.root),
         "data_version": manifest["id"],
         "files": manifest["files"],
+        **({"financials": binding.as_dict()} if binding else {}),
     }
     normalized_data = {"mode": "snapshot", "snapshot_id": identifier, "codes": sorted(data.codes)}
     if len(data.codes) > MAX_CODES:
@@ -281,7 +340,8 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
     validate_execution_universe(data.codes)
     if backtest.initial_cash > 1e12:
         raise ValueError("初始资金不能超过一万亿元")
-    config = ResearchConfig(data, backtest, runs_root, factors, evaluation, neutralization)
+    require_financial_coverage(binding, list(data.codes))
+    config = ResearchConfig(data, backtest, runs_root, factors, evaluation, neutralization, binding)
     validate_research_data(config, market, calendar)
     return {
         "name": name.strip(),
@@ -290,10 +350,53 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
         "factors": factors.as_list(),
         "evaluation": evaluation.as_dict(),
         **neutral_extra,
+        **financial_extra,
     }, execution
 
 
-def request_config(request: dict, data: DataConfig, runs_root: Path) -> ResearchConfig:
+def pin_financials(factors: FactorConfig, data_root: Path):
+    """Pin the current financial version when any factor needs statements."""
+    from finance_quant.research.factor_library import uses_financials
+
+    return _pin_financials(data_root) if uses_financials(factors) else None
+
+
+def pin_financials_for(configs, data_root: Path):
+    """Pin for a set of alternative factor configurations (experiment candidates)."""
+    from finance_quant.research.factor_library import uses_financials
+
+    return _pin_financials(data_root) if any(uses_financials(config) for config in configs) else None
+
+
+def _pin_financials(data_root: Path):
+    from finance_quant.data.financials import FinancialBinding, FinancialStore
+
+    root = financial_root(data_root)
+    manifest = FinancialStore(root).current()
+    if manifest is None:
+        raise ValueError("所选基本面因子需要财务数据：请先在“数据管理 → 财务数据”下载财务数据")
+    return FinancialBinding(root, manifest["id"])
+
+
+def require_financial_coverage(binding, codes) -> None:
+    """Refuse a request whose universe holds no usable report in the pinned version."""
+    if binding is None:
+        return
+    from finance_quant.data.financials import FinancialStore, covered_codes
+
+    manifest = FinancialStore(binding.root).version(binding.version)
+    covered = covered_codes(manifest, codes)
+    if not covered:
+        raise ValueError("所选股票在该财务数据版本中没有任何财报，请先更新财务数据或更换股票池")
+    if len(covered) < 2:
+        raise ValueError(f"该财务数据版本只覆盖 {len(covered)} 只所选股票，不足以进行横截面评分")
+
+
+def request_config(request: dict, data: DataConfig, runs_root: Path, data_root: Path) -> ResearchConfig:
+    from finance_quant.data.financials import FinancialBinding
+
+    pinned = request.get("financials", {}).get("version")
+    binding = FinancialBinding(financial_root(data_root), pinned) if pinned else None
     return ResearchConfig(
         data,
         BacktestConfig(**request["backtest"]),
@@ -301,6 +404,7 @@ def request_config(request: dict, data: DataConfig, runs_root: Path) -> Research
         FactorConfig(tuple(FactorSpec(**item) for item in request["factors"])),
         EvaluationConfig(**request["evaluation"]),
         parse_neutralization(request.get("neutralization")),
+        binding,
     )
 
 
@@ -321,9 +425,17 @@ def validate_research_data(config: ResearchConfig, market, calendar) -> None:
     codes = {to_qlib(code) for code in config.data.codes}
     selected = market.loc[market.instrument.isin(codes)]
     try:
-        result = market_factors(selected, "preflight", config.factors, neutralization=config.neutralization)
+        result = market_factors(
+            selected,
+            "preflight",
+            config.factors,
+            neutralization=config.neutralization,
+            financials=fundamentals_for(config.financials, config.factors, selected),
+        )
     except ValueError as error:
-        if str(error).startswith(("行业中性化", "历史行业", "所选因子缺少数据字段", "有效评分不足", "因子输入股票池")):
+        if str(error).startswith(
+            ("行业中性化", "历史行业", "所选因子缺少数据字段", "有效评分不足", "因子输入股票池", "所选基本面因子")
+        ):
             raise
         raise ValueError("历史预热数据不足或所选因子没有有效值，请缩短窗口或延后回测开始日期") from None
     coverage = result["metadata"]["coverage_by_date"]

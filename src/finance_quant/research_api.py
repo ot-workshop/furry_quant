@@ -113,6 +113,45 @@ def research_router(service):
         except (OSError, RuntimeError):
             raise HTTPException(503, "共享下载暂不可用，请查看本机日志；旧版本保持可用") from None
 
+    @router.get("/financial-download")
+    def financial_download_status():
+        from finance_quant.application import financial_download
+
+        try:
+            return financial_download.status(service.data_root)
+        except (OSError, ValueError, KeyError):
+            raise HTTPException(503, "财务数据状态暂不可读，请稍后刷新；现有版本保持不变") from None
+
+    @router.post("/financial-download/{action}")
+    async def financial_download_action(action: str, request: Request):
+        document = await body(request)
+        from finance_quant.application import financial_download
+
+        try:
+            if action == "preview":
+                return await run_in_threadpool(financial_download.preview, service.data_root, document)
+            if action == "start" and isinstance(document, dict) and set(document) == {"plan_id"}:
+                if financial_download.active(service.data_root):
+                    raise ValueError("已有财务数据下载任务运行，请先暂停或等待完成")
+                result = await run_in_threadpool(
+                    financial_download.start_task, service.data_root, service.store, document["plan_id"]
+                )
+                return {"id": document["plan_id"], "task_id": result["id"], "status": "queued"}
+            if action == "pause" and document == {}:
+                from finance_quant.data.financials import financial_root
+
+                root = financial_root(service.data_root)
+                root.mkdir(parents=True, exist_ok=True)
+                (root / "PAUSE").write_text("pause", encoding="utf-8")
+                return {"status": "pause_requested"}
+            raise ValueError("仅支持预览、确认下载、续传和暂停")
+        except Timeout:
+            raise HTTPException(409, "财务数据管理正在处理，请稍后重试") from None
+        except (ValueError, TypeError) as error:
+            raise HTTPException(422, str(error) if isinstance(error, ValueError) else "下载参数类型无效") from None
+        except (OSError, RuntimeError):
+            raise HTTPException(503, "财务数据下载暂不可用，请查看本机日志；旧版本保持可用") from None
+
     @router.get("/tasks/{identifier}")
     def task(identifier: str):
         try:

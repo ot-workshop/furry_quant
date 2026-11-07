@@ -13,7 +13,7 @@
 | `/factors?run=&date=&instrument=&tab=` | 因子评分 | 横截面排名、个股详情、行业、批次信息；选择状态都在 URL 中 |
 | `/evaluations`、`/evaluations/<id>` | 因子评估 | IC 汇总、分组收益、相关性、覆盖、方法 |
 | `/experiments`、`/experiments/new`、`/experiments/<id>` | 方案比较 | 列表、新建、详情 |
-| `/data?tab=` | 数据管理 | 研究数据集、行情下载（含沪深300历史成分）、数据库 |
+| `/data?tab=` | 数据管理 | 研究数据集、行情下载（含沪深300历史成分）、财务数据、数据库 |
 
 所有页面状态（选中的回测、标签页、评分日期、股票）都体现在 URL 中，可直接分享或刷新。
 
@@ -41,6 +41,7 @@
 - `GET /api/v1/research/options`、`GET /api/v1/research/tasks`、`GET /api/v1/research/tasks/{id}`
 - `POST /api/v1/research/tasks`（研究）、`POST /api/v1/research/experiments`（方案比较）、`POST /api/v1/research/tasks/{id}/cancel`
 - `GET /api/v1/research/market-download`、`POST .../preview`、`POST .../start`、`POST .../pause`
+- `GET /api/v1/research/financial-download`、`POST .../preview`、`POST .../start`、`POST .../pause`
 
 错误统一返回 `{"detail": "..."}`，前端原样展示。结果不存在时返回 404，前端不会用自造数据替代。
 

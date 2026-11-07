@@ -23,6 +23,15 @@
 
 `window` 和 `baseline_window` 接受 2–252 的整数，`skip` 接受 0 至 `window-1`。PE、PB、市值不接受窗口。
 
+## 基本面因子
+
+`roe_ttm`、`roa_ttm`、`gross_margin_ttm`、`asset_turnover_ttm`、`debt_to_assets`、`accruals_ttm`、`profit_growth_ttm`、`revenue_growth_ttm` 来自三张财务报表，口径为 TTM 或时点存量，详见 [financial-data.md](financial-data.md)。
+
+- 不接收窗口参数，方向与公式见因子定义。
+- 需要研究数据集绑定财务数据版本；缺少财务数据时不可选，服务端也会拒绝提交。
+- 银行、保险等缺营业成本的公司，利润率类因子为空值而不是零。
+- 行业差异大，建议与行业中性化一起使用。
+
 ## 配置
 
 每个因子实例拥有独立参数、方向和权重。同一因子可以配置多个不同窗口，但实例 `id` 必须唯一：

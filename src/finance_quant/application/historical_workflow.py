@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from finance_quant.application.factor_workflow import fingerprint, source_provenance
-from finance_quant.application.real_workflow import adjusted_quotes
+from finance_quant.application.real_workflow import adjusted_quotes, financial_limitation
 from finance_quant.configuration import BacktestConfig
 from finance_quant.data.china_a_rules import RULE_VERSION, apply_execution_rules
 from finance_quant.data.historical_warehouse import execution_market, load_historical_input
@@ -17,6 +17,7 @@ from finance_quant.integrations.qlib_runner import run_qlib
 from finance_quant.provenance import report_code_sha256
 from finance_quant.research.evaluation import evaluate_factors
 from finance_quant.research.execution_policy import EXECUTION_FIELDS
+from finance_quant.research.fundamentals import financial_provenance, fundamentals_for
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.registry import EvaluationConfig, FactorConfig, FactorSpec
 from finance_quant.research.report import evaluation_markdown
@@ -32,6 +33,7 @@ def run_historical_research(
     expected_sha=None,
     stage=None,
     result_store=None,
+    financials=None,
 ):
     stage = stage or (lambda *args: None)
     runs_root = Path(runs_root)
@@ -57,6 +59,7 @@ def run_historical_research(
         "factors": config.as_list(),
         "market_rules": RULE_VERSION,
         "membership_policy": meta["membership_policy"],
+        **financial_provenance(financials, config),
     }
     provenance["neutralization"] = neutralization.as_dict()
     if industry:
@@ -77,6 +80,7 @@ def run_historical_research(
                 row_sink=tables.append,
                 neutralization=neutralization,
                 industry_history=industry,
+                financials=fundamentals_for(financials, config, market),
             )
             factors["tables"] = tables.finish()
         factors["metadata"].update(
@@ -142,6 +146,7 @@ def run_historical_research(
                 "科创板最少200股、之后1股递增、限价单笔最多10万股；主板100股整手、单笔最多100万股；创业板2020-08-24起单笔最多30万股，此前100万股；整仓卖出允许余股",
                 "交易数量按Qlib复权因子还原处理，现金分红不重复记现金；策略与价格指数的分红口径不同",
                 "费用使用已保存模式与参数；分项模式佣金含规费、印花税及过户费另计，冲击成本为固定成交额比例压力假设；每日估值历史修订与发布时间未独立认证",
+                financial_limitation(factors["metadata"]),
             ],
         )
         from finance_quant.research.industry_exposure import attach_industry_exposure
@@ -210,7 +215,7 @@ def run_historical_research(
             "membership_policy": meta["membership_policy"],
             "point_in_time_certified": False,
         }
-        for key in ["neutralization", "industry_data", "temporal_audit"]:
+        for key in ["neutralization", "industry_data", "temporal_audit", "financial_data"]:
             if key in factors["metadata"]:
                 result["metadata"][key] = factors["metadata"][key]
         result["methodology"]["limitations"] = [

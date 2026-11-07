@@ -41,6 +41,16 @@ export function options() {
       { name: "momentum", label: "动量", description: "过去收益", default_window: 20, default_skip: 0 },
       { name: "value", label: "盈利收益率", description: "1/PE", default_window: null },
       { name: "volatility", label: "低波动", description: "波动率", default_window: 10 },
+      {
+        name: "roe_ttm",
+        label: "净资产收益率",
+        description: "TTM 归母净利润 / 平均归母权益",
+        default_window: null,
+        family: "fundamental",
+        family_label: "基本面",
+        direction: "higher",
+        requires_financials: true,
+      },
     ],
     snapshots: [
       {
@@ -54,6 +64,7 @@ export function options() {
         benchmark: "000300.SH",
         validation_mode: "fallback",
         source: "official_tushare_shared",
+        financial_coverage: { covered: 3, total: 3 },
         codes: [
           { code: "600000.SH", name: "浦发银行" },
           { code: "000001.SZ", name: "平安银行" },
@@ -63,5 +74,17 @@ export function options() {
     ],
     historical_indices: [],
     industry_data: null,
+    financial_data: {
+      version: "a".repeat(24),
+      codes: 3,
+      rows: 36,
+      quarantined: 0,
+      latest_report_period: "2025-03-31",
+      earliest_report_period: "2022-12-31",
+      calendar_start: "2022-01-04",
+      calendar_end: "2025-12-31",
+      policy: "test policy",
+      point_in_time_certified: false,
+    },
   };
 }

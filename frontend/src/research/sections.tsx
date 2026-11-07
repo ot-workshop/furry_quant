@@ -26,6 +26,9 @@ import {
   addFactorInstance,
   dataRange,
   equalWeights,
+  FAMILY_ORDER,
+  factorAvailable,
+  financialCoverage,
   historicalOption,
   removeFactorInstance,
   snapshotOf,
@@ -65,7 +68,6 @@ export function DataSection({
       topk: Math.min(form.topk, next.codes.length),
     });
   }
-
   return (
     <Card title="1. 数据与股票池">
       <Form layout="vertical">
@@ -112,7 +114,7 @@ export function DataSection({
                     label: "行情下载",
                     options: exports.map((item) => ({
                       value: item.id,
-                      label: `${SOURCE_LABELS[item.source] ?? "行情"} · ${item.codes.length} 只 · ${item.start} ~ ${item.end}`,
+                      label: `${SOURCE_LABELS[item.source] ?? "行情"} · ${item.codes.length} 只 · ${item.start} ~ ${item.end}${item.financial_coverage ? ` · 财报 ${item.financial_coverage.covered}/${item.financial_coverage.total}` : " · 无财报"}`,
                     })),
                   },
                   ...(subsets.length
@@ -121,7 +123,7 @@ export function DataSection({
                           label: "以往研究的股票子集",
                           options: subsets.map((item) => ({
                             value: item.id,
-                            label: `${item.codes.length} 只 · ${item.start} ~ ${item.end}`,
+                            label: `${item.codes.length} 只 · ${item.start} ~ ${item.end}${item.financial_coverage ? ` · 财报 ${item.financial_coverage.covered}/${item.financial_coverage.total}` : " · 无财报"}`,
                           })),
                         },
                       ]
@@ -178,7 +180,7 @@ export function DataSection({
                 onChange={(warehouseId: string) => update({ warehouseId })}
                 options={historicalChoices.map((item) => ({
                   value: item.id,
-                  label: `${item.start} ~ ${item.end}${item.shared_version ? ` · 共享版本 ${item.shared_version.slice(0, 8)}` : ""}`,
+                  label: `${item.start} ~ ${item.end}${item.shared_version ? ` · 共享版本 ${item.shared_version.slice(0, 8)}` : ""}${item.financial_coverage ? ` · 财报覆盖 ${item.financial_coverage.covered}/${item.financial_coverage.total}` : " · 无财报"}`,
                 }))}
               />
             </Form.Item>
@@ -214,12 +216,197 @@ export function FactorSection({
       Object.fromEntries(options.factor_definitions.map((d) => [d.name, d])),
     [options.factor_definitions],
   );
+  const coverage = financialCoverage(form, options);
+  const groups = useMemo(() => {
+    const byFamily = new Map<string, typeof options.factor_definitions>();
+    for (const definition of options.factor_definitions) {
+      const family = definition.family ?? "value";
+      byFamily.set(family, [...(byFamily.get(family) ?? []), definition]);
+    }
+    const ordered = [...byFamily.entries()].sort(
+      ([left], [right]) =>
+        FAMILY_ORDER.indexOf(left as (typeof FAMILY_ORDER)[number]) -
+        FAMILY_ORDER.indexOf(right as (typeof FAMILY_ORDER)[number]),
+    );
+    return ordered.map(([family, items]) => ({
+      family,
+      label: items[0]?.family_label ?? family,
+      names: new Set(items.map((item) => item.name)),
+    }));
+  }, [options.factor_definitions]);
   const setRow = (key: string, patch: Partial<FormState["factors"][number]>) =>
     update({
       factors: form.factors.map((row) =>
         row.key === key ? { ...row, ...patch } : row,
       ),
     });
+
+  function row(row: FormState["factors"][number]) {
+    const definition = definitions[row.name];
+    if (!definition) return null;
+    const extra = row.key !== row.name;
+    const available = factorAvailable(definition, coverage);
+    return (
+      <div className="factor-row" key={row.key}>
+        <Flex align="center" gap={12} wrap>
+          <Switch
+            size="small"
+            checked={row.enabled}
+            disabled={!available}
+            onChange={(enabled) => setRow(row.key, { enabled })}
+          />
+          <Flex vertical style={{ flex: "0 0 230px" }}>
+            <Space size={6}>
+              <Typography.Text
+                strong={row.enabled}
+                type={
+                  available
+                    ? row.enabled
+                      ? undefined
+                      : "secondary"
+                    : "secondary"
+                }
+              >
+                {definition.label}
+                {extra ? ` · ${row.key}` : ""}
+              </Typography.Text>
+              <Hint
+                text={
+                  <div>
+                    <div>{definition.description}</div>
+                    {definition.formula ? (
+                      <div>公式：{definition.formula}</div>
+                    ) : null}
+                    <div>
+                      {definition.direction === "lower"
+                        ? "原始值越低越好"
+                        : "原始值越高越好"}
+                    </div>
+                    {definition.data_note ? (
+                      <div>{definition.data_note}</div>
+                    ) : null}
+                    {!available ? (
+                      <div>
+                        当前数据集没有该股票池的财务数据，先在“数据管理 →
+                        财务数据”下载后才能使用。
+                      </div>
+                    ) : null}
+                  </div>
+                }
+              />
+              {definition.family_label ? (
+                <Tag>{definition.family_label}</Tag>
+              ) : null}
+            </Space>
+          </Flex>
+          <InputNumber
+            size="small"
+            min={0}
+            max={100}
+            step={5}
+            value={row.weight}
+            disabled={!row.enabled || !available}
+            onChange={(value) =>
+              setRow(row.key, { weight: Number(value ?? 0) })
+            }
+            suffix="%"
+            style={{ width: 110 }}
+            aria-label={`${definition.label}权重`}
+          />
+          {definition.default_window != null ? (
+            <InputNumber
+              size="small"
+              min={2}
+              max={252}
+              value={row.window}
+              disabled={!row.enabled || !available}
+              onChange={(value) =>
+                setRow(row.key, {
+                  window: value === null ? null : Number(value),
+                })
+              }
+              prefix="窗口"
+              suffix="日"
+              style={{ width: 130 }}
+            />
+          ) : (
+            <Typography.Text
+              type="secondary"
+              style={{ width: 130, fontSize: 12 }}
+            >
+              无窗口参数
+            </Typography.Text>
+          )}
+          {definition.default_skip != null ? (
+            <Tooltip title="计算时剔除最近若干交易日，常用于避开短期反转">
+              <InputNumber
+                size="small"
+                min={0}
+                max={251}
+                value={row.skip}
+                disabled={!row.enabled || !available}
+                onChange={(value) =>
+                  setRow(row.key, {
+                    skip: value === null ? null : Number(value),
+                  })
+                }
+                prefix="剔除"
+                suffix="日"
+                style={{ width: 120 }}
+              />
+            </Tooltip>
+          ) : null}
+          {definition.default_baseline_window != null ? (
+            <Tooltip title="与此前不重叠的基准窗口比较">
+              <InputNumber
+                size="small"
+                min={2}
+                max={252}
+                value={row.baselineWindow}
+                disabled={!row.enabled || !available}
+                onChange={(value) =>
+                  setRow(row.key, {
+                    baselineWindow: value === null ? null : Number(value),
+                  })
+                }
+                prefix="基准"
+                suffix="日"
+                style={{ width: 120 }}
+              />
+            </Tooltip>
+          ) : null}
+          <Space size={0}>
+            {definition.default_window != null ? (
+              <Tooltip title="再添加一个不同窗口的同类因子">
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<CopyOutlined />}
+                  disabled={!available}
+                  onClick={() =>
+                    setForm((current) => addFactorInstance(current, row.key))
+                  }
+                />
+              </Tooltip>
+            ) : null}
+            {extra ? (
+              <Tooltip title="移除这个实例">
+                <Button
+                  size="small"
+                  type="text"
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={() =>
+                    setForm((current) => removeFactorInstance(current, row.key))
+                  }
+                />
+              </Tooltip>
+            ) : null}
+          </Space>
+        </Flex>
+      </div>
+    );
+  }
 
   return (
     <Card
@@ -240,158 +427,31 @@ export function FactorSection({
         </Space>
       }
     >
-      {form.factors.map((row) => {
-        const definition = definitions[row.name];
-        if (!definition) return null;
-        const extra = row.key !== row.name;
+      {coverage ? (
+        <Alert
+          type={coverage.covered >= 2 ? "success" : "warning"}
+          showIcon
+          style={{ marginBottom: 12 }}
+          title={`财务数据覆盖当前股票池 ${coverage.covered} / ${coverage.total} 只`}
+          description={
+            options.financial_data
+              ? `版本 ${options.financial_data.version.slice(0, 8)} · 最新报告期 ${options.financial_data.latest_report_period ?? "—"}；基本面因子按 TTM 口径自算，公告后下一交易日 09:30 起可见。`
+              : undefined
+          }
+        />
+      ) : null}
+      {groups.map((group) => {
+        const rows = form.factors.filter((item) => group.names.has(item.name));
+        if (!rows.length) return null;
         return (
-          <div className="factor-row" key={row.key}>
-            <Flex align="center" gap={12} wrap>
-              <Switch
-                size="small"
-                checked={row.enabled}
-                onChange={(enabled) => setRow(row.key, { enabled })}
-              />
-              <Flex vertical style={{ flex: "0 0 230px" }}>
-                <Space size={6}>
-                  <Typography.Text
-                    strong={row.enabled}
-                    type={row.enabled ? undefined : "secondary"}
-                  >
-                    {definition.label}
-                    {extra ? ` · ${row.key}` : ""}
-                  </Typography.Text>
-                  <Hint
-                    text={
-                      <div>
-                        <div>{definition.description}</div>
-                        {definition.formula ? (
-                          <div>公式：{definition.formula}</div>
-                        ) : null}
-                        <div>
-                          {definition.direction === "lower"
-                            ? "原始值越低越好"
-                            : "原始值越高越好"}
-                        </div>
-                        {definition.data_note ? (
-                          <div>{definition.data_note}</div>
-                        ) : null}
-                      </div>
-                    }
-                  />
-                  {definition.family_label ? (
-                    <Tag>{definition.family_label}</Tag>
-                  ) : null}
-                </Space>
-              </Flex>
-              <InputNumber
-                size="small"
-                min={0}
-                max={100}
-                step={5}
-                value={row.weight}
-                disabled={!row.enabled}
-                onChange={(value) =>
-                  setRow(row.key, { weight: Number(value ?? 0) })
-                }
-                suffix="%"
-                style={{ width: 110 }}
-                aria-label={`${definition.label}权重`}
-              />
-              {definition.default_window != null ? (
-                <InputNumber
-                  size="small"
-                  min={2}
-                  max={252}
-                  value={row.window}
-                  disabled={!row.enabled}
-                  onChange={(value) =>
-                    setRow(row.key, {
-                      window: value === null ? null : Number(value),
-                    })
-                  }
-                  prefix="窗口"
-                  suffix="日"
-                  style={{ width: 130 }}
-                />
-              ) : (
-                <Typography.Text
-                  type="secondary"
-                  style={{ width: 130, fontSize: 12 }}
-                >
-                  无窗口参数
-                </Typography.Text>
-              )}
-              {definition.default_skip != null ? (
-                <Tooltip title="计算时剔除最近若干交易日，常用于避开短期反转">
-                  <InputNumber
-                    size="small"
-                    min={0}
-                    max={251}
-                    value={row.skip}
-                    disabled={!row.enabled}
-                    onChange={(value) =>
-                      setRow(row.key, {
-                        skip: value === null ? null : Number(value),
-                      })
-                    }
-                    prefix="剔除"
-                    suffix="日"
-                    style={{ width: 120 }}
-                  />
-                </Tooltip>
-              ) : null}
-              {definition.default_baseline_window != null ? (
-                <Tooltip title="与此前不重叠的基准窗口比较">
-                  <InputNumber
-                    size="small"
-                    min={2}
-                    max={252}
-                    value={row.baselineWindow}
-                    disabled={!row.enabled}
-                    onChange={(value) =>
-                      setRow(row.key, {
-                        baselineWindow: value === null ? null : Number(value),
-                      })
-                    }
-                    prefix="基准"
-                    suffix="日"
-                    style={{ width: 120 }}
-                  />
-                </Tooltip>
-              ) : null}
-              <Space size={0}>
-                {definition.default_window != null ? (
-                  <Tooltip title="再添加一个不同窗口的同类因子">
-                    <Button
-                      size="small"
-                      type="text"
-                      icon={<CopyOutlined />}
-                      onClick={() =>
-                        setForm((current) =>
-                          addFactorInstance(current, row.key),
-                        )
-                      }
-                    />
-                  </Tooltip>
-                ) : null}
-                {extra ? (
-                  <Tooltip title="移除这个实例">
-                    <Button
-                      size="small"
-                      type="text"
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        setForm((current) =>
-                          removeFactorInstance(current, row.key),
-                        )
-                      }
-                    />
-                  </Tooltip>
-                ) : null}
-              </Space>
-            </Flex>
+          <div key={group.family} className="factor-group">
+            <Typography.Text
+              strong
+              style={{ display: "block", marginBottom: 8 }}
+            >
+              {group.label}
+            </Typography.Text>
+            {rows.map(row)}
           </div>
         );
       })}

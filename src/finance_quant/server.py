@@ -63,6 +63,25 @@ def terminate_group(process):
         process.wait()
 
 
+def request_task_pause(store, identifier, data_root):
+    """Ask a resumable download to stop at its next safe point.
+
+    Only downloads read the ``PAUSE`` file; research and experiment children have no
+    checkpoint and are terminated after the grace period instead.
+    """
+    task = store.get(identifier, private=True)
+    if task["kind"] == "market_download":
+        directory = Path(task["execution"]["root"])
+    elif task["kind"] == "financial_download":
+        from finance_quant.data.financials import financial_root
+
+        directory = financial_root(data_root)
+    else:
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "PAUSE").write_text("service stopping", encoding="utf-8")
+
+
 def consume(store, root, runs, data, stop, lock_connection):
     """Lock connection is checked during every child: loss of ownership stops work."""
     from sqlalchemy import text
@@ -99,11 +118,7 @@ def consume(store, root, runs, data, stop, lock_connection):
                 while process.poll() is None:
                     if stop.is_set() and deadline is None:
                         deadline = time.monotonic() + 75
-                        task = store.get(identifier, private=True)
-                        if task["kind"] != "research":
-                            Path(task["execution"]["root"]).joinpath("PAUSE").write_text(
-                                "service stopping", encoding="utf-8"
-                            )
+                        request_task_pause(store, identifier, data)
                     if deadline is not None and time.monotonic() >= deadline:
                         terminate_group(process)
                         break

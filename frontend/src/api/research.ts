@@ -36,6 +36,7 @@ export interface Snapshot {
   codes: SnapshotCode[];
   validation_mode: ValidationMode;
   source: string;
+  financial_coverage?: FinancialCoverage | null;
 }
 
 export interface FactorDefinition {
@@ -51,6 +52,26 @@ export interface FactorDefinition {
   required_fields?: string[];
   formula?: string;
   data_note?: string;
+  requires_financials?: boolean;
+}
+
+export interface FinancialCoverage {
+  covered: number;
+  total: number;
+}
+
+export interface FinancialDataSummary {
+  version: string;
+  created_at?: string | null;
+  codes: number;
+  rows: number;
+  quarantined: number;
+  latest_report_period: string | null;
+  earliest_report_period: string | null;
+  calendar_start: string;
+  calendar_end: string;
+  policy: string;
+  point_in_time_certified: boolean;
 }
 
 export interface BenchmarkOption {
@@ -118,6 +139,8 @@ export interface HistoricalIndexOption {
   membership_policy: string;
   point_in_time_certified: boolean;
   note: string;
+  codes?: string[];
+  financial_coverage?: FinancialCoverage | null;
 }
 
 export interface Neutralization {
@@ -204,6 +227,7 @@ export interface ResearchOptions {
   } | null;
   historical_indices?: HistoricalIndexOption[];
   snapshots: Snapshot[];
+  financial_data?: FinancialDataSummary | null;
   factor_definitions: FactorDefinition[];
   benchmarks: BenchmarkOption[];
   comparison_benchmarks?: BenchmarkOption[];

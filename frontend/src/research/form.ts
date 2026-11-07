@@ -14,6 +14,16 @@ import type {
   SourceMode,
 } from "../api/research";
 
+/** Factor families in display order, so the form groups price and fundamental factors. */
+export const FAMILY_ORDER = [
+  "momentum",
+  "value",
+  "size",
+  "risk",
+  "activity",
+  "fundamental",
+] as const;
+
 export const DRAFT_KEY = "finance-quant.research-draft.v2";
 const SUPPORTED_CODE = /^(60\d{4}\.SH|(00|30)\d{4}\.SZ)$/;
 
@@ -121,6 +131,51 @@ export function factorRows(
     }
   }
   return rows;
+}
+
+/** Whether the selected dataset holds financial statements for at least two stocks. */
+export function financialCoverage(
+  form: FormState,
+  options: ResearchOptions,
+): { covered: number; total: number } | null {
+  if (!options.financial_data) return null;
+  if (form.sourceMode === "index_warehouse") {
+    return (
+      historicalOption(options, form.warehouseId)?.financial_coverage ?? null
+    );
+  }
+  return snapshotOf(options, form.snapshotId)?.financial_coverage ?? null;
+}
+
+/** A fundamental factor is selectable only when the dataset carries statements. */
+export function factorAvailable(
+  definition: FactorDefinition,
+  coverage: { covered: number; total: number } | null,
+): boolean {
+  return (
+    !definition.requires_financials ||
+    Boolean(coverage && coverage.covered >= 2)
+  );
+}
+
+/** Drop enabled factors that the chosen dataset cannot serve. */
+export function pruneFactors(
+  form: FormState,
+  options: ResearchOptions,
+): FormState {
+  const coverage = financialCoverage(form, options);
+  const unavailable = new Set(
+    options.factor_definitions
+      .filter((definition) => !factorAvailable(definition, coverage))
+      .map((definition) => definition.name),
+  );
+  if (!unavailable.size) return form;
+  return {
+    ...form,
+    factors: form.factors.map((row) =>
+      unavailable.has(row.name) ? { ...row, enabled: false, weight: 0 } : row,
+    ),
+  };
 }
 
 function backtestFields(backtest: Partial<ResearchBacktest>) {
@@ -542,6 +597,21 @@ export function buildRequest(
   if (!name || name.length > 80) errors.push("请填写 1–80 个字符的研究名称。");
   const data = buildData(form, options, errors);
   const factors = buildFactors(form, options.factor_definitions, errors);
+  const coverage = financialCoverage(form, options);
+  const blocked = form.factors
+    .filter((row) => row.enabled)
+    .map((row) => options.factor_definitions.find((d) => d.name === row.name))
+    .filter(
+      (definition): definition is FactorDefinition =>
+        Boolean(definition?.requires_financials) &&
+        !factorAvailable(definition as FactorDefinition, coverage),
+    );
+  if (blocked.length)
+    errors.push(
+      `当前数据集没有财务数据，不能使用基本面因子：${blocked
+        .map((definition) => definition.label)
+        .join("、")}。请先在“数据管理 → 财务数据”下载。`,
+    );
   const backtest = buildBacktest(form, errors);
   const evaluation = buildEvaluation(form, errors);
   checkDates(

@@ -78,6 +78,39 @@ _INDEX_REQUIRED = (
 )
 _BASIC_COLUMNS = ["instrument", "date", "pe_ttm", "pb", "total_mv"]
 
+# Statement -> (Tushare API, value fields in yuan). Income and cash-flow values are
+# year-to-date cumulative; balance-sheet values are period-end stocks.
+FINANCIAL_STATEMENTS = {
+    "income": (
+        "income",
+        ("total_revenue", "revenue", "oper_cost", "operate_profit", "total_profit", "n_income", "n_income_attr_p"),
+    ),
+    "balance": (
+        "balancesheet",
+        (
+            "total_assets",
+            "total_liab",
+            "total_hldr_eqy_exc_min_int",
+            "total_hldr_eqy_inc_min_int",
+            "total_cur_assets",
+            "total_cur_liab",
+        ),
+    ),
+    "cashflow": ("cashflow", ("n_cashflow_act",)),
+}
+FINANCIAL_VALUE_FIELDS = tuple(field for _, fields in FINANCIAL_STATEMENTS.values() for field in fields)
+FINANCIAL_KEY_COLUMNS = (
+    "ts_code",
+    "statement",
+    "report_type",
+    "comp_type",
+    "report_period",
+    "ann_date",
+    "f_ann_date",
+    "update_flag",
+)
+_FINANCIAL_RAW_KEYS = ("ts_code", "ann_date", "f_ann_date", "end_date", "report_type", "comp_type", "update_flag")
+
 
 class TushareProviderError(RuntimeError):
     """Public adapter error; never carries credentials or response bodies."""
@@ -448,14 +481,75 @@ def normalize_daily_basic(raw: pd.DataFrame) -> pd.DataFrame:
     return result.reset_index(drop=True)
 
 
+def financial_request_fields(statement: str) -> str:
+    """The ``fields`` argument for one statement API: keys plus the stored values."""
+    _, values = FINANCIAL_STATEMENTS[statement]
+    return ",".join((*_FINANCIAL_RAW_KEYS, *values))
+
+
+def _optional_dates(raw: pd.DataFrame, column: str) -> pd.Series:
+    if column not in raw.columns:
+        return pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns]")
+    text = raw[column].astype("string").str.strip()
+    return pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+
+
+def _optional_text(raw: pd.DataFrame, column: str) -> pd.Series:
+    if column not in raw.columns:
+        return pd.Series(pd.NA, index=raw.index, dtype="string")
+    return raw[column].astype("string").str.strip().replace("", pd.NA)
+
+
+def normalize_financial_statement(raw: pd.DataFrame, statement: str, report_type: int, ts_code: str) -> pd.DataFrame:
+    """Normalize one ``income``/``balancesheet``/``cashflow`` response for one stock.
+
+    Dates the vendor leaves empty or malformed stay ``NaT``: point-in-time rules
+    quarantine such rows instead of guessing an announcement date here.
+    """
+    if statement not in FINANCIAL_STATEMENTS:
+        raise TushareProviderError("unknown financial statement")
+    columns = [*FINANCIAL_KEY_COLUMNS, *FINANCIAL_VALUE_FIELDS]
+    empty = _empty_frame(raw, columns)
+    if empty is not None:
+        return empty
+    _require_columns(raw, ("ts_code", "end_date"))
+    codes = raw["ts_code"].astype("string").str.strip().str.upper()
+    if not bool(codes.eq(ts_code).all()):
+        raise TushareProviderError("Tushare financial response contains another stock")
+    if "report_type" in raw.columns:
+        types = pd.to_numeric(raw["report_type"], errors="coerce")
+        if not bool(types.eq(report_type).all()):
+            raise TushareProviderError("Tushare financial response contains another report type")
+    result = pd.DataFrame(
+        {
+            "ts_code": codes.astype(str),
+            "statement": statement,
+            "report_type": int(report_type),
+            "comp_type": _optional_text(raw, "comp_type"),
+            "report_period": _optional_dates(raw, "end_date"),
+            "ann_date": _optional_dates(raw, "ann_date"),
+            "f_ann_date": _optional_dates(raw, "f_ann_date"),
+            "update_flag": _optional_text(raw, "update_flag"),
+        }
+    )
+    for name in FINANCIAL_VALUE_FIELDS:
+        values = pd.to_numeric(raw[name], errors="coerce") if name in raw.columns else np.nan
+        result[name] = pd.Series(values, index=raw.index, dtype="float64").replace([np.inf, -np.inf], np.nan)
+    return result.reset_index(drop=True)
+
+
 __all__ = [
+    "FINANCIAL_STATEMENTS",
+    "FINANCIAL_VALUE_FIELDS",
     "TushareConfigError",
     "TushareProvider",
     "TushareProviderError",
     "TushareSettings",
+    "financial_request_fields",
     "normalize_adj_factor",
     "normalize_calendar",
     "normalize_daily",
     "normalize_daily_basic",
+    "normalize_financial_statement",
     "normalize_index_daily",
 ]

@@ -7,6 +7,7 @@ import pandas as pd
 
 from finance_quant.data.temporal_audit import factor_temporal_audit, validate_valuation_times
 from finance_quant.research.factor_library import FACTOR_LIBRARY, describe_spec
+from finance_quant.research.fundamentals import attach_fundamentals
 from finance_quant.research.neutralization import (
     NeutralizationConfig,
     residualize,
@@ -38,7 +39,14 @@ def market_factors(
     row_sink=None,
     neutralization=None,
     industry_history=None,
+    financials=None,
 ) -> dict:
+    """Score a market frame.
+
+    ``financials`` is the :class:`~finance_quant.research.fundamentals.FundamentalData`
+    of the pinned financial version; it is required exactly when a fundamental factor
+    is selected.
+    """
     config = FactorConfig() if config is None else config
     if not isinstance(config, FactorConfig):
         raise ValueError("config must be a FactorConfig")
@@ -92,6 +100,11 @@ def market_factors(
         for _, section in frame.groupby("instrument")
     ):
         raise ValueError("因子输入股票池存在交易日缺口，拒绝缩短滚动窗口")
+    fundamental = any(FACTOR_LIBRARY[spec.name].fundamental for spec in config.specs)
+    if fundamental:
+        if financials is None:
+            raise ValueError("所选基本面因子需要财务数据：请先在“数据管理 → 财务数据”下载后重新提交")
+        frame = attach_fundamentals(frame, financials.events)
     required = {field for spec in config.specs for field in FACTOR_LIBRARY[spec.name].required_fields}
     if missing := required - set(frame):
         raise ValueError("所选因子缺少数据字段：" + "、".join(sorted(missing)))
@@ -151,7 +164,9 @@ def market_factors(
                 if raw[key] is not None:
                     continue
                 reason = (
-                    "missing_or_nonpositive_"
+                    "missing_or_stale_financial_report"
+                    if FACTOR_LIBRARY[spec.name].fundamental
+                    else "missing_or_nonpositive_"
                     + ("pe_ttm" if spec.name == "value" else "pb" if spec.name == "book_to_price" else "total_mv")
                     if spec.name in {"value", "book_to_price", "size"}
                     else "insufficient_negative_returns_or_history"
@@ -289,12 +304,18 @@ def market_factors(
             "notes": [
                 "各因子使用当日及以前数据，不补未来值；按所有入选因子均有效的交集排名，不按缺失项偷偷重分权重",
                 "缺失和预热不足的股票保留逐因子原因与覆盖率；PB/市值/PE历史修订及发布时间未独立认证",
-                "行业仅作展示；当前没有财报因子、中性化或动态权重",
+                "行业仅作展示；当前没有动态权重",
             ],
         },
         "history": history if row_sink is None else [],
         "diagnostics": diagnostics if row_sink is None else [],
     }
+    if fundamental:
+        result["metadata"]["financial_data"] = financials.metadata(frame.instrument.unique())
+        result["metadata"]["notes"].append(
+            "基本面因子由三张财务报表自算（TTM口径）；报表按公告日后下一交易日09:30可见，"
+            "更正按调整前原始数与次年调整数重建，仍非严格PIT认证；财务数据缺失或过期的股票不参与排名",
+        )
     result["metadata"]["neutralization"] = neutralization.as_dict()
     if industry_history:
         result["metadata"]["point_in_time_certified"] = False

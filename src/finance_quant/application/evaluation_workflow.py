@@ -14,6 +14,7 @@ from finance_quant.application.factor_workflow import (
 )
 from finance_quant.provenance import report_code_sha256
 from finance_quant.research.evaluation import evaluate_factors
+from finance_quant.research.fundamentals import financial_provenance
 from finance_quant.research.report import evaluation_markdown
 from finance_quant.storage import ResultStore
 
@@ -27,6 +28,7 @@ def evaluate_configured(config, *, result_store=None) -> dict:
         config.factors,
         config.neutralization,
         result_store=result_store,
+        financials=config.financials,
     )
     provenance = {
         **source_provenance(),
@@ -36,6 +38,7 @@ def evaluate_configured(config, *, result_store=None) -> dict:
         "evaluation": config.evaluation.as_dict(),
         "start": config.backtest.start,
         "end": config.backtest.end,
+        **financial_provenance(config.financials, config.factors),
     }
     run_id = "factor-eval-" + fingerprint(provenance)
     store = result_store or ResultStore(config.runs_dir)
@@ -71,7 +74,7 @@ def evaluate_configured(config, *, result_store=None) -> dict:
                     "provenance": provenance,
                 }
                 result["metadata"]["factor_definitions"] = factors["metadata"].get("factor_definitions", {})
-                for key in ["neutralization", "industry_data", "temporal_audit"]:
+                for key in ["neutralization", "industry_data", "temporal_audit", "financial_data"]:
                     if key in factors["metadata"]:
                         result["metadata"][key] = factors["metadata"][key]
                 result["metadata"]["source"] = manifest.get("source", "third_party_tushare_compatible")

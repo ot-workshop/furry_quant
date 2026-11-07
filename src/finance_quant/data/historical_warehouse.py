@@ -49,6 +49,7 @@ def warehouse_option(root):
         "data_start": manifest["data_start"],
         "trading_dates": dates.dt.strftime("%Y-%m-%d").tolist(),
         "codes_count": len(manifest["assets"]),
+        "codes": sorted(manifest["assets"]),
         "membership_policy": manifest["membership_policy"],
         "point_in_time_certified": False,
         "note": "月度快照从下一交易日起使用，可能滞后真实调仓；不是精确公告生效日认证",
