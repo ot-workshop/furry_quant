@@ -152,7 +152,14 @@ def run_historical_research(
         from finance_quant.research.industry_exposure import attach_industry_exposure
 
         memberships = pd.read_parquet(Path(warehouse_root) / "reference/memberships.parquet")
-        attach_industry_exposure(result, industry, sessions, neutralization=neutralization, memberships=memberships)
+        attach_industry_exposure(
+            result,
+            industry,
+            sessions,
+            neutralization=neutralization,
+            memberships=memberships,
+            level=getattr(neutralization, "industry_level", "L1"),
+        )
         store.publish("backtests", run_id, result)
         del quotes, signals, result
         gc.collect()

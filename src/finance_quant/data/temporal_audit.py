@@ -102,7 +102,13 @@ def factor_temporal_audit(metadata):
             "label": "历史行业",
             "status": "unverified" if industry_used else "diagnostic_only" if industry else "not_used",
             "detail": (
-                "使用保存版本的纳入/剔除区间及分类切换约定；实际公告与修订发布时间未认证。"
+                "使用保存版本"
+                + (
+                    f"的{industry.get('level_label', '一级')}行业"
+                    if isinstance(industry, dict) and industry.get("level_label")
+                    else "的"
+                )
+                + "纳入/剔除区间及分类切换约定；实际公告与修订发布时间未认证。"
                 if industry
                 else "本批次未使用独立历史行业数据。"
             )

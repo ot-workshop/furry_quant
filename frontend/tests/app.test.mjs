@@ -41,6 +41,7 @@ globalThis.fetch = async (url, init = {}) => {
   }
   if (path === "/research/tasks") return json({ items: tasks, total: tasks.length });
   if (path === "/data-status") return json({ snapshots: [], database: null });
+  if (path === "/research/industry-download") return json({ worker_running: false, version: null, versions: [], jobs: [] });
   if (path === "/backtests") return json({ items: [], total: 0 });
   return json({ detail: "not mocked" }, 404);
 };
@@ -74,6 +75,13 @@ test("dashboard points to data management when no dataset exists", async () => {
   const { container, root } = await mount("/");
   await waitFor(() => assert.match(container.textContent, /还没有可用于研究的数据集/));
   assert.ok(button(container, "去下载行情"));
+  await act(async () => root.unmount());
+});
+
+test("industry data tab renders without a published version", async () => {
+  const { container, root } = await mount("/data?tab=industry");
+  await waitFor(() => assert.match(container.textContent, /还没有行业数据/));
+  assert.ok(button(container, "预览下载"));
   await act(async () => root.unmount());
 });
 

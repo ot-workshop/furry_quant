@@ -178,6 +178,7 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
                     for k in ["id", "source", "rows", "instruments", "policy", "point_in_time_certified"]
                 },
                 "data_asof": industry.data_asof,
+                "levels": industry.levels,
             }
             if industry
             else None

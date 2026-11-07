@@ -65,7 +65,7 @@ class MemoryTaskStore:
         return self._create("research", request, execution, key, 4)
 
     def create_download(self, kind, request, execution, key, *, total=1):
-        if kind not in {"market_download", "financial_download"}:
+        if kind not in {"market_download", "financial_download", "industry_download"}:
             raise ValueError("Unsupported download task kind")
         return self._create(kind, request, execution, key, total)
 

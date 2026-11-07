@@ -186,7 +186,11 @@ def _run_real_execution(
 
     industry_version = factors["metadata"].get("industry_data", {}).get("id")
     attach_industry_exposure(
-        result, load_industries(industry_version) if industry_version else None, sessions, neutralization=neutralization
+        result,
+        load_industries(industry_version) if industry_version else None,
+        sessions,
+        neutralization=neutralization,
+        level=getattr(neutralization, "industry_level", "L1"),
     )
     # Strict JSON serialization before either artifact becomes visible.
     json.dumps(result, allow_nan=False)

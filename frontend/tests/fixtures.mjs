@@ -73,7 +73,20 @@ export function options() {
       },
     ],
     historical_indices: [],
-    industry_data: null,
+    industry_data: {
+      id: "b".repeat(64),
+      source: "official_tushare",
+      rows: 12,
+      instruments: 3,
+      policy: "test industry policy",
+      point_in_time_certified: false,
+      data_asof: "2025-06-30",
+      levels: {
+        L1: { label: "一级", rows: 4, instruments: 3, sectors: 2 },
+        L2: { label: "二级", rows: 4, instruments: 3, sectors: 2 },
+        L3: { label: "三级", rows: 4, instruments: 3, sectors: 2 },
+      },
+    },
     financial_data: {
       version: "a".repeat(24),
       codes: 3,

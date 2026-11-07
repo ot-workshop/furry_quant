@@ -70,7 +70,7 @@ def request_task_pause(store, identifier, data_root):
     checkpoint and are terminated after the grace period instead.
     """
     task = store.get(identifier, private=True)
-    if task["kind"] == "market_download":
+    if task["kind"] in {"market_download", "industry_download"}:
         directory = Path(task["execution"]["root"])
     elif task["kind"] == "financial_download":
         from finance_quant.data.financials import financial_root

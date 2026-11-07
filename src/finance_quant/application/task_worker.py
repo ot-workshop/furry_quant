@@ -118,6 +118,8 @@ def run_task(
             return run_download_task(store, task, data_root)
         if kind == "financial_download":
             return run_financial_download_task(store, task, data_root)
+        if kind == "industry_download":
+            return run_industry_download_task(store, task)
         context = TaskContext(
             identifier, store, runs_root, data_root, storage_root, result_store_factory, market_repository
         )
@@ -290,6 +292,33 @@ def run_financial_download_task(store, task, data_root):
                 if key in result
             },
             error=None if succeeded else result.get("message", "财务数据尚未完整，请查看下载明细后续传"),
+        )
+    except Exception as error:
+        details = runtime_failure_details(error, "download", identifier)
+        store.finish(identifier, "failed", error=details["summary"], error_details=details)
+
+
+def run_industry_download_task(store, task):
+    identifier = task["id"]
+    execution = task["execution"]
+    try:
+        store.stage(identifier, "download", "下载申万行业分类与历史成分", 0)
+        from finance_quant.application import industry_download
+
+        def progress(row):
+            store.stage(identifier, "download", row.get("message", "下载行业数据"), row.get("completed", 0))
+
+        result = industry_download.run(execution["root"], execution["plan_id"], on_progress=progress)
+        succeeded = result["status"] == "complete"
+        store.finish(
+            identifier,
+            "succeeded" if succeeded else "interrupted",
+            result={
+                key: result[key]
+                for key in ("id", "status", "version_id", "completed", "total", "levels", "message")
+                if key in result
+            },
+            error=None if succeeded else result.get("message", "行业数据尚未完整，请查看下载明细后续传"),
         )
     except Exception as error:
         details = runtime_failure_details(error, "download", identifier)

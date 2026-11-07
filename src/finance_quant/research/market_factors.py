@@ -135,7 +135,11 @@ def market_factors(
         eligible = valid.all(axis=1)
         if dynamic_context is not None:
             eligible &= section.eligible_history.to_numpy() & ~section.is_suspended.to_numpy()
-        assigned = industry_history.at(date, section.instrument, actual_calendar) if industry_history else {}
+        assigned = (
+            industry_history.at(date, section.instrument, actual_calendar, level=neutralization.industry_level)
+            if industry_history
+            else {}
+        )
         if assigned:
             known = np.array([assigned[s]["industry_status"] == "known" for s in section.instrument])
             industry_days[day] = {
@@ -323,9 +327,16 @@ def market_factors(
             k: industry_history.manifest[k] for k in ["id", "source", "policy", "point_in_time_certified"]
         }
         result["metadata"]["industry_data"]["data_asof"] = industry_history.data_asof
+        result["metadata"]["industry_data"]["level"] = neutralization.industry_level
+        result["metadata"]["industry_data"]["level_label"] = {
+            "L1": "一级",
+            "L2": "二级",
+            "L3": "三级",
+        }[neutralization.industry_level]
         result["metadata"]["industry_coverage_by_date"] = industry_days
         result["metadata"]["notes"][-1] = (
-            "历史行业按保存版本与信号日区间匹配；实际公告时点未认证。当前行业字段不参与历史中性化。"
+            f"历史行业按保存版本的{result['metadata']['industry_data']['level_label']}行业与信号日区间匹配；"
+            "实际公告时点未认证。"
         )
     if neutralization.mode == "industry":
         result["metadata"]["notes"] += [

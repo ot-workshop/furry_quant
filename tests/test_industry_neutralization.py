@@ -152,7 +152,7 @@ def test_download_history_serial_resume_and_refuse_truncation(tmp_path):
     assert len(p.calls) == 6 and set(h.frame.classification) == {"SW2014", "SW2021"}
     assert download_industries(root=tmp_path / "cache", provider=p).manifest["id"] == h.manifest["id"]
     assert len(p.calls) == 6
-    cached = tmp_path / "cache/raw/SW2021-801780.SI-Y.parquet"
+    cached = tmp_path / "cache/raw/SW2021-L1-801780.SI-Y.parquet"
     f = pd.read_parquet(cached)
     pd.concat([f] * 2000).to_parquet(cached, index=False)
     with pytest.raises(ValueError, match="截断"):

@@ -6,6 +6,7 @@
 import type {
   FactorDefinition,
   HistoricalIndexOption,
+  IndustryLevel,
   ResearchBacktest,
   ResearchFactor,
   ResearchOptions,
@@ -25,6 +26,7 @@ export const FAMILY_ORDER = [
 ] as const;
 
 export const DRAFT_KEY = "finance-quant.research-draft.v2";
+export const INDUSTRY_LEVELS: IndustryLevel[] = ["L1", "L2", "L3"];
 const SUPPORTED_CODE = /^(60\d{4}\.SH|(00|30)\d{4}\.SZ)$/;
 
 export interface FactorRow {
@@ -48,6 +50,7 @@ export interface FormState {
   factors: FactorRow[];
   neutralization: "off" | "industry";
   industryVersion: string;
+  industryLevel: IndustryLevel;
   benchmark: string;
   start: string;
   end: string;
@@ -88,6 +91,17 @@ export const dateOnly = (value: string | undefined | null) => {
     ? `${compact[1]}-${compact[2]}-${compact[3]}`
     : value.slice(0, 10);
 };
+
+export function industryLevels(options: ResearchOptions): IndustryLevel[] {
+  const levels = options.industry_data?.levels;
+  if (!levels) return [];
+  return INDUSTRY_LEVELS.filter((level) => Boolean(levels[level]));
+}
+
+export function defaultIndustryLevel(options: ResearchOptions): IndustryLevel {
+  const levels = industryLevels(options);
+  return levels.includes("L1") ? "L1" : (levels[0] ?? "L1");
+}
 
 export function historicalOption(
   options: ResearchOptions,
@@ -217,6 +231,8 @@ export function defaultForm(options: ResearchOptions): FormState {
       defaults.neutralization?.industry_version ??
       options.industry_data?.id ??
       "",
+    industryLevel:
+      defaults.neutralization?.industry_level ?? defaultIndustryLevel(options),
     start: dateOnly(defaults.backtest.start),
     end: dateOnly(defaults.backtest.end),
     ...backtestFields(defaults.backtest),
@@ -240,6 +256,7 @@ export function formFromRequest(
     neutralization: request.neutralization?.mode ?? "off",
     industryVersion:
       request.neutralization?.industry_version ?? base.industryVersion,
+    industryLevel: request.neutralization?.industry_level ?? base.industryLevel,
     start: dateOnly(request.backtest.start),
     end: dateOnly(request.backtest.end),
     ...backtestFields(request.backtest),
@@ -624,6 +641,17 @@ export function buildRequest(
   );
   if (form.neutralization === "industry" && !options.industry_data)
     errors.push("历史行业数据尚未准备，暂不能开启行业中性化。");
+  if (form.neutralization === "industry") {
+    const levels = options.industry_data?.levels;
+    const label =
+      form.industryLevel === "L1"
+        ? "一级"
+        : form.industryLevel === "L2"
+          ? "二级"
+          : "三级";
+    if (!levels || !levels[form.industryLevel])
+      errors.push(`历史行业数据不包含${label}行业，请重新下载或切换级别。`);
+  }
   if (errors.length || !data) return { request: null, errors };
   return {
     request: {
@@ -638,6 +666,9 @@ export function buildRequest(
               mode: "industry",
               industry_version:
                 form.industryVersion || options.industry_data?.id,
+              ...(form.industryLevel !== "L1"
+                ? { industry_level: form.industryLevel }
+                : {}),
             },
           }
         : {}),
@@ -708,6 +739,8 @@ export function mergeDraft(
       Array.isArray(draft.codes) ? draft.codes : base.codes
     ).filter((code) => available.has(code));
   }
+  if (!industryLevels(options).includes(merged.industryLevel))
+    merged.industryLevel = base.industryLevel;
   if (!historicalOption(options, merged.warehouseId))
     merged.warehouseId = base.warehouseId;
   if (merged.sourceMode === "index_warehouse" && !merged.warehouseId)

@@ -143,9 +143,19 @@ export interface HistoricalIndexOption {
   financial_coverage?: FinancialCoverage | null;
 }
 
+export type IndustryLevel = "L1" | "L2" | "L3";
+
+export interface IndustryLevelData {
+  label: string;
+  rows: number;
+  instruments: number;
+  sectors: number;
+}
+
 export interface Neutralization {
   mode: "off" | "industry";
   industry_version?: string;
+  industry_level?: IndustryLevel;
 }
 
 export interface ResearchRequest {
@@ -224,6 +234,7 @@ export interface ResearchOptions {
     policy: string;
     point_in_time_certified: boolean;
     data_asof?: string | null;
+    levels?: Partial<Record<IndustryLevel, IndustryLevelData>>;
   } | null;
   historical_indices?: HistoricalIndexOption[];
   snapshots: Snapshot[];

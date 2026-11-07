@@ -34,6 +34,16 @@ def test_service_stop_pauses_a_financial_download(tmp_path):
     assert (financial_root(data) / "PAUSE").read_text(encoding="utf-8") == "service stopping"
 
 
+def test_service_stop_pauses_an_industry_download(tmp_path):
+    store = MemoryTaskStore()
+    root = tmp_path / "industries"
+    identifier = download_task(store, "industry_download", {"root": str(root), "plan_id": "plan"}, "pause-industry-1")
+
+    server.request_task_pause(store, identifier, tmp_path / "data")
+
+    assert (root / "PAUSE").read_text(encoding="utf-8") == "service stopping"
+
+
 def test_service_stop_does_not_touch_research_or_experiment(tmp_path):
     store = MemoryTaskStore()
     data = tmp_path / "data"
