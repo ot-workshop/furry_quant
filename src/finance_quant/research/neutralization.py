@@ -4,11 +4,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
+INDUSTRY_LEVELS = ("L1", "L2", "L3")
+INDUSTRY_LEVEL_LABELS = {"L1": "一级", "L2": "二级", "L3": "三级"}
+
 
 @dataclass(frozen=True)
 class NeutralizationConfig:
     mode: str = "off"
     industry_version: str | None = None
+    industry_level: str = "L1"
 
     def __post_init__(self):
         if not isinstance(self.mode, str) or self.mode not in {"off", "industry"}:
@@ -16,15 +20,28 @@ class NeutralizationConfig:
         v = self.industry_version
         if v is not None and (not isinstance(v, str) or len(v) != 64 or any(c not in "0123456789abcdef" for c in v)):
             raise ValueError("历史行业版本无效")
+        if self.industry_level not in INDUSTRY_LEVELS:
+            raise ValueError("行业级别须为 L1、L2 或 L3")
+        if self.mode == "off" and self.industry_level != "L1":
+            raise ValueError("关闭中性化时不能指定行业级别")
 
     def as_dict(self):
-        return {"mode": self.mode, **({"industry_version": self.industry_version} if self.industry_version else {})}
+        # L1 is the historical default: omitting it keeps old fingerprints reusable.
+        return {
+            "mode": self.mode,
+            **({"industry_version": self.industry_version} if self.industry_version else {}),
+            **(
+                {"industry_level": self.industry_level}
+                if self.mode == "industry" and self.industry_level != "L1"
+                else {}
+            ),
+        }
 
 
 def parse_neutralization(value=None):
     if value is None:
         return NeutralizationConfig()
-    if not isinstance(value, dict) or set(value) - {"mode", "industry_version"}:
+    if not isinstance(value, dict) or set(value) - {"mode", "industry_version", "industry_level"}:
         raise ValueError("中性化配置字段无效")
     return NeutralizationConfig(**value)
 
@@ -35,7 +52,9 @@ def industry_context(config=None, history=None):
     config = config or NeutralizationConfig()
     history = history or optional_industries(config.industry_version)
     if config.mode == "industry" and history is None:
-        raise ValueError("历史行业数据尚未下载，请先运行历史行业下载脚本")
+        raise ValueError("历史行业数据尚未下载，请先在数据管理中下载行业数据")
+    if config.mode == "industry":
+        history.validate_level(config.industry_level)
     return history
 
 

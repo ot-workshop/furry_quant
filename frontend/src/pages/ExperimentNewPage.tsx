@@ -25,6 +25,7 @@ import {
   researchApi,
   type ExperimentRequest,
   type FactorDefinition,
+  type FinancialCoverage,
   type ResearchOptions,
 } from "../api/research";
 import { navigate, paths } from "../app/routes";
@@ -36,7 +37,10 @@ import {
   buildEvaluation,
   buildFactors,
   defaultForm,
+  FAMILY_ORDER,
+  factorAvailable,
   factorRows,
+  financialCoverage,
   tradingDates,
   type FactorRow,
   type FormState,
@@ -47,7 +51,6 @@ import {
   DataSection,
   EvaluationSection,
 } from "../research/sections";
-import { factorLabel } from "../utils/format";
 
 interface Candidate {
   id: string;
@@ -59,16 +62,20 @@ function candidate(
   index: number,
   names: string[],
   definitions: FactorDefinition[],
+  coverage: FinancialCoverage | null,
 ): Candidate {
-  const rows = factorRows([], definitions).map((row) =>
-    names.includes(row.name)
+  const rows = factorRows([], definitions).map((row) => {
+    const definition = definitions.find((item) => item.name === row.name);
+    return names.includes(row.name) &&
+      definition &&
+      factorAvailable(definition, coverage)
       ? {
           ...row,
           enabled: true,
           weight: Math.round(10000 / names.length) / 100,
         }
-      : row,
-  );
+      : row;
+  });
   return {
     id: `plan_${index}`,
     name: `方案 ${String.fromCharCode(65 + index)}`,
@@ -129,9 +136,10 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
     sourceMode: "snapshot",
     name: "方案比较",
   }));
+  const coverage = financialCoverage(form, options);
   const [candidates, setCandidates] = useState<Candidate[]>(() => [
-    candidate(0, ["momentum"], definitions),
-    candidate(1, ["value"], definitions),
+    candidate(0, ["momentum"], definitions, coverage),
+    candidate(1, ["value"], definitions, coverage),
   ]);
   const [splits, setSplits] = useState<{ validation: string; test: string }>({
     validation: "",
@@ -195,6 +203,21 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
       planCandidates.length
     )
       errors.push("候选方案的因子配置不能完全相同。");
+    const blocked = planCandidates
+      .flatMap((item) =>
+        item.factors.filter((factor) => {
+          const definition = definitions.find((d) => d.name === factor.name);
+          return (
+            Boolean(definition?.requires_financials) &&
+            !factorAvailable(definition as FactorDefinition, coverage)
+          );
+        }),
+      )
+      .map((factor) => factor.name);
+    if (blocked.length)
+      errors.push(
+        "当前数据集没有财务数据，不能使用基本面因子；请先在“数据管理 → 财务数据”下载。",
+      );
     const request: ExperimentRequest | null =
       errors.length || !data || data.mode !== "snapshot" || !periods
         ? null
@@ -206,7 +229,7 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
             evaluation,
           };
     return { request, errors };
-  }, [form, options, periods, candidates, definitions]);
+  }, [form, options, periods, candidates, definitions, coverage]);
 
   async function submit() {
     if (!built.request) return;
@@ -315,7 +338,12 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
                 onClick={() =>
                   setCandidates((current) => [
                     ...current,
-                    candidate(current.length, ["momentum"], definitions),
+                    candidate(
+                      current.length,
+                      ["momentum"],
+                      definitions,
+                      coverage,
+                    ),
                   ])
                 }
               >
@@ -329,6 +357,7 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
                   key={item.id}
                   value={item}
                   definitions={definitions}
+                  coverage={coverage}
                   removable={candidates.length > 2}
                   onChange={(next) =>
                     setCandidates((current) =>
@@ -397,12 +426,14 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
 function CandidateEditor({
   value,
   definitions,
+  coverage,
   removable,
   onChange,
   onRemove,
 }: {
   value: Candidate;
   definitions: FactorDefinition[];
+  coverage: FinancialCoverage | null;
   removable: boolean;
   onChange: (value: Candidate) => void;
   onRemove: () => void;
@@ -415,6 +446,28 @@ function CandidateEditor({
         row.key === rowKey ? { ...row, ...patch } : row,
       ),
     });
+  const groups = useMemo(() => {
+    const byFamily = new Map<string, FactorDefinition[]>();
+    for (const definition of definitions) {
+      const family = definition.family ?? "value";
+      byFamily.set(family, [...(byFamily.get(family) ?? []), definition]);
+    }
+    return [...byFamily.entries()]
+      .sort(
+        ([left], [right]) =>
+          FAMILY_ORDER.indexOf(left as (typeof FAMILY_ORDER)[number]) -
+          FAMILY_ORDER.indexOf(right as (typeof FAMILY_ORDER)[number]),
+      )
+      .map(([family, items]) => ({
+        family,
+        label: items[0]?.family_label ?? family,
+        options: items.map((definition) => ({
+          value: definition.name,
+          label: definition.label,
+          disabled: !factorAvailable(definition, coverage),
+        })),
+      }));
+  }, [definitions, coverage]);
   return (
     <Card
       size="small"
@@ -452,10 +505,7 @@ function CandidateEditor({
             })),
           })
         }
-        options={value.factors.map((row) => ({
-          value: row.key,
-          label: factorLabel(row.name),
-        }))}
+        options={groups}
         style={{ width: "100%" }}
         placeholder="选择因子"
       />

@@ -110,7 +110,7 @@ class PgTaskStore:
         return self._create("experiment", request, execution, key, total)
 
     def create_download(self, kind, request, execution, key, *, total=1):
-        if kind != "market_download":
+        if kind not in {"market_download", "financial_download", "industry_download"}:
             raise ValueError("Unsupported download task kind")
         return self._create(kind, request, execution, key, total)
 

@@ -7,6 +7,7 @@ import pandas as pd
 
 from finance_quant.data.temporal_audit import factor_temporal_audit, validate_valuation_times
 from finance_quant.research.factor_library import FACTOR_LIBRARY, describe_spec
+from finance_quant.research.fundamentals import attach_fundamentals
 from finance_quant.research.neutralization import (
     NeutralizationConfig,
     residualize,
@@ -38,7 +39,14 @@ def market_factors(
     row_sink=None,
     neutralization=None,
     industry_history=None,
+    financials=None,
 ) -> dict:
+    """Score a market frame.
+
+    ``financials`` is the :class:`~finance_quant.research.fundamentals.FundamentalData`
+    of the pinned financial version; it is required exactly when a fundamental factor
+    is selected.
+    """
     config = FactorConfig() if config is None else config
     if not isinstance(config, FactorConfig):
         raise ValueError("config must be a FactorConfig")
@@ -92,6 +100,11 @@ def market_factors(
         for _, section in frame.groupby("instrument")
     ):
         raise ValueError("因子输入股票池存在交易日缺口，拒绝缩短滚动窗口")
+    fundamental = any(FACTOR_LIBRARY[spec.name].fundamental for spec in config.specs)
+    if fundamental:
+        if financials is None:
+            raise ValueError("所选基本面因子需要财务数据：请先在“数据管理 → 财务数据”下载后重新提交")
+        frame = attach_fundamentals(frame, financials.events)
     required = {field for spec in config.specs for field in FACTOR_LIBRARY[spec.name].required_fields}
     if missing := required - set(frame):
         raise ValueError("所选因子缺少数据字段：" + "、".join(sorted(missing)))
@@ -122,7 +135,11 @@ def market_factors(
         eligible = valid.all(axis=1)
         if dynamic_context is not None:
             eligible &= section.eligible_history.to_numpy() & ~section.is_suspended.to_numpy()
-        assigned = industry_history.at(date, section.instrument, actual_calendar) if industry_history else {}
+        assigned = (
+            industry_history.at(date, section.instrument, actual_calendar, level=neutralization.industry_level)
+            if industry_history
+            else {}
+        )
         if assigned:
             known = np.array([assigned[s]["industry_status"] == "known" for s in section.instrument])
             industry_days[day] = {
@@ -151,7 +168,9 @@ def market_factors(
                 if raw[key] is not None:
                     continue
                 reason = (
-                    "missing_or_nonpositive_"
+                    "missing_or_stale_financial_report"
+                    if FACTOR_LIBRARY[spec.name].fundamental
+                    else "missing_or_nonpositive_"
                     + ("pe_ttm" if spec.name == "value" else "pb" if spec.name == "book_to_price" else "total_mv")
                     if spec.name in {"value", "book_to_price", "size"}
                     else "insufficient_negative_returns_or_history"
@@ -289,12 +308,18 @@ def market_factors(
             "notes": [
                 "各因子使用当日及以前数据，不补未来值；按所有入选因子均有效的交集排名，不按缺失项偷偷重分权重",
                 "缺失和预热不足的股票保留逐因子原因与覆盖率；PB/市值/PE历史修订及发布时间未独立认证",
-                "行业仅作展示；当前没有财报因子、中性化或动态权重",
+                "行业仅作展示；当前没有动态权重",
             ],
         },
         "history": history if row_sink is None else [],
         "diagnostics": diagnostics if row_sink is None else [],
     }
+    if fundamental:
+        result["metadata"]["financial_data"] = financials.metadata(frame.instrument.unique())
+        result["metadata"]["notes"].append(
+            "基本面因子由三张财务报表自算（TTM口径）；报表按公告日后下一交易日09:30可见，"
+            "更正按调整前原始数与次年调整数重建，仍非严格PIT认证；财务数据缺失或过期的股票不参与排名",
+        )
     result["metadata"]["neutralization"] = neutralization.as_dict()
     if industry_history:
         result["metadata"]["point_in_time_certified"] = False
@@ -302,9 +327,16 @@ def market_factors(
             k: industry_history.manifest[k] for k in ["id", "source", "policy", "point_in_time_certified"]
         }
         result["metadata"]["industry_data"]["data_asof"] = industry_history.data_asof
+        result["metadata"]["industry_data"]["level"] = neutralization.industry_level
+        result["metadata"]["industry_data"]["level_label"] = {
+            "L1": "一级",
+            "L2": "二级",
+            "L3": "三级",
+        }[neutralization.industry_level]
         result["metadata"]["industry_coverage_by_date"] = industry_days
         result["metadata"]["notes"][-1] = (
-            "历史行业按保存版本与信号日区间匹配；实际公告时点未认证。当前行业字段不参与历史中性化。"
+            f"历史行业按保存版本的{result['metadata']['industry_data']['level_label']}行业与信号日区间匹配；"
+            "实际公告时点未认证。"
         )
     if neutralization.mode == "industry":
         result["metadata"]["notes"] += [

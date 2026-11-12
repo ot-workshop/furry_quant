@@ -38,6 +38,7 @@ import {
   formFromRequest,
   mergeDraft,
   poolSize,
+  pruneFactors,
   readDraft,
   saveDraft,
   weightTotal,
@@ -71,9 +72,10 @@ function ResearchForm({
   const { message } = App.useApp();
   const [form, setForm] = useState<FormState>(() => {
     const draft = fromTask ? null : readDraft();
-    return draft
+    const initial = draft
       ? mergeDraft(defaultForm(options), draft, options)
       : defaultForm(options);
+    return pruneFactors(initial, options);
   });
   const [notice, setNotice] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -91,7 +93,7 @@ function ResearchForm({
           task.request as ResearchRequest,
           options,
         );
-        setForm(restored.form);
+        setForm(pruneFactors(restored.form, options));
         setNotice([
           `已载入任务「${task.name}」的配置，可修改后重新提交。`,
           ...restored.warnings,
@@ -109,7 +111,7 @@ function ResearchForm({
   const built = useMemo(() => buildRequest(form, options), [form, options]);
   const update = (patch: Partial<FormState>) => {
     setSubmitError(null);
-    setForm((current) => ({ ...current, ...patch }));
+    setForm((current) => pruneFactors({ ...current, ...patch }, options));
   };
 
   async function submit() {

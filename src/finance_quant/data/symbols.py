@@ -21,6 +21,13 @@ def to_qlib(code: str) -> str:
     return exchange + number
 
 
+def from_qlib(instrument: str) -> str:
+    """Convert Qlib's ``SH600000`` back to ``600000.SH``."""
+    code = f"{instrument[2:]}.{instrument[:2]}"
+    split_ts_code(code)
+    return code
+
+
 def to_baostock(code: str) -> str:
     """Convert ``600000.SH`` to BaoStock's ``sh.600000`` form."""
     number, exchange = split_ts_code(code)

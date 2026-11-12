@@ -102,7 +102,13 @@ def factor_temporal_audit(metadata):
             "label": "历史行业",
             "status": "unverified" if industry_used else "diagnostic_only" if industry else "not_used",
             "detail": (
-                "使用保存版本的纳入/剔除区间及分类切换约定；实际公告与修订发布时间未认证。"
+                "使用保存版本"
+                + (
+                    f"的{industry.get('level_label', '一级')}行业"
+                    if isinstance(industry, dict) and industry.get("level_label")
+                    else "的"
+                )
+                + "纳入/剔除区间及分类切换约定；实际公告与修订发布时间未认证。"
                 if industry
                 else "本批次未使用独立历史行业数据。"
             )
@@ -118,6 +124,19 @@ def factor_temporal_audit(metadata):
                 + "。官方daily_basic通常盘后15—17点更新，本模型假设当日18点可用；不附带财报原始版本、完整更正链和历史首次发布时间，尚非严格PIT估值。"
                 if fields
                 else "本次入选因子不依赖PE/PB或市值字段。"
+            ),
+        },
+        {
+            "key": "financials",
+            "label": "财务报表",
+            "status": "unverified" if metadata.get("financial_data") else "not_used",
+            "detail": (
+                "使用财务数据版本 "
+                + metadata["financial_data"]["version"]
+                + "：报表只有公告日期，按下一交易日09:30可见；就地更正按调整前原始数、次年调整数或首次观测时间推迟可见。"
+                "供应商未留痕的历史更正无法还原，因此不是严格PIT。"
+                if metadata.get("financial_data")
+                else "本次入选因子不使用财务报表。"
             ),
         },
         {

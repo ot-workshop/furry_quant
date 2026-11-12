@@ -7,7 +7,7 @@ import pandas as pd
 from finance_quant.data.symbols import to_qlib
 
 
-def attach_industry_exposure(result, history, calendar, *, neutralization=None, memberships=None):
+def attach_industry_exposure(result, history, calendar, *, neutralization=None, memberships=None, level="L1"):
     if history is None:
         return
     holdings = defaultdict(list)
@@ -17,7 +17,7 @@ def attach_industry_exposure(result, history, calendar, *, neutralization=None, 
     for account in result["equity"]:
         date = account["date"]
         positions = holdings[date]
-        labels = history.at(date, [r["instrument"] for r in positions], calendar)
+        labels = history.at(date, [r["instrument"] for r in positions], calendar, level=level)
         grouped = {}
 
         def add(symbol, weight, field):
@@ -53,7 +53,7 @@ def attach_industry_exposure(result, history, calendar, *, neutralization=None, 
             ]
             if len(active):
                 symbols = active.code.map(to_qlib)
-                labels.update(history.at(date, symbols, calendar))
+                labels.update(history.at(date, symbols, calendar, level=level))
                 for symbol, weight in zip(symbols, active.weight):
                     add(symbol, float(weight) / 100.0, "benchmark_weight")
                 benchmark_available = True
@@ -78,7 +78,10 @@ def attach_industry_exposure(result, history, calendar, *, neutralization=None, 
         )
     result["industry_exposure"] = {
         "days": days,
-        "industry_data": {k: history.manifest[k] for k in ["id", "source", "policy", "point_in_time_certified"]},
+        "industry_data": {
+            **{k: history.manifest[k] for k in ["id", "source", "policy", "point_in_time_certified"]},
+            "level": level,
+        },
         "neutralization": (neutralization.as_dict() if neutralization else {"mode": "off"}),
         "benchmark_note": "历史沪深300月度成分权重近似，快照后下一交易日可用，未按每日价格漂移；仅在沪深300基准下对比。"
         if memberships is not None

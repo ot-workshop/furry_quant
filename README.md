@@ -24,9 +24,10 @@
 ## 功能
 
 - 行情下载：自选股票、沪深300历史成分或全市场（沪深 A 股，含已退市）；增量补缺口、断点续传、发布不可变版本。
-- 研究：10 个可配置因子（动量、反转、波动、估值、流动性、回撤、市值等）、可选历史行业中性化、日/周/月调仓。
+- 研究：10 个可配置因子（动量、反转、波动、估值、流动性、回撤、市值等）、可选历史行业中性化（申万一级/二级/三级）、日/周/月调仓。
 - 交易模拟：T+1、涨跌停、停牌、整手与板块规则，佣金/印花税/过户费与默认 0.05% 冲击成本。
 - 结果：净值与回撤、绩效指标、持仓、成交、费用、行业暴露、IC/Rank IC、分组收益、因子相关性。
+- 财务数据：三张报表按股票增量下载，按公告时点重建可见版本；8 个基本面因子（TTM 口径）可用。
 - 方案比较：开发/验证/测试三段，只按验证段选方案，测试段只复核被选中的方案。
 - 可追溯：每个结果记录数据版本、冻结数据集、代码与依赖哈希；PostgreSQL 与文件可一致备份恢复。
 
@@ -45,7 +46,7 @@ Worker 进程 ─ 每个任务一个子进程（Qlib 只在这里运行）
 python -m finance_quant.server worker
    │
    └─ STORAGE_ROOT/
-       ├─ data/      共享行情抓取、研究数据集、沪深300历史成分视图
+       ├─ data/      共享行情抓取、研究数据集、沪深300历史成分视图、财务数据、申万行业
        ├─ datasets/  冻结的研究输入（内容寻址）
        ├─ runs/      Parquet 明细与报告
        ├─ network/   接口调用配额记录
@@ -318,6 +319,8 @@ CI（`.github/workflows/full-tests.yml`）在 Pull Request 上运行以上全部
 - [Linux 运维](docs/operations.md)
 - [前端结构与接口](docs/frontend-contract.md)
 - [因子库](docs/factor-library.md)
+- [财务数据](docs/financial-data.md)
+- [行业数据](docs/industry-data.md)
 - [调仓与交易成本](docs/rebalance-and-costs.md)
 - [共享行情数据](docs/shared-market-data.md)
 - [预热与日期校验](docs/warmup-validation.md)

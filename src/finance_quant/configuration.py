@@ -11,8 +11,10 @@ from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
+from finance_quant.data.financials import FinancialBinding
 from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.execution_policy import EXECUTION_FIELDS, ExecutionCosts, validate_frequency
+from finance_quant.research.factor_library import uses_financials
 from finance_quant.research.neutralization import NeutralizationConfig, parse_neutralization
 from finance_quant.research.registry import (
     EvaluationConfig,
@@ -39,7 +41,7 @@ _DATE_PATTERNS = (
     re.compile(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})$"),
 )
 _BENCHMARKS = frozenset({"000300.SH", "000905.SH", "000852.SH", "000001.SH", "399001.SZ", "399006.SZ"})
-_TOP_LEVEL_FIELDS = frozenset({"data", "backtest", "runs_dir", "factors", "evaluation", "neutralization"})
+_TOP_LEVEL_FIELDS = frozenset({"data", "backtest", "runs_dir", "factors", "evaluation", "neutralization", "financials"})
 _DATA_FIELDS = frozenset({"root", "start", "end", "codes", "benchmark", "validation"})
 _FACTOR_FIELDS = frozenset({"name", "weight", "window", "skip", "baseline_window", "id"})
 _EVALUATION_FIELDS = frozenset({"horizons", "groups", "min_cross_section"})
@@ -252,10 +254,16 @@ class ResearchConfig:
     factors: FactorConfig = field(default_factory=FactorConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     neutralization: NeutralizationConfig = field(default_factory=NeutralizationConfig)
+    # Pinned financial statements; required when any selected factor is fundamental.
+    financials: FinancialBinding | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.data, DataConfig):
             raise ValueError("data must be a DataConfig")
+        if self.financials is not None and not isinstance(self.financials, FinancialBinding):
+            raise ValueError("financials must be a FinancialBinding")
+        if self.financials is None and isinstance(self.factors, FactorConfig) and uses_financials(self.factors):
+            raise ValueError("基本面因子需要绑定财务数据版本")
         if not isinstance(self.backtest, BacktestConfig):
             raise ValueError("backtest must be a BacktestConfig")
         if not isinstance(self.factors, FactorConfig):
@@ -297,7 +305,21 @@ class ResearchConfig:
                 if self.neutralization != NeutralizationConfig()
                 else {}
             ),
+            **(
+                {"financials": {"root": str(self.financials.root), **self.financials.as_dict()}}
+                if self.financials
+                else {}
+            ),
         }
+
+
+def _financials(document: dict[str, Any], base: Path) -> FinancialBinding | None:
+    if "financials" not in document:
+        return None
+    value = _json_object(document, "financials")
+    _reject_unknown(value, frozenset({"root", "version"}), "financials configuration")
+    _require_fields(value, ("root", "version"), "financials configuration")
+    return FinancialBinding(_resolve_path(value["root"], base, "financials.root"), value["version"])
 
 
 def _reject_unknown(obj: dict[str, Any], allowed: frozenset[str], label: str) -> None:
@@ -421,4 +443,5 @@ def load_config(path: Path) -> ResearchConfig:
         factors=_factor_config(document),
         evaluation=_evaluation_config(document),
         neutralization=parse_neutralization(document.get("neutralization")),
+        financials=_financials(document, base),
     )

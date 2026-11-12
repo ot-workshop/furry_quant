@@ -6,6 +6,7 @@
 import type {
   FactorDefinition,
   HistoricalIndexOption,
+  IndustryLevel,
   ResearchBacktest,
   ResearchFactor,
   ResearchOptions,
@@ -14,7 +15,18 @@ import type {
   SourceMode,
 } from "../api/research";
 
+/** Factor families in display order, so the form groups price and fundamental factors. */
+export const FAMILY_ORDER = [
+  "momentum",
+  "value",
+  "size",
+  "risk",
+  "activity",
+  "fundamental",
+] as const;
+
 export const DRAFT_KEY = "finance-quant.research-draft.v2";
+export const INDUSTRY_LEVELS: IndustryLevel[] = ["L1", "L2", "L3"];
 const SUPPORTED_CODE = /^(60\d{4}\.SH|(00|30)\d{4}\.SZ)$/;
 
 export interface FactorRow {
@@ -38,6 +50,7 @@ export interface FormState {
   factors: FactorRow[];
   neutralization: "off" | "industry";
   industryVersion: string;
+  industryLevel: IndustryLevel;
   benchmark: string;
   start: string;
   end: string;
@@ -78,6 +91,17 @@ export const dateOnly = (value: string | undefined | null) => {
     ? `${compact[1]}-${compact[2]}-${compact[3]}`
     : value.slice(0, 10);
 };
+
+export function industryLevels(options: ResearchOptions): IndustryLevel[] {
+  const levels = options.industry_data?.levels;
+  if (!levels) return [];
+  return INDUSTRY_LEVELS.filter((level) => Boolean(levels[level]));
+}
+
+export function defaultIndustryLevel(options: ResearchOptions): IndustryLevel {
+  const levels = industryLevels(options);
+  return levels.includes("L1") ? "L1" : (levels[0] ?? "L1");
+}
 
 export function historicalOption(
   options: ResearchOptions,
@@ -123,6 +147,51 @@ export function factorRows(
   return rows;
 }
 
+/** Whether the selected dataset holds financial statements for at least two stocks. */
+export function financialCoverage(
+  form: FormState,
+  options: ResearchOptions,
+): { covered: number; total: number } | null {
+  if (!options.financial_data) return null;
+  if (form.sourceMode === "index_warehouse") {
+    return (
+      historicalOption(options, form.warehouseId)?.financial_coverage ?? null
+    );
+  }
+  return snapshotOf(options, form.snapshotId)?.financial_coverage ?? null;
+}
+
+/** A fundamental factor is selectable only when the dataset carries statements. */
+export function factorAvailable(
+  definition: FactorDefinition,
+  coverage: { covered: number; total: number } | null,
+): boolean {
+  return (
+    !definition.requires_financials ||
+    Boolean(coverage && coverage.covered >= 2)
+  );
+}
+
+/** Drop enabled factors that the chosen dataset cannot serve. */
+export function pruneFactors(
+  form: FormState,
+  options: ResearchOptions,
+): FormState {
+  const coverage = financialCoverage(form, options);
+  const unavailable = new Set(
+    options.factor_definitions
+      .filter((definition) => !factorAvailable(definition, coverage))
+      .map((definition) => definition.name),
+  );
+  if (!unavailable.size) return form;
+  return {
+    ...form,
+    factors: form.factors.map((row) =>
+      unavailable.has(row.name) ? { ...row, enabled: false, weight: 0 } : row,
+    ),
+  };
+}
+
 function backtestFields(backtest: Partial<ResearchBacktest>) {
   return {
     initialCash: backtest.initial_cash ?? 100000,
@@ -162,6 +231,8 @@ export function defaultForm(options: ResearchOptions): FormState {
       defaults.neutralization?.industry_version ??
       options.industry_data?.id ??
       "",
+    industryLevel:
+      defaults.neutralization?.industry_level ?? defaultIndustryLevel(options),
     start: dateOnly(defaults.backtest.start),
     end: dateOnly(defaults.backtest.end),
     ...backtestFields(defaults.backtest),
@@ -185,6 +256,7 @@ export function formFromRequest(
     neutralization: request.neutralization?.mode ?? "off",
     industryVersion:
       request.neutralization?.industry_version ?? base.industryVersion,
+    industryLevel: request.neutralization?.industry_level ?? base.industryLevel,
     start: dateOnly(request.backtest.start),
     end: dateOnly(request.backtest.end),
     ...backtestFields(request.backtest),
@@ -542,6 +614,21 @@ export function buildRequest(
   if (!name || name.length > 80) errors.push("请填写 1–80 个字符的研究名称。");
   const data = buildData(form, options, errors);
   const factors = buildFactors(form, options.factor_definitions, errors);
+  const coverage = financialCoverage(form, options);
+  const blocked = form.factors
+    .filter((row) => row.enabled)
+    .map((row) => options.factor_definitions.find((d) => d.name === row.name))
+    .filter(
+      (definition): definition is FactorDefinition =>
+        Boolean(definition?.requires_financials) &&
+        !factorAvailable(definition as FactorDefinition, coverage),
+    );
+  if (blocked.length)
+    errors.push(
+      `当前数据集没有财务数据，不能使用基本面因子：${blocked
+        .map((definition) => definition.label)
+        .join("、")}。请先在“数据管理 → 财务数据”下载。`,
+    );
   const backtest = buildBacktest(form, errors);
   const evaluation = buildEvaluation(form, errors);
   checkDates(
@@ -554,6 +641,17 @@ export function buildRequest(
   );
   if (form.neutralization === "industry" && !options.industry_data)
     errors.push("历史行业数据尚未准备，暂不能开启行业中性化。");
+  if (form.neutralization === "industry") {
+    const levels = options.industry_data?.levels;
+    const label =
+      form.industryLevel === "L1"
+        ? "一级"
+        : form.industryLevel === "L2"
+          ? "二级"
+          : "三级";
+    if (!levels || !levels[form.industryLevel])
+      errors.push(`历史行业数据不包含${label}行业，请重新下载或切换级别。`);
+  }
   if (errors.length || !data) return { request: null, errors };
   return {
     request: {
@@ -568,6 +666,9 @@ export function buildRequest(
               mode: "industry",
               industry_version:
                 form.industryVersion || options.industry_data?.id,
+              ...(form.industryLevel !== "L1"
+                ? { industry_level: form.industryLevel }
+                : {}),
             },
           }
         : {}),
@@ -638,6 +739,8 @@ export function mergeDraft(
       Array.isArray(draft.codes) ? draft.codes : base.codes
     ).filter((code) => available.has(code));
   }
+  if (!industryLevels(options).includes(merged.industryLevel))
+    merged.industryLevel = base.industryLevel;
   if (!historicalOption(options, merged.warehouseId))
     merged.warehouseId = base.warehouseId;
   if (merged.sourceMode === "index_warehouse" && !merged.warehouseId)

@@ -8,6 +8,18 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from finance_quant.research.fundamentals import FEATURE_VERSION
+
+FUNDAMENTAL = "fundamental"
+FAMILY_LABELS = {
+    "value": "价值",
+    "momentum": "动量与反转",
+    "risk": "风险",
+    "size": "规模",
+    "activity": "交易活跃度",
+    FUNDAMENTAL: "基本面",
+}
+
 
 def _positive(series):
     return series.where(np.isfinite(series) & series.gt(0))
@@ -57,6 +69,13 @@ def _amount(frame, spec):
     return frame.groupby("instrument").amount.transform(one)
 
 
+def _reported(field):
+    def calculate(frame, spec):
+        return frame[field].astype("float64")
+
+    return calculate
+
+
 def _valuation(frame, field, logarithm=False):
     value = _positive(frame[field])
     # New daily-basic factors do not assert a precise publication/as-of time
@@ -77,32 +96,40 @@ class FactorDefinition:
     default_window: int | None = None
     default_skip: int | None = None
     default_baseline_window: int | None = None
+    description: str | None = None
+
+    @property
+    def fundamental(self) -> bool:
+        return self.family == FUNDAMENTAL
 
     def public(self):
+        if self.fundamental:
+            availability = "按公告日后下一交易日09:30可见；信号取当日15:00已可用的最新报告期"
+            note = "来自三张财务报表自算（TTM口径），历史更正链按调整前/调整数重建，仍非严格PIT认证；需先下载财务数据"
+        else:
+            availability = "T日18:00假设可用，仅供下一交易日开盘"
+            note = (
+                "PB/市值/PE来自兼容服务，历史发布时间与修订未独立认证"
+                if self.family in {"value", "size"}
+                else "行情及复权口径随冻结快照保留"
+            )
         return {
             "name": self.name,
             "label": self.label,
             "family": self.family,
-            "family_label": {
-                "value": "价值",
-                "momentum": "动量与反转",
-                "risk": "风险",
-                "size": "规模",
-                "activity": "交易活跃度",
-            }[self.family],
+            "family_label": FAMILY_LABELS[self.family],
             "direction": self.direction,
             "required_fields": list(self.required_fields),
             "formula": self.formula,
-            "description": self.formula,
+            "description": self.description or self.formula,
             "default_window": self.default_window,
             "default_skip": self.default_skip,
             "default_baseline_window": self.default_baseline_window,
-            "version": "causal-daily-v1",
+            "version": FEATURE_VERSION if self.fundamental else "causal-daily-v1",
             "missing_policy": "strict_selected_factor_intersection",
-            "availability": "T日18:00假设可用，仅供下一交易日开盘",
-            "data_note": "PB/市值/PE来自兼容服务，历史发布时间与修订未独立认证"
-            if self.family in {"value", "size"}
-            else "行情及复权口径随冻结快照保留",
+            "availability": availability,
+            "data_note": note,
+            "requires_financials": self.fundamental,
         }
 
 
@@ -209,8 +236,93 @@ _DEFINITIONS = (
         None,
         60,
     ),
+    FactorDefinition(
+        "roe_ttm",
+        "净资产收益率",
+        FUNDAMENTAL,
+        "higher",
+        ("roe_ttm",),
+        "TTM归母净利润 / 平均归母股东权益（本期与上年同期）；权益非正不参与",
+        _reported("roe_ttm"),
+        description="盈利能力：每单位股东权益在最近十二个月创造的归母净利润",
+    ),
+    FactorDefinition(
+        "roa_ttm",
+        "总资产收益率",
+        FUNDAMENTAL,
+        "higher",
+        ("roa_ttm",),
+        "TTM归母净利润 / 平均总资产",
+        _reported("roa_ttm"),
+        description="资产效率：不受杠杆影响的盈利能力",
+    ),
+    FactorDefinition(
+        "gross_margin_ttm",
+        "毛利率",
+        FUNDAMENTAL,
+        "higher",
+        ("gross_margin_ttm",),
+        "(TTM营业总收入 − TTM营业成本) / TTM营业总收入；银行、保险等无营业成本的公司不参与",
+        _reported("gross_margin_ttm"),
+        description="定价能力与产品竞争力；行业差异大，建议配合行业中性化",
+    ),
+    FactorDefinition(
+        "asset_turnover_ttm",
+        "总资产周转率",
+        FUNDAMENTAL,
+        "higher",
+        ("asset_turnover_ttm",),
+        "TTM营业总收入 / 平均总资产",
+        _reported("asset_turnover_ttm"),
+        description="运营效率；行业差异大，建议配合行业中性化",
+    ),
+    FactorDefinition(
+        "debt_to_assets",
+        "资产负债率",
+        FUNDAMENTAL,
+        "lower",
+        ("debt_to_assets",),
+        "最新报告期总负债 / 总资产（越低越好）",
+        _reported("debt_to_assets"),
+        description="财务杠杆与偿债风险；金融业天然偏高，建议配合行业中性化",
+    ),
+    FactorDefinition(
+        "accruals_ttm",
+        "应计比率",
+        FUNDAMENTAL,
+        "lower",
+        ("accruals_ttm",),
+        "(TTM归母净利润 − TTM经营活动现金流净额) / 平均总资产（越低越好）",
+        _reported("accruals_ttm"),
+        description="盈利质量：利润中未变成现金的部分越少越好",
+    ),
+    FactorDefinition(
+        "profit_growth_ttm",
+        "净利润增长",
+        FUNDAMENTAL,
+        "higher",
+        ("profit_growth_ttm",),
+        "(TTM归母净利润 − 上年同期TTM) / |上年同期TTM|",
+        _reported("profit_growth_ttm"),
+        description="盈利增长：与一年前同一报告期的滚动十二个月利润比较",
+    ),
+    FactorDefinition(
+        "revenue_growth_ttm",
+        "营收增长",
+        FUNDAMENTAL,
+        "higher",
+        ("revenue_growth_ttm",),
+        "TTM营业总收入 / 上年同期TTM − 1；上年同期需为正",
+        _reported("revenue_growth_ttm"),
+        description="业务扩张速度",
+    ),
 )
 FACTOR_LIBRARY = {definition.name: definition for definition in _DEFINITIONS}
+
+
+def uses_financials(config) -> bool:
+    """Whether a factor configuration needs pinned financial statements."""
+    return any(FACTOR_LIBRARY[spec.name].fundamental for spec in config.specs)
 
 
 def describe_spec(spec):

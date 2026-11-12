@@ -15,8 +15,20 @@ from finance_quant.data.symbols import to_qlib
 from finance_quant.integrations.qlib_runner import run_qlib
 from finance_quant.provenance import source_provenance
 from finance_quant.research.execution_policy import EXECUTION_FIELDS
+from finance_quant.research.fundamentals import financial_provenance
 from finance_quant.research.registry import FactorConfig
 from finance_quant.storage import ResultStore
+
+
+def financial_limitation(factor_metadata: dict) -> str:
+    """Result limitation describing whether, and how, financial statements were used."""
+    financial = factor_metadata.get("financial_data")
+    if not financial:
+        return "未使用财报；每日估值的历史修订与实际发布时间仍待审计"
+    return (
+        f"财报因子使用财务数据版本 {financial['version']}（覆盖 {financial['covered']}/{financial['universe']} 只）："
+        "按公告日后下一交易日可见，供应商未留痕的历史更正无法还原；每日估值的历史修订与实际发布时间仍待审计"
+    )
 
 
 def adjusted_quotes(market: pd.DataFrame, benchmark: pd.DataFrame) -> pd.DataFrame:
@@ -56,6 +68,7 @@ def _run_real_execution(
     factor_config: FactorConfig | None = None,
     neutralization=None,
     result_store=None,
+    financials=None,
 ) -> dict:
     """Parameters come from a validated :class:`BacktestConfig`; there are no hidden defaults."""
     execution_options = {key: locals_value for key, locals_value in locals().copy().items() if key in EXECUTION_FIELDS}
@@ -77,6 +90,7 @@ def _run_real_execution(
         factor_config,
         neutralization,
         result_store=result_store,
+        financials=financials,
     )
     if not any(row["date"] == initial_date for row in factors["history"]):
         raise ValueError("Warm-up does not provide prior-day factor scores")
@@ -100,6 +114,7 @@ def _run_real_execution(
         "benchmark": benchmark_code,
         "factor_run_id": factors["metadata"]["id"],
         **execution_options,
+        **financial_provenance(financials, factor_config or FactorConfig()),
     }
     fingerprint = sha256_text(json.dumps(provenance, sort_keys=True))[:12]
     run_id, factor_id = f"real-qlib-{fingerprint}", factors["metadata"]["id"]
@@ -154,7 +169,7 @@ def _run_real_execution(
             "开盘触及买入涨停价或卖出跌停价保守不成交；滑点按固定成交额比例计入冲击成本，未模拟盘中队列和成交量冲击",
             "费用按已保存模式和参数扣除；分项模式佣金含规费、印花税及过户费另计，冲击成本为成交额比例压力假设，未模拟盘中流动性；停牌日禁止买卖",
             "停牌日缺失PE只沿用此前已知值并记录行情日期；该日期不等同于已审计的实际发布时间",
-            "未使用财报；每日估值的历史修订与实际发布时间仍待审计",
+            financial_limitation(factors["metadata"]),
         ],
     )
     if manifest.get("cross_validation"):
@@ -171,7 +186,11 @@ def _run_real_execution(
 
     industry_version = factors["metadata"].get("industry_data", {}).get("id")
     attach_industry_exposure(
-        result, load_industries(industry_version) if industry_version else None, sessions, neutralization=neutralization
+        result,
+        load_industries(industry_version) if industry_version else None,
+        sessions,
+        neutralization=neutralization,
+        level=getattr(neutralization, "industry_level", "L1"),
     )
     # Strict JSON serialization before either artifact becomes visible.
     json.dumps(result, allow_nan=False)
@@ -237,4 +256,5 @@ def run_configured(config, *, result_store=None) -> dict:
         factor_config=config.factors,
         neutralization=config.neutralization,
         result_store=result_store,
+        financials=config.financials,
     )

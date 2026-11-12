@@ -3,7 +3,102 @@ import sys
 from unittest.mock import patch
 
 from finance_quant import server
+from finance_quant.data.financials import financial_root
 from finance_quant.persistence import database
+from support.fakes import MemoryTaskStore
+
+
+def download_task(store, kind, execution, key):
+    task = store.create_download(kind, {"name": kind}, execution, key)
+    store.claim()
+    return task["id"]
+
+
+def test_service_stop_pauses_a_resumable_market_download(tmp_path):
+    store = MemoryTaskStore()
+    market = tmp_path / "market"
+    identifier = download_task(store, "market_download", {"root": str(market), "plan_id": "plan"}, "pause-market-1")
+
+    server.request_task_pause(store, identifier, tmp_path / "data")
+
+    assert (market / "PAUSE").read_text(encoding="utf-8") == "service stopping"
+
+
+def test_service_stop_pauses_a_financial_download(tmp_path):
+    store = MemoryTaskStore()
+    data = tmp_path / "data"
+    identifier = download_task(store, "financial_download", {"root": "unused", "plan_id": "plan"}, "pause-finance-1")
+
+    server.request_task_pause(store, identifier, data)
+
+    assert (financial_root(data) / "PAUSE").read_text(encoding="utf-8") == "service stopping"
+
+
+def test_service_stop_pauses_an_industry_download(tmp_path):
+    store = MemoryTaskStore()
+    root = tmp_path / "industries"
+    identifier = download_task(store, "industry_download", {"root": str(root), "plan_id": "plan"}, "pause-industry-1")
+
+    server.request_task_pause(store, identifier, tmp_path / "data")
+
+    assert (root / "PAUSE").read_text(encoding="utf-8") == "service stopping"
+
+
+def test_service_stop_does_not_touch_research_or_experiment(tmp_path):
+    store = MemoryTaskStore()
+    data = tmp_path / "data"
+    research = store.create({}, {"mode": "snapshot"}, "pause-research-1")["id"]
+    experiment = store.create_experiment({}, {"mode": "snapshot"}, "pause-experiment-1", total=5)["id"]
+
+    for identifier in (research, experiment):
+        server.request_task_pause(store, identifier, data)
+
+    assert not (financial_root(data) / "PAUSE").exists()
+    assert not list(tmp_path.rglob("PAUSE"))
+
+
+def test_worker_shutdown_pauses_the_running_download_instead_of_crashing(tmp_path, monkeypatch):
+    """Regression: the pause branch read ``task`` before it was assigned and killed the worker."""
+    import threading
+
+    store = MemoryTaskStore()
+    data, runs, root = tmp_path / "data", tmp_path / "runs", tmp_path / "storage"
+    market = root / "market"
+    store.create_download(
+        "market_download", {"name": "行情下载"}, {"root": str(market), "plan_id": "plan"}, "shutdown-market-1"
+    )
+    stop = threading.Event()
+
+    class Process:
+        returncode = 0
+
+        def poll(self):
+            return 0 if (market / "PAUSE").exists() else None
+
+    class Connection:
+        def execute(self, statement):
+            return None
+
+        def commit(self):
+            return None
+
+    class Claiming(MemoryTaskStore):
+        def claim(self, worker_id=None):
+            identifier = super().claim(worker_id)
+            stop.set()
+            return identifier
+
+    queue = Claiming()
+    queue._rows = store._rows
+    queue._keys = store._keys
+    (root / "logs").mkdir(parents=True)
+
+    monkeypatch.setattr(server.subprocess, "Popen", lambda *args, **kwargs: Process())
+    monkeypatch.setattr(server.time, "sleep", lambda seconds: None)
+    server.consume(queue, root, runs, data, stop, Connection())
+
+    assert (market / "PAUSE").read_text(encoding="utf-8") == "service stopping"
+    assert queue.list()["items"][0]["status"] == "interrupted"
 
 
 def test_native_api_loads_development_env_and_passes_uvicorn_options(tmp_path, monkeypatch):
