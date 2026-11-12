@@ -155,7 +155,7 @@ def financial_binding(execution: dict, data_root):
     from finance_quant.data.financials import FinancialBinding, financial_root
 
     pinned = execution.get("financials", {}).get("version")
-    return FinancialBinding(financial_root(data_root), pinned) if pinned else None
+    return FinancialBinding.from_dict(financial_root(data_root), execution["financials"]) if pinned else None
 
 
 def _run_historical(context: TaskContext, request: dict, execution: dict) -> dict:

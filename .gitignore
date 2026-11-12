@@ -10,7 +10,8 @@ storage-dev/
 .env.*
 !.env.example
 !.env.development.example
-data/
+/data/
+.review-tmp/
 runs/
 frontend/node_modules/
 frontend/.npm-cache/

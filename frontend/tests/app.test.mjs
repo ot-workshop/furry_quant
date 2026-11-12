@@ -7,7 +7,9 @@ import { options } from "./fixtures.mjs";
 const dom = new JSDOM('<div id="root"></div>', { url: "http://127.0.0.1:8000/", pretendToBeVisual: true });
 for (const name of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "Event", "MouseEvent", "KeyboardEvent", "getComputedStyle", "SVGElement", "ShadowRoot"])
   Object.defineProperty(globalThis, name, { value: name === "window" ? dom.window : dom.window[name], configurable: true, writable: true });
-globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
+const computedStyle = dom.window.getComputedStyle.bind(dom.window);
+dom.window.getComputedStyle = (element) => computedStyle(element);
+globalThis.getComputedStyle = dom.window.getComputedStyle;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
 globalThis.matchMedia = dom.window.matchMedia;
@@ -24,6 +26,8 @@ const { app, theme } = await load({ app: "./src/App", theme: "./src/app/theme" }
 
 const posted = [];
 let tasks = [];
+const downloadPosts = [];
+let failFinancialPreview = false;
 globalThis.fetch = async (url, init = {}) => {
   const path = String(url).replace("/api/v1", "");
   const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
@@ -42,6 +46,16 @@ globalThis.fetch = async (url, init = {}) => {
   if (path === "/research/tasks") return json({ items: tasks, total: tasks.length });
   if (path === "/data-status") return json({ snapshots: [], database: null });
   if (path === "/research/industry-download") return json({ worker_running: false, version: null, versions: [], jobs: [] });
+  if (path === "/research/financial-download") return json({ worker_running: false, version: null, versions: [], jobs: [], market_versions: [{ id: "market-a", scope: "custom", start: "2024-01-01", end: "2025-12-31", codes_count: 3, restricted: false }] });
+  if (path === "/research/financial-download/preview") {
+    if (failFinancialPreview) return json({ detail: "测试：财务接口暂时不可用" }, 503);
+    downloadPosts.push({ path, body: JSON.parse(init.body) });
+    return json({ id: "f".repeat(24), spec: JSON.parse(init.body), codes: [{ code: "600000.SH", rows: 0 }], skipped: 0, estimated_requests: 9, requests_per_stock: 9, note: "按报表续传", point_in_time_certified: false });
+  }
+  if (path === "/research/financial-download/start") {
+    downloadPosts.push({ path, body: JSON.parse(init.body) });
+    return json({ task_id: "download-task", status: "queued" }, 202);
+  }
   if (path === "/backtests") return json({ items: [], total: 0 });
   return json({ detail: "not mocked" }, 404);
 };
@@ -83,6 +97,39 @@ test("industry data tab renders without a published version", async () => {
   await waitFor(() => assert.match(container.textContent, /还没有行业数据/));
   assert.ok(button(container, "预览下载"));
   await act(async () => root.unmount());
+});
+
+test("financial download previews the chosen scope, invalidates edits and queues that plan", async () => {
+  downloadPosts.length = 0;
+  const { container, root } = await mount("/data?tab=financial");
+  await waitFor(() => assert.equal(button(container, "预览要下载的股票").disabled, false));
+  await act(async () => button(container, "预览要下载的股票").click());
+  await waitFor(() => assert.ok(button(container, "确认下载")));
+  assert.deepEqual(downloadPosts[0].body, { market_version: "market-a", refresh_days: 7, full_refresh: false });
+  const fullRefresh = container.querySelector('button[role="switch"]');
+  await act(async () => fullRefresh.click());
+  assert.equal(button(container, "确认下载"), undefined);
+  await act(async () => button(container, "预览要下载的股票").click());
+  await waitFor(() => assert.ok(button(container, "确认下载")));
+  assert.equal(downloadPosts[1].body.full_refresh, true);
+  await act(async () => button(container, "确认下载").click());
+  await waitFor(() => assert.equal(downloadPosts.length, 3));
+  assert.deepEqual(downloadPosts[2].body, { plan_id: "f".repeat(24) });
+  await act(async () => root.unmount());
+});
+
+test("failed preview shows its error and never enables download", async () => {
+  failFinancialPreview = true;
+  const { container, root } = await mount("/data?tab=financial");
+  try {
+    await waitFor(() => assert.equal(button(container, "预览要下载的股票").disabled, false));
+    await act(async () => button(container, "预览要下载的股票").click());
+    await waitFor(() => assert.match(container.textContent, /财务接口暂时不可用/));
+    assert.equal(button(container, "确认下载"), undefined);
+  } finally {
+    failFinancialPreview = false;
+    await act(async () => root.unmount());
+  }
 });
 
 test("new research validates, submits once and lands on the task centre", async () => {

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+import uuid
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import text
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, text
 
-from finance_quant.persistence.database import check_schema, make_engine
+from finance_quant.persistence.database import check_schema, database_url, make_engine
 from finance_quant.persistence.results import PgResultStore
 from finance_quant.persistence.schema import dataset
 from finance_quant.persistence.tasks import PgTaskStore
@@ -20,20 +23,25 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture()
-def engine():
+def engine(monkeypatch):
     make_engine.cache_clear()
-    active = make_engine()
-    check_schema(active)
-    with active.begin() as connection:
-        connection.execute(
-            text(
-                "TRUNCATE run_artifact, run_trade, run_equity, run_metrics, research_run, "
-                "dataset, update_partition, research_task RESTART IDENTITY CASCADE"
-            )
-        )
-    yield active
-    active.dispose()
-    make_engine.cache_clear()
+    admin = make_engine()
+    schema = "fq_test_" + uuid.uuid4().hex
+    with admin.begin() as connection:
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    active = create_engine(database_url(), connect_args={"options": f"-c timezone=UTC -c search_path={schema}"})
+    try:
+        with active.connect() as connection:
+            assert connection.execute(text("SELECT current_schema()")).scalar_one() == schema
+        monkeypatch.setattr("finance_quant.persistence.database.make_engine", lambda: active)
+        command.upgrade(Config("alembic.ini"), "head")
+        check_schema(active)
+        yield active
+    finally:
+        active.dispose()
+        with admin.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        make_engine.cache_clear()
 
 
 def test_postgres_task_queue_claims_and_finishes(engine, tmp_path):
@@ -95,3 +103,55 @@ def test_postgres_result_store_persists_dataset_binding(engine, tmp_path):
     records, unavailable = store.list_metadata("evaluations")
     assert records[0]["metadata"]["id"] == "integration-evaluation"
     assert unavailable == []
+
+
+def test_financial_research_queue_to_qlib_and_postgres_results(engine, tmp_path):
+    from test_fundamental_factors import statements
+    from test_pool_workflow_matrix import DiversePrimary, codes_for, request_for
+
+    from finance_quant.application.task_worker import run_task
+    from finance_quant.application.tasks import TaskService
+    from finance_quant.persistence.market import MarketRepository
+    from support.financial import publish
+    from support.fixed_pool import publish_fixture_snapshot
+
+    root = tmp_path / "storage"
+    data, runs = root / "data", root / "runs"
+    codes = codes_for(3, 71)
+    manifest = publish_fixture_snapshot(data, codes, "20241202", "20250331", provider=DiversePrimary())
+    publish(data / "financials", statements(codes), seen_on="2025-01-02")
+    queue = PgTaskStore(runs, engine=engine)
+    service = TaskService(runs, data, task_store=queue)
+    factory = lambda dataset_id=None: PgResultStore(runs, engine=engine, storage_root=root, dataset_id=dataset_id)
+    output = []
+    for policy in ("observed", "announcement_estimate"):
+        request = request_for(codes, snapshot_id=manifest["id"])
+        request.update(factors=[{"name": "roe_ttm", "weight": 1.0}], financial_policy=policy)
+        submitted = service.submit(request, "financial-" + policy)
+        assert queue.claim() == submitted["id"]
+        run_task(
+            runs,
+            data,
+            submitted["id"],
+            task_store=queue,
+            result_store_factory=factory,
+            market_repository=MarketRepository(engine),
+            storage_root=root,
+        )
+        task = queue.get(submitted["id"])
+        assert task["status"] == "succeeded", task["error"]
+        store = factory()
+        result = task["result"]
+        factors = store.get("factors", result["factor_run_id"])
+        assert factors["metadata"]["financial_data"]["availability_policy"] == policy
+        backtest = store.get("backtests", result["backtest_run_id"])
+        assert backtest["trades"] and backtest["equity"]
+        assert backtest["metadata"]["dataset_id"]
+        assert (
+            store.get("evaluations", result["evaluation_run_id"])["metadata"]["financial_data"]["availability_policy"]
+            == policy
+        )
+        output.append(backtest)
+    assert output[0]["trades"] == output[1]["trades"]
+    assert output[0]["equity"] == output[1]["equity"]
+    assert output[0]["summary"]["id"] != output[1]["summary"]["id"]

@@ -133,7 +133,9 @@ def factor_temporal_audit(metadata):
             "detail": (
                 "使用财务数据版本 "
                 + metadata["financial_data"]["version"]
-                + "：报表只有公告日期，按下一交易日09:30可见；就地更正按调整前原始数、次年调整数或首次观测时间推迟可见。"
+                + "："
+                + metadata["financial_data"].get("policy", "按公告日估计历史可见时间")
+                + "。"
                 "供应商未留痕的历史更正无法还原，因此不是严格PIT。"
                 if metadata.get("financial_data")
                 else "本次入选因子不使用财务报表。"

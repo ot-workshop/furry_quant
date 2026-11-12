@@ -82,6 +82,7 @@ export interface MarketStatus {
 export interface FinancialSpec {
   market_version: string;
   refresh_days: number;
+  full_refresh?: boolean;
 }
 
 export interface FinancialPlan {

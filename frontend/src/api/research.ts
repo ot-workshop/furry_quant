@@ -159,6 +159,11 @@ export interface Neutralization {
 }
 
 export interface ResearchRequest {
+  financial_policy?: "observed" | "announcement_estimate";
+  financials?: {
+    version: string;
+    availability_policy?: "observed" | "announcement_estimate";
+  };
   neutralization?: Neutralization;
   name: string;
   data: SnapshotData | HistoricalData;
@@ -174,6 +179,7 @@ export interface ExperimentCandidateInput {
 }
 
 export interface ExperimentRequest {
+  financial_policy?: "observed" | "announcement_estimate";
   name: string;
   data: SnapshotData;
   backtest: Omit<ResearchBacktest, "start" | "end">;

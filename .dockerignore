@@ -17,4 +17,5 @@
 /frontend/.npm-cache
 **/__pycache__
 /.pytest_cache
+/.review-tmp
 *.log

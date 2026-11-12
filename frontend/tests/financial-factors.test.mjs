@@ -81,3 +81,14 @@ test("price-only datasets keep every price factor selectable", () => {
     ["momentum", "value"],
   );
 });
+
+test("financial availability is explicit and survives restoring the request", () => {
+  const opts = withCoverage(3);
+  let form = f.defaultForm(opts);
+  form.factors = form.factors.map(row => ({ ...row, enabled: row.name === "roe_ttm", weight: row.name === "roe_ttm" ? 100 : 0 }));
+  assert.equal(f.buildRequest(form, opts).request.financial_policy, "observed");
+  form.financialPolicy = "announcement_estimate";
+  const request = f.buildRequest(form, opts).request;
+  assert.equal(request.financial_policy, "announcement_estimate");
+  assert.equal(f.formFromRequest(request, opts).form.financialPolicy, "announcement_estimate");
+});

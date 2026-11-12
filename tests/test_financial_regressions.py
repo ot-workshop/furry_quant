@@ -17,7 +17,7 @@ def test_cross_stock_asof_never_borrows_another_stocks_report(codes):
                 observations, maker(ts_code=code, announce=f"202503{20 + i}"), seen_on="2025-03-25"
             )
     sessions = pd.bdate_range("2025-03-19", "2025-04-01")
-    events = fundamental_events(report_versions(observations, sessions))
+    events = fundamental_events(report_versions(observations, sessions, "announcement_estimate"))
     market = pd.DataFrame({"instrument": [code[-2:] + code[:6] for code in codes], "date": pd.Timestamp("2025-03-21")})
     joined = attach_fundamentals(market, events)
     assert pd.notna(joined.iloc[0].roe_ttm)
@@ -28,7 +28,9 @@ def test_announcement_waits_for_actual_exchange_session():
     observations = merge_observations(None, income(announce="20250403"), seen_on="2025-04-03")
     sessions = pd.to_datetime(["2025-04-03", "2025-04-07", "2025-04-08"])
     versions = report_versions(observations, sessions)
-    assert versions.iloc[0].available_at.tz_convert("Asia/Shanghai") == pd.Timestamp("2025-04-07 09:30", tz="Asia/Shanghai")
+    assert versions.iloc[0].available_at.tz_convert("Asia/Shanghai") == pd.Timestamp(
+        "2025-04-07 09:30", tz="Asia/Shanghai"
+    )
 
 
 def test_pinned_version_survives_later_correction_and_new_stock(tmp_path):

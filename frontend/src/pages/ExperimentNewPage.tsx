@@ -227,6 +227,7 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
             backtest,
             plan: { periods, candidates: planCandidates },
             evaluation,
+            financial_policy: form.financialPolicy,
           };
     return { request, errors };
   }, [form, options, periods, candidates, definitions, coverage]);
@@ -372,6 +373,27 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
                 />
               ))}
             </Flex>
+          </Card>
+          <Card title="财务数据时间口径">
+            <Form.Item
+              extra={
+                form.financialPolicy === "observed"
+                  ? "仅使用本机首次观测后的财报；下载前的历史区间可能没有信号。"
+                  : "按公告日估计，未留痕的历史修订可能影响结果，非严格PIT。"
+              }
+            >
+              <Select
+                value={form.financialPolicy}
+                onChange={(financialPolicy) => update({ financialPolicy })}
+                options={[
+                  { value: "observed", label: "首次观测后可用（默认）" },
+                  {
+                    value: "announcement_estimate",
+                    label: "公告日估计（历史研究，未认证）",
+                  },
+                ]}
+              />
+            </Form.Item>
           </Card>
           <CostSection form={form} update={update} />
           <EvaluationSection form={form} update={update} />

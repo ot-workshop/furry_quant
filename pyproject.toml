@@ -59,7 +59,8 @@ known-first-party = ["finance_quant", "support"]
 "tests/*.py" = ["E731"]
 
 [tool.mypy]
-python_version = "3.11"
+# Match the Python runtime used by CI and Docker.
+python_version = "3.12"
 ignore_missing_imports = true
 follow_imports = "skip"
 check_untyped_defs = true

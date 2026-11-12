@@ -47,6 +47,7 @@ def test_fundamental_factor_runs_through_the_queued_workflow(tmp_path):
     manifest = publish(financial_root(tmp_path / "data"), statements(codes))
     request = request_for(codes)
     request["factors"] = [{"name": "roe_ttm", "weight": 1.0}]
+    request["financial_policy"] = "announcement_estimate"
     task = run_request(request, tmp_path / "data", tmp_path / "runs")
     assert task["status"] == "succeeded", task["error"]
 

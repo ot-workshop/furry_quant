@@ -239,7 +239,12 @@ def coverage_row(financial: dict | None, codes, data_root: Path) -> dict | None:
 
 
 def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[dict, dict]:
-    _fields(document, ("name", "data", "backtest", "factors", "evaluation"), ("neutralization",), label="研究")
+    _fields(
+        document,
+        ("name", "data", "backtest", "factors", "evaluation"),
+        ("neutralization", "financial_policy"),
+        label="研究",
+    )
     neutralization = parse_neutralization(document.get("neutralization"))
     industry = industry_context(neutralization) if "neutralization" in document else None
     neutral_extra = {}
@@ -269,8 +274,13 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
             for item in factor_list
         )
     )
-    binding = pin_financials(factors, data_root)
-    financial_extra = {"financials": {"version": binding.version}} if binding else {}
+    policy = document.get("financial_policy", "observed")
+    from finance_quant.data.financials import AVAILABILITY_POLICIES
+
+    if not isinstance(policy, str) or policy not in AVAILABILITY_POLICIES:
+        raise ValueError("未知财务时间口径")
+    binding = pin_financials(factors, data_root, policy)
+    financial_extra = {"financials": binding.as_dict(), "financial_policy": policy} if binding else {}
     obj = document["data"]
     if not isinstance(obj, dict) or obj.get("mode") not in {"snapshot", "index_warehouse"}:
         raise ValueError("请选择数据集：固定股票池快照或沪深300历史成分仓库")
@@ -299,7 +309,7 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
         if backtest.topk > 300 or backtest.initial_cash > 1e12:
             raise ValueError("目标持股最多300只，资金不超过一万亿元")
         validate_warmup(option["data_start"], option["end"], backtest.start, factors, calendar)
-        require_financial_coverage(binding, option["codes"])
+        require_financial_coverage(binding, option["codes"], backtest.start)
         normalized = {
             "name": name.strip(),
             "data": {"mode": "index_warehouse", "warehouse_id": option["id"]},
@@ -341,7 +351,7 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
     validate_execution_universe(data.codes)
     if backtest.initial_cash > 1e12:
         raise ValueError("初始资金不能超过一万亿元")
-    require_financial_coverage(binding, list(data.codes))
+    require_financial_coverage(binding, list(data.codes), backtest.start)
     config = ResearchConfig(data, backtest, runs_root, factors, evaluation, neutralization, binding)
     validate_research_data(config, market, calendar)
     return {
@@ -355,31 +365,31 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
     }, execution
 
 
-def pin_financials(factors: FactorConfig, data_root: Path):
+def pin_financials(factors: FactorConfig, data_root: Path, policy="observed"):
     """Pin the current financial version when any factor needs statements."""
     from finance_quant.research.factor_library import uses_financials
 
-    return _pin_financials(data_root) if uses_financials(factors) else None
+    return _pin_financials(data_root, policy) if uses_financials(factors) else None
 
 
-def pin_financials_for(configs, data_root: Path):
+def pin_financials_for(configs, data_root: Path, policy="observed"):
     """Pin for a set of alternative factor configurations (experiment candidates)."""
     from finance_quant.research.factor_library import uses_financials
 
-    return _pin_financials(data_root) if any(uses_financials(config) for config in configs) else None
+    return _pin_financials(data_root, policy) if any(uses_financials(config) for config in configs) else None
 
 
-def _pin_financials(data_root: Path):
+def _pin_financials(data_root: Path, policy="observed"):
     from finance_quant.data.financials import FinancialBinding, FinancialStore
 
     root = financial_root(data_root)
     manifest = FinancialStore(root).current()
     if manifest is None:
         raise ValueError("所选基本面因子需要财务数据：请先在“数据管理 → 财务数据”下载财务数据")
-    return FinancialBinding(root, manifest["id"])
+    return FinancialBinding(root, manifest["id"], policy)
 
 
-def require_financial_coverage(binding, codes) -> None:
+def require_financial_coverage(binding, codes, start=None) -> None:
     """Refuse a request whose universe holds no usable report in the pinned version."""
     if binding is None:
         return
@@ -391,13 +401,23 @@ def require_financial_coverage(binding, codes) -> None:
         raise ValueError("所选股票在该财务数据版本中没有任何财报，请先更新财务数据或更换股票池")
     if len(covered) < 2:
         raise ValueError(f"该财务数据版本只覆盖 {len(covered)} 只所选股票，不足以进行横截面评分")
+    if binding.availability_policy == "observed" and start is not None:
+        from finance_quant.research.fundamentals import load_fundamentals
+
+        events = load_fundamentals(binding, codes).events
+        cutoff = pd.Timestamp(start).tz_localize("Asia/Shanghai") + pd.Timedelta(hours=15)
+        if events.loc[events.financial_available_at <= cutoff].instrument.nunique() < 2:
+            raise ValueError(
+                "首次观测口径下，回测起点之前没有至少两只股票的可用财报。"
+                "请延后回测起点，或明确选择“公告日估计（历史研究，未认证）”；不会自动回填历史。"
+            )
 
 
 def request_config(request: dict, data: DataConfig, runs_root: Path, data_root: Path) -> ResearchConfig:
     from finance_quant.data.financials import FinancialBinding
 
     pinned = request.get("financials", {}).get("version")
-    binding = FinancialBinding(financial_root(data_root), pinned) if pinned else None
+    binding = FinancialBinding.from_dict(financial_root(data_root), request["financials"]) if pinned else None
     return ResearchConfig(
         data,
         BacktestConfig(**request["backtest"]),

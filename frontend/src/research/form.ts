@@ -48,6 +48,7 @@ export interface FormState {
   codes: string[];
   warehouseId: string;
   factors: FactorRow[];
+  financialPolicy: "observed" | "announcement_estimate";
   neutralization: "off" | "industry";
   industryVersion: string;
   industryLevel: IndustryLevel;
@@ -227,6 +228,7 @@ export function defaultForm(options: ResearchOptions): FormState {
     warehouseId: historical?.id ?? "",
     factors: factorRows(defaults.factors, options.factor_definitions),
     neutralization: defaults.neutralization?.mode ?? "off",
+    financialPolicy: defaults.financial_policy ?? "observed",
     industryVersion:
       defaults.neutralization?.industry_version ??
       options.industry_data?.id ??
@@ -252,6 +254,10 @@ export function formFromRequest(
   let form: FormState = {
     ...base,
     name: request.name,
+    financialPolicy:
+      request.financial_policy ??
+      request.financials?.availability_policy ??
+      (request.financials ? "announcement_estimate" : "observed"),
     factors: factorRows(request.factors, options.factor_definitions),
     neutralization: request.neutralization?.mode ?? "off",
     industryVersion:
@@ -658,6 +664,13 @@ export function buildRequest(
       name,
       data,
       factors,
+      ...(factors.some(
+        (factor) =>
+          options.factor_definitions.find((d) => d.name === factor.name)
+            ?.requires_financials,
+      )
+        ? { financial_policy: form.financialPolicy }
+        : {}),
       backtest: { ...backtest, start: form.start, end: form.end },
       evaluation,
       ...(form.neutralization === "industry"
@@ -741,6 +754,8 @@ export function mergeDraft(
   }
   if (!industryLevels(options).includes(merged.industryLevel))
     merged.industryLevel = base.industryLevel;
+  if (!["observed", "announcement_estimate"].includes(merged.financialPolicy))
+    merged.financialPolicy = "observed";
   if (!historicalOption(options, merged.warehouseId))
     merged.warehouseId = base.warehouseId;
   if (merged.sourceMode === "index_warehouse" && !merged.warehouseId)
