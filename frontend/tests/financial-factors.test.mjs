@@ -82,13 +82,13 @@ test("price-only datasets keep every price factor selectable", () => {
   );
 });
 
-test("financial availability is explicit and survives restoring the request", () => {
+test("new requests and legacy drafts no longer select a financial time mode", () => {
   const opts = withCoverage(3);
   let form = f.defaultForm(opts);
   form.factors = form.factors.map(row => ({ ...row, enabled: row.name === "roe_ttm", weight: row.name === "roe_ttm" ? 100 : 0 }));
-  assert.equal(f.buildRequest(form, opts).request.financial_policy, "observed");
-  form.financialPolicy = "announcement_estimate";
+  assert.equal("financialPolicy" in form, false);
   const request = f.buildRequest(form, opts).request;
-  assert.equal(request.financial_policy, "announcement_estimate");
-  assert.equal(f.formFromRequest(request, opts).form.financialPolicy, "announcement_estimate");
+  assert.equal("financial_policy" in request, false);
+  assert.equal("financialPolicy" in f.formFromRequest({ ...request, financial_policy: "observed" }, opts).form, false);
+  assert.equal("financialPolicy" in f.mergeDraft(form, { financialPolicy: "observed" }, opts), false);
 });

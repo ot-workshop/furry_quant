@@ -11,6 +11,9 @@
 /runs
 /storage
 /backups
+/backups-dev
+/restores
+/restores-dev
 /mlruns
 /frontend/node_modules
 /frontend/dist

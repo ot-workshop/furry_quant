@@ -8,6 +8,15 @@ permissions:
   contents: read
 
 jobs:
+  backup-restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test shipped image and complete backup restore in isolated services
+        run: docker compose -f docker-compose.test.yaml up --build --abort-on-container-exit --exit-code-from test
+      - name: Remove test services
+        if: always()
+        run: docker compose -f docker-compose.test.yaml down --volumes
   test:
     runs-on: ubuntu-latest
     services:

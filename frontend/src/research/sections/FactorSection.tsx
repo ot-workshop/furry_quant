@@ -5,7 +5,6 @@ import {
   Button,
   Card,
   Flex,
-  Form,
   InputNumber,
   Select,
   Space,
@@ -266,37 +265,10 @@ export function FactorSection({
           title={`财务数据覆盖当前股票池 ${coverage.covered} / ${coverage.total} 只`}
           description={
             options.financial_data
-              ? `版本 ${options.financial_data.version.slice(0, 8)} · 最新报告期 ${options.financial_data.latest_report_period ?? "—"}；基本面因子按 TTM 口径自算。`
+              ? `版本 ${options.financial_data.version.slice(0, 8)} · 最新报告期 ${options.financial_data.latest_report_period ?? "—"}；按公告日后下一交易日起可用，历史修订未认证。`
               : undefined
           }
         />
-      ) : null}
-      {form.factors.some(
-        (row) =>
-          row.enabled &&
-          options.factor_definitions.find((d) => d.name === row.name)
-            ?.requires_financials,
-      ) ? (
-        <Form.Item
-          label="财务数据时间口径"
-          extra={
-            form.financialPolicy === "observed"
-              ? "仅在本机首次观测后的下一交易日使用。首次下载前的历史区间没有财报信号，请选择之后的区间或使用公告日估计研究。"
-              : "按公告日估计历史可见时间，供应商未留痕的事后修订可能影响历史结果，不能认定为严格PIT。"
-          }
-        >
-          <Select
-            value={form.financialPolicy}
-            onChange={(financialPolicy) => update({ financialPolicy })}
-            options={[
-              { value: "observed", label: "首次观测后可用（默认）" },
-              {
-                value: "announcement_estimate",
-                label: "公告日估计（历史研究，未认证）",
-              },
-            ]}
-          />
-        </Form.Item>
       ) : null}
       {groups.map((group) => {
         const rows = form.factors.filter((item) => group.names.has(item.name));

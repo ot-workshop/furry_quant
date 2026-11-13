@@ -28,7 +28,7 @@ def observe(*frames, seen_on="2025-03-21"):
 
 
 def versions(*frames, seen_on="2025-03-21"):
-    return report_versions(observe(*frames, seen_on=seen_on), CALENDAR, "announcement_estimate")
+    return report_versions(observe(*frames, seen_on=seen_on), CALENDAR)
 
 
 CALENDAR = pd.bdate_range("2023-01-02", "2027-06-30")
@@ -89,7 +89,7 @@ def test_later_revision_of_the_same_period_replaces_the_previous_value():
     first = income(announce="20250320", n_income_attr_p=10.0)
     revised = income(announce="20250510", n_income_attr_p=12.0)
     frame = observe(first, revised, balance(), cashflow())
-    events = fundamental_events(report_versions(frame, CALENDAR, "announcement_estimate"))
+    events = fundamental_events(report_versions(frame, CALENDAR))
     before = events.loc[events.financial_available_at <= second_session("2025-03-20")]
     after = events.loc[events.financial_available_at <= second_session("2025-05-12")]
     assert math_close(before.iloc[-1]["roa_ttm"], 10.0 / 500.0)

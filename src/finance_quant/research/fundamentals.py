@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from finance_quant.data.financials import (
-    OBSERVED_POLICY,
+    AVAILABILITY_POLICY,
     POLICY,
     FinancialBinding,
     FinancialStore,
@@ -34,7 +34,7 @@ from finance_quant.data.financials import (
 from finance_quant.data.point_in_time import EXCHANGE_TZ
 from finance_quant.data.symbols import from_qlib
 
-FEATURE_VERSION = "fundamental-ttm-v2"
+FEATURE_VERSION = "fundamental-ttm-v3"
 MAX_REPORT_AGE_DAYS = 400
 DECISION_TIME = pd.Timedelta(hours=15)
 FEATURES = (
@@ -195,7 +195,6 @@ class FundamentalData:
     events: pd.DataFrame
     covered: tuple[str, ...]
     requested: int
-    availability_policy: str = "observed"
 
     def metadata(self, universe) -> dict:
         members = set(universe)
@@ -205,26 +204,26 @@ class FundamentalData:
             "covered": len(members.intersection(self.covered)),
             "universe": len(members),
             "max_report_age_days": MAX_REPORT_AGE_DAYS,
-            "policy": OBSERVED_POLICY if self.availability_policy == "observed" else POLICY,
-            "availability_policy": self.availability_policy,
+            "policy": POLICY,
+            "availability_policy": AVAILABILITY_POLICY,
             "feature_policy": FEATURE_POLICY,
             "point_in_time_certified": False,
         }
 
 
 @lru_cache(maxsize=4)
-def _load(root: Path, version: str, ts_codes: tuple[str, ...], availability_policy: str) -> FundamentalData:
+def _load(root: Path, version: str, ts_codes: tuple[str, ...]) -> FundamentalData:
     store = FinancialStore(root)
     manifest = store.version(version)
     observations, sessions = store.load(manifest, ts_codes)
-    events = fundamental_events(report_versions(observations, sessions, availability_policy))
+    events = fundamental_events(report_versions(observations, sessions))
     covered = tuple(sorted(set(events.instrument)))
-    return FundamentalData(version, events, covered, len(ts_codes), availability_policy)
+    return FundamentalData(version, events, covered, len(ts_codes))
 
 
 def load_fundamentals(binding: FinancialBinding, ts_codes) -> FundamentalData:
     """Load (and memoize) one version for a universe; callers must not mutate ``events``."""
-    return _load(binding.root.resolve(), binding.version, tuple(sorted(set(ts_codes))), binding.availability_policy)
+    return _load(binding.root.resolve(), binding.version, tuple(sorted(set(ts_codes))))
 
 
 def fundamentals_for(binding: FinancialBinding | None, config, market: pd.DataFrame) -> FundamentalData | None:

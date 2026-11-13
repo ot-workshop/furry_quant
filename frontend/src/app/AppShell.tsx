@@ -139,6 +139,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           {!collapsed ? <span className="brand-name">量化研究台</span> : null}
         </div>
         <Menu
+          className="app-menu"
           mode="inline"
           selectedKeys={[route.section]}
           items={MENU}

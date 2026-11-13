@@ -50,8 +50,7 @@ POLICY = (
     "存在调整前原始数时，原始数按原公告日可用，被覆盖的新值待次年同期调整数公布或首次观测后才可用；"
     "缺少公告日的行隔离，不进入研究"
 )
-AVAILABILITY_POLICIES = {"observed", "announcement_estimate"}
-OBSERVED_POLICY = "财报数值不早于公告日和本机首次观测日两者较晚日期的下一交易日09:30可用；不回填下载前的历史"
+AVAILABILITY_POLICY = "announcement_estimate"
 _VERSION_ID = re.compile(r"[a-f0-9]{24}")
 _HASHED = ["statement", "report_type", "comp_type", "report_period", "ann_date", "f_ann_date", *FINANCIAL_VALUE_FIELDS]
 
@@ -160,22 +159,23 @@ class FinancialBinding:
 
     root: Path
     version: str
-    availability_policy: str = "observed"
 
     def __post_init__(self):
         if not isinstance(self.version, str) or not _VERSION_ID.fullmatch(self.version):
             raise ValueError("财务数据版本编号无效")
         object.__setattr__(self, "root", Path(self.root))
-        if self.availability_policy not in AVAILABILITY_POLICIES:
-            raise ValueError("财务时间口径须为 observed 或 announcement_estimate")
+
+    @property
+    def availability_policy(self) -> str:
+        return AVAILABILITY_POLICY
 
     def as_dict(self) -> dict:
         return {"version": self.version, "availability_policy": self.availability_policy}
 
     @classmethod
     def from_dict(cls, root, document):
-        # Already queued requests without a policy retain their historical semantics.
-        return cls(root, document["version"], document.get("availability_policy", "announcement_estimate"))
+        # Legacy request fields no longer select a separate first-observed mode.
+        return cls(root, document["version"])
 
 
 class FinancialStore:
@@ -329,15 +329,13 @@ def _later(first: pd.Series, second: pd.Series) -> pd.Series:
     return result.where(second.notna())
 
 
-def report_versions(observations: pd.DataFrame, sessions, availability_policy="observed") -> pd.DataFrame:
+def report_versions(observations: pd.DataFrame, sessions) -> pd.DataFrame:
     """Rebuild when each statement value became visible (see :data:`POLICY`).
 
     Returns one row per visible version with ``instrument``, ``statement``,
     ``report_period``, ``available_at`` (UTC), ``priority`` and ``revision`` plus values.
     Quarantined rows and versions that never become visible are excluded.
     """
-    if availability_policy not in AVAILABILITY_POLICIES:
-        raise ValueError("未知财务时间口径")
     columns = ["instrument", "statement", "report_type", "report_period", "available_at", "priority", "revision"]
     if observations.empty:
         return pd.DataFrame(columns=[*columns, *FINANCIAL_VALUE_FIELDS])
@@ -384,8 +382,6 @@ def report_versions(observations: pd.DataFrame, sessions, availability_policy="o
     overwritten = frame.report_type.eq(1) & frame._original.notna() & frame.announced.le(frame._original)
     replacement = frame._comparative.where(frame._comparative.lt(seen) | seen.isna(), seen)
     frame.loc[overwritten, "available_at"] = _later(frame.available_at, replacement)[overwritten]
-    if availability_policy == "observed":
-        frame["available_at"] = _later(frame.available_at, seen)
     frame = frame.loc[frame.available_at.notna()].copy()
     frame["priority"] = frame.report_type.map(TYPE_PRIORITY).astype("int64")
     frame["instrument"] = frame.ts_code.map(to_qlib)

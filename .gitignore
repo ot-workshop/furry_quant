@@ -21,3 +21,6 @@ frontend/dist/
 mlruns/
 storage/
 backups/
+backups-dev/
+restores/
+restores-dev/

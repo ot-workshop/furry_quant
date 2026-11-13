@@ -177,9 +177,29 @@ export interface IndustryJob {
     name?: string;
     reason: string;
   }>;
+  empty_sectors?: EmptyIndustrySector[];
+  excluded_members?: ExcludedIndustryMember[];
   message?: string;
   version_id?: string;
   updated_at?: string;
+}
+
+export interface EmptyIndustrySector {
+  taxonomy: string;
+  level: IndustryLevel;
+  code: string;
+  name: string;
+  reason: string;
+}
+
+export interface ExcludedIndustryMember {
+  taxonomy: string;
+  level: IndustryLevel;
+  sector_code: string;
+  code: string;
+  in_date: string | null;
+  out_date: string | null;
+  reason: string;
 }
 
 export interface IndustryVersion {
@@ -191,6 +211,8 @@ export interface IndustryVersion {
   data_asof?: string | null;
   created_at?: string;
   current?: boolean;
+  empty_sectors?: EmptyIndustrySector[];
+  excluded_members?: ExcludedIndustryMember[];
 }
 
 export interface IndustryStatus {
@@ -203,6 +225,8 @@ export interface IndustryStatus {
     data_asof?: string | null;
     created_at?: string;
     policy?: string;
+    empty_sectors?: EmptyIndustrySector[];
+    excluded_members?: ExcludedIndustryMember[];
   } | null;
   versions: IndustryVersion[];
   jobs: IndustryJob[];
@@ -210,6 +234,32 @@ export interface IndustryStatus {
 }
 
 export const dataApi = {
+  backups: (signal?: AbortSignal) =>
+    request<BackupStatus>("/research/backups", { signal }),
+  backupOperation: (operation: BackupOperation) =>
+    request<MaintenanceTask>("/research/backups", {
+      method: "POST",
+      body: operation,
+    }),
+  updates: (signal?: AbortSignal) =>
+    request<UpdateStatus>("/research/data-updates", { signal }),
+  previewUpdates: (spec: UpdateSpec) =>
+    request<UpdatePlan>("/research/data-updates/preview", {
+      method: "POST",
+      body: spec,
+    }),
+  startUpdates: (planId: string) =>
+    request("/research/data-updates/start", {
+      method: "POST",
+      body: { plan_id: planId },
+    }),
+  pauseUpdates: () =>
+    request("/research/data-updates/pause", { method: "POST", body: {} }),
+  scheduleUpdates: (schedule: UpdateSchedule) =>
+    request<UpdateSchedule>("/research/data-updates/schedule", {
+      method: "POST",
+      body: schedule,
+    }),
   market: (signal?: AbortSignal) =>
     request<MarketStatus>("/research/market-download", { signal }),
   previewMarket: (spec: MarketSpec) =>
@@ -271,3 +321,77 @@ export const dataApi = {
       body: {},
     }),
 };
+
+export interface UpdateSpec {
+  market: MarketSpec | null;
+  market_version: string | null;
+  financial: { refresh_days: number; full_refresh?: boolean } | null;
+  industry: IndustrySpec | null;
+  benchmarks: string[];
+}
+export interface UpdatePlan {
+  id: string;
+  spec: UpdateSpec;
+  stages: string[];
+  note: string;
+  plans: {
+    market?: MarketPlan;
+    financial?: FinancialPlan;
+    industry?: IndustryPlan;
+  };
+}
+export interface UpdateJob {
+  id: string;
+  status: string;
+  total: number;
+  completed: number;
+  updated_at: string;
+  message?: string;
+  steps: Record<
+    string,
+    { status: string; message?: string; result?: { version_id?: string } }
+  >;
+}
+export interface UpdateSchedule {
+  enabled: boolean;
+  hour: number;
+  spec: UpdateSpec;
+}
+export interface UpdateStatus {
+  jobs: UpdateJob[];
+  schedule: UpdateSchedule | null;
+  market_versions: MarketVersion[];
+}
+
+export type BackupOperation =
+  | { action: "create" }
+  | { action: "verify"; backup_id: string }
+  | { action: "restore"; backup_id: string; database: string };
+export interface BackupItem {
+  id: string;
+  created_at: string;
+  files: number;
+  bytes: number;
+  format: string;
+}
+export interface MaintenanceTask {
+  id: string;
+  status: string;
+  created_at: string;
+  message: string;
+  error: string | null;
+  request: {
+    name: string;
+    action: string;
+    backup_id: string;
+    database?: string;
+  };
+  result: { message?: string; database?: string; storage_root?: string } | null;
+}
+export interface BackupStatus {
+  backups: BackupItem[];
+  jobs: MaintenanceTask[];
+  backup_root: string;
+  restore_root: string;
+  coverage: string[];
+}

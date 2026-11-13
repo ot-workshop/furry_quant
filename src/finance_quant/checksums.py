@@ -31,10 +31,15 @@ def sha256_parts(parts: Iterable[bytes]) -> str:
 
 def file_sha256(path: str | Path) -> str:
     """Hash one file without loading the complete payload into memory."""
-    digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(_CHUNK_SIZE), b""):
-            digest.update(chunk)
+        return stream_sha256(stream)
+
+
+def stream_sha256(stream) -> str:
+    """Hash a binary stream, including a file held inside an archive."""
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(_CHUNK_SIZE), b""):
+        digest.update(chunk)
     return digest.hexdigest()
 
 

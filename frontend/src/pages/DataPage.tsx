@@ -7,6 +7,8 @@ const MarketDownload = lazy(() => import("./data/MarketDownload"));
 const FinancialData = lazy(() => import("./data/FinancialData"));
 const IndustryData = lazy(() => import("./data/IndustryData"));
 const Database = lazy(() => import("./data/Database"));
+const UnifiedUpdates = lazy(() => import("./data/UnifiedUpdates"));
+const Backups = lazy(() => import("./data/Backups"));
 export default function DataPage({ tab }: { tab: string | null }) {
   return (
     <>
@@ -21,6 +23,8 @@ export default function DataPage({ tab }: { tab: string | null }) {
             setSearch({ tab: value === "datasets" ? null : value })
           }
           items={[
+            { key: "updates", label: "统一更新", children: <UnifiedUpdates /> },
+            { key: "backups", label: "备份与恢复", children: <Backups /> },
             { key: "datasets", label: "研究数据集", children: <Datasets /> },
             { key: "market", label: "行情下载", children: <MarketDownload /> },
             {

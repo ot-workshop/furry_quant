@@ -9,10 +9,10 @@ from finance_quant.data.financials import FinancialBinding, FinancialStore, merg
 from support.financial import income
 
 
-def test_first_download_cannot_backfill_uncertified_values_into_the_past():
+def test_first_download_uses_announcement_date_for_historical_research():
     observations = merge_observations(None, income(), "2025-05-12")
     versions = report_versions(observations, pd.bdate_range("2025-03-01", "2025-06-01"))
-    assert versions.iloc[0].available_at == pd.Timestamp("2025-05-13 09:30", tz="Asia/Shanghai")
+    assert versions.iloc[0].available_at == pd.Timestamp("2025-03-21 09:30", tz="Asia/Shanghai")
 
 
 def test_new_update_flag_does_not_erase_what_was_previously_observed():
@@ -30,7 +30,7 @@ def test_first_seen_timestamp_uses_exchange_local_date():
 
 def test_binding_pins_visibility_policy():
     binding = FinancialBinding("financials", "a" * 24)
-    assert binding.as_dict()["availability_policy"] == "observed"
+    assert binding.as_dict()["availability_policy"] == "announcement_estimate"
 
 
 def test_identical_numbers_from_different_stocks_cannot_share_an_object(tmp_path):
@@ -110,21 +110,23 @@ def test_full_refresh_bypasses_freshness_and_restores_full_announcement_range(tm
     assert all(params["start_date"] == "19900101" for api, params in provider.calls if api != "trade_cal")
 
 
-def test_observed_policy_is_pinned_to_request_and_worker_and_rejects_backfill(workspace):
-    from finance_quant.application.research_requests import validate_request
+def test_old_first_observed_fields_cannot_select_the_removed_mode(workspace):
     from finance_quant.application.task_worker import financial_binding
-    from support.financial import balance, cashflow, publish
+    from support.financial import publish
 
     data, runs, request = workspace
     publish(
         data / "financials",
-        [maker(ts_code=code) for code in request["data"]["codes"] for maker in (income, balance, cashflow)],
+        [income(ts_code=code) for code in request["data"]["codes"]],
     )
-    request["factors"] = [{"name": "roe_ttm", "weight": 1.0}]
-    with pytest.raises(ValueError, match="首次观测口径"):
-        validate_request(request, data, runs)
     binding = FinancialBinding(data / "financials", FinancialStore(data / "financials").current()["id"])
-    assert financial_binding({"financials": binding.as_dict()}, data).availability_policy == "observed"
+    assert financial_binding({"financials": binding.as_dict()}, data).availability_policy == "announcement_estimate"
+    assert (
+        financial_binding(
+            {"financials": {"version": binding.version, "availability_policy": "observed"}}, data
+        ).availability_policy
+        == "announcement_estimate"
+    )
     assert (
         financial_binding({"financials": {"version": binding.version}}, data).availability_policy
         == "announcement_estimate"

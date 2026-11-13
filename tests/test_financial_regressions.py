@@ -17,7 +17,7 @@ def test_cross_stock_asof_never_borrows_another_stocks_report(codes):
                 observations, maker(ts_code=code, announce=f"202503{20 + i}"), seen_on="2025-03-25"
             )
     sessions = pd.bdate_range("2025-03-19", "2025-04-01")
-    events = fundamental_events(report_versions(observations, sessions, "announcement_estimate"))
+    events = fundamental_events(report_versions(observations, sessions))
     market = pd.DataFrame({"instrument": [code[-2:] + code[:6] for code in codes], "date": pd.Timestamp("2025-03-21")})
     joined = attach_fundamentals(market, events)
     assert pd.notna(joined.iloc[0].roe_ttm)

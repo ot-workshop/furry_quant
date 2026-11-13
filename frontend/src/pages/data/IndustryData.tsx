@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Collapse,
   Descriptions,
   Flex,
   Form,
@@ -23,6 +24,8 @@ import {
 } from "@ant-design/icons";
 import {
   dataApi,
+  type EmptyIndustrySector,
+  type ExcludedIndustryMember,
   type IndustryJob,
   type IndustryLevel,
   type IndustryPlan,
@@ -61,6 +64,53 @@ function levelTags(
       {value?.sectors ?? 0} 板块 / {value?.instruments ?? 0} 只
     </Tag>
   ));
+}
+
+function EmptySectors({ sectors }: { sectors: EmptyIndustrySector[] }) {
+  return (
+    <Table<EmptyIndustrySector>
+      rowKey={(sector) => `${sector.taxonomy}-${sector.level}-${sector.code}`}
+      size="small"
+      dataSource={sectors}
+      pagination={false}
+      columns={[
+        { title: "分类标准", dataIndex: "taxonomy" },
+        {
+          title: "级别",
+          render: (_, sector) => INDUSTRY_LEVEL_LABELS[sector.level],
+        },
+        { title: "行业", dataIndex: "name" },
+        { title: "代码", dataIndex: "code" },
+        {
+          title: "说明",
+          render: (_, sector) => <Tag>{sector.reason} · 已正常跳过</Tag>,
+        },
+      ]}
+    />
+  );
+}
+
+function ExcludedMembers({ members }: { members: ExcludedIndustryMember[] }) {
+  return (
+    <Table<ExcludedIndustryMember>
+      rowKey={(member) =>
+        `${member.taxonomy}-${member.level}-${member.sector_code}-${member.code}-${member.in_date}-${member.out_date}`
+      }
+      size="small"
+      dataSource={members}
+      pagination={false}
+      columns={[
+        { title: "分类标准", dataIndex: "taxonomy" },
+        {
+          title: "级别",
+          render: (_, member) => INDUSTRY_LEVEL_LABELS[member.level],
+        },
+        { title: "股票代码", dataIndex: "code" },
+        { title: "行业代码", dataIndex: "sector_code" },
+        { title: "说明", dataIndex: "reason" },
+      ]}
+    />
+  );
 }
 
 export default function IndustryData() {
@@ -238,38 +288,64 @@ export default function IndustryData() {
         description="研究提交时会绑定当前版本；新版本不影响已有结果"
       >
         {version ? (
-          <Descriptions
-            size="small"
-            column={{ xs: 1, md: 3 }}
-            items={[
-              { key: "id", label: "版本", children: version.id.slice(0, 12) },
-              {
-                key: "levels",
-                label: "级别",
-                children: levelTags(version.levels),
-              },
-              {
-                key: "instruments",
-                label: "股票",
-                children: `${formatNumber(version.instruments, 0)} 只`,
-              },
-              {
-                key: "rows",
-                label: "区间记录",
-                children: formatNumber(version.rows, 0),
-              },
-              {
-                key: "asof",
-                label: "核验日期",
-                children: version.data_asof ?? "—",
-              },
-              {
-                key: "created",
-                label: "发布时间",
-                children: formatDateTime(version.created_at),
-              },
-            ]}
-          />
+          <Flex vertical gap={12}>
+            <Descriptions
+              size="small"
+              column={{ xs: 1, md: 3 }}
+              items={[
+                { key: "id", label: "版本", children: version.id.slice(0, 12) },
+                {
+                  key: "levels",
+                  label: "级别",
+                  children: levelTags(version.levels),
+                },
+                {
+                  key: "instruments",
+                  label: "股票",
+                  children: `${formatNumber(version.instruments, 0)} 只`,
+                },
+                {
+                  key: "rows",
+                  label: "区间记录",
+                  children: formatNumber(version.rows, 0),
+                },
+                {
+                  key: "asof",
+                  label: "核验日期",
+                  children: version.data_asof ?? "—",
+                },
+                {
+                  key: "created",
+                  label: "发布时间",
+                  children: formatDateTime(version.created_at),
+                },
+              ]}
+            />
+            {version.empty_sectors?.length ? (
+              <Collapse
+                items={[
+                  {
+                    key: "empty",
+                    label: `暂无A股成员（${version.empty_sectors.length} 个分类，已正常跳过）`,
+                    children: <EmptySectors sectors={version.empty_sectors} />,
+                  },
+                ]}
+              />
+            ) : null}
+            {version.excluded_members?.length ? (
+              <Collapse
+                items={[
+                  {
+                    key: "excluded",
+                    label: `未纳入研究的供应商记录（${version.excluded_members.length} 条）`,
+                    children: (
+                      <ExcludedMembers members={version.excluded_members} />
+                    ),
+                  },
+                ]}
+              />
+            ) : null}
+          </Flex>
         ) : (
           <EmptyState
             title="还没有行业数据"
@@ -305,20 +381,33 @@ export default function IndustryData() {
               dataSource={data.jobs}
               pagination={{ pageSize: 10, hideOnSinglePage: true }}
               expandable={{
-                rowExpandable: (job) => job.failures.length > 0,
+                rowExpandable: (job) =>
+                  job.failures.length > 0 ||
+                  Boolean(job.empty_sectors?.length) ||
+                  Boolean(job.excluded_members?.length),
                 expandedRowRender: (job) => (
-                  <List
-                    size="small"
-                    dataSource={job.failures}
-                    renderItem={(failure) => (
-                      <List.Item>
-                        <Typography.Text type="danger">
-                          {failure.taxonomy} {failure.level} {failure.code}：
-                          {failure.reason}
-                        </Typography.Text>
-                      </List.Item>
-                    )}
-                  />
+                  <Flex vertical gap={12}>
+                    {job.failures.length ? (
+                      <List
+                        size="small"
+                        dataSource={job.failures}
+                        renderItem={(failure) => (
+                          <List.Item>
+                            <Typography.Text type="danger">
+                              {failure.taxonomy} {failure.level} {failure.code}
+                              ：{failure.reason}
+                            </Typography.Text>
+                          </List.Item>
+                        )}
+                      />
+                    ) : null}
+                    {job.empty_sectors?.length ? (
+                      <EmptySectors sectors={job.empty_sectors} />
+                    ) : null}
+                    {job.excluded_members?.length ? (
+                      <ExcludedMembers members={job.excluded_members} />
+                    ) : null}
+                  </Flex>
                 ),
               }}
               columns={[
@@ -418,6 +507,11 @@ export default function IndustryData() {
                   title: "记录 / 股票",
                   render: (_, row: (typeof data.versions)[number]) =>
                     `${formatNumber(row.rows, 0)} / ${formatNumber(row.instruments, 0)}`,
+                },
+                {
+                  title: "空分类",
+                  render: (_, row: (typeof data.versions)[number]) =>
+                    row.empty_sectors?.length ?? 0,
                 },
                 {
                   title: "核验日期",

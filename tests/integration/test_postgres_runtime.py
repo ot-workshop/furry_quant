@@ -24,6 +24,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture()
 def engine(monkeypatch):
+    configured = database_url()
+    if not (configured.database.startswith("fq_") or configured.database.endswith("_test")):
+        pytest.fail("Integration tests require an explicit fq_* or *_test database; development databases are refused")
     make_engine.cache_clear()
     admin = make_engine()
     schema = "fq_test_" + uuid.uuid4().hex
@@ -119,14 +122,16 @@ def test_financial_research_queue_to_qlib_and_postgres_results(engine, tmp_path)
     data, runs = root / "data", root / "runs"
     codes = codes_for(3, 71)
     manifest = publish_fixture_snapshot(data, codes, "20241202", "20250331", provider=DiversePrimary())
-    publish(data / "financials", statements(codes), seen_on="2025-01-02")
+    publish(data / "financials", statements(codes), seen_on="2026-11-07")
     queue = PgTaskStore(runs, engine=engine)
     service = TaskService(runs, data, task_store=queue)
     factory = lambda dataset_id=None: PgResultStore(runs, engine=engine, storage_root=root, dataset_id=dataset_id)
     output = []
     for policy in ("observed", "announcement_estimate"):
         request = request_for(codes, snapshot_id=manifest["id"])
-        request.update(factors=[{"name": "roe_ttm", "weight": 1.0}], financial_policy=policy)
+        request.update(factors=[{"name": "roe_ttm", "weight": 1.0}])
+        if policy == "observed":
+            request["financial_policy"] = policy  # Legacy request is accepted but no longer selects another mode.
         submitted = service.submit(request, "financial-" + policy)
         assert queue.claim() == submitted["id"]
         run_task(
@@ -143,15 +148,16 @@ def test_financial_research_queue_to_qlib_and_postgres_results(engine, tmp_path)
         store = factory()
         result = task["result"]
         factors = store.get("factors", result["factor_run_id"])
-        assert factors["metadata"]["financial_data"]["availability_policy"] == policy
+        assert factors["metadata"]["financial_data"]["availability_policy"] == "announcement_estimate"
+        assert "financial_policy" not in task["request"]
         backtest = store.get("backtests", result["backtest_run_id"])
         assert backtest["trades"] and backtest["equity"]
         assert backtest["metadata"]["dataset_id"]
         assert (
             store.get("evaluations", result["evaluation_run_id"])["metadata"]["financial_data"]["availability_policy"]
-            == policy
+            == "announcement_estimate"
         )
         output.append(backtest)
     assert output[0]["trades"] == output[1]["trades"]
     assert output[0]["equity"] == output[1]["equity"]
-    assert output[0]["summary"]["id"] != output[1]["summary"]["id"]
+    assert output[0]["summary"]["id"] == output[1]["summary"]["id"]

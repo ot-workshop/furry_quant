@@ -10,6 +10,10 @@ x-app: &app
     POSTGRES_USER: ${POSTGRES_USER:-quant}
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     STORAGE_ROOT: /app/storage
+    BACKUP_ROOT: /backups
+    RESTORE_ROOT: /restores
+    RESTORE_POSTGRES_USER: ${RESTORE_POSTGRES_USER:-${POSTGRES_USER:-quant}}
+    RESTORE_POSTGRES_PASSWORD: ${RESTORE_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD}}
     FINANCE_QUANT_RUNS: /app/storage/runs
     FINANCE_QUANT_DATA: /app/storage/data
     FINANCE_QUANT_QUOTA_DB: /app/storage/network/quota.sqlite3
@@ -22,6 +26,8 @@ x-app: &app
     TZ: Asia/Shanghai
   volumes:
     - ${STORAGE_ROOT:-./storage}:/app/storage
+    - ${BACKUP_ROOT:-./backups}:/backups
+    - ${RESTORE_ROOT:-./restores}:/restores
   stop_grace_period: 90s
 
 services:
@@ -74,6 +80,18 @@ services:
       <<: *app-env
       TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
       TUSHARE_HTTP_URL: https://api.tushare.pro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  maintenance:
+    <<: *app
+    profiles: [tools]
+    command: [python, -m, finance_quant.backup, --help]
+    volumes:
+      - ${STORAGE_ROOT:-./storage}:/app/storage
+      - ${BACKUP_ROOT:-./backups}:/backups
+      - ${RESTORE_ROOT:-./restores}:/restores
     depends_on:
       db:
         condition: service_healthy
