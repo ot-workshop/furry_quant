@@ -1,7 +1,11 @@
 import pytest
+from test_historical_workflow import warehouse_fixture
 
+from finance_quant.data.historical_warehouse import load_historical_input
+from finance_quant.research.market_factors import market_factors
+from finance_quant.research.registry import FactorConfig, FactorSpec
 from finance_quant.storage import ResultStore
-from finance_quant.storage_tables import publish_tables, read_rows
+from finance_quant.storage_tables import StreamingTables, factor_frame, publish_tables, read_rows
 
 
 def test_large_result_tables_roundtrip_exact_and_filter_without_full_hydration(tmp_path):
@@ -71,12 +75,6 @@ def test_nested_label_tables_are_explicitly_indexed_and_strict_json_remains_atom
 
 
 def test_streamed_daily_scores_equal_in_memory_and_partial_failure_is_not_published(tmp_path):
-    from test_historical_workflow import warehouse_fixture
-
-    from finance_quant.data.historical_warehouse import load_historical_input
-    from finance_quant.research.market_factors import market_factors
-    from finance_quant.research.registry import FactorConfig, FactorSpec
-    from finance_quant.storage_tables import StreamingTables, factor_frame
 
     root = tmp_path / "warehouse"
     warehouse_fixture(root, blocked=True)

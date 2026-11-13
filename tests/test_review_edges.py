@@ -3,8 +3,15 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import qlib
 from fastapi.testclient import TestClient
+from qlib.backtest.decision import Order
+from qlib.backtest.position import Position
+from test_historical_workflow import request, warehouse_fixture
 
+from finance_quant.application import historical_workflow as workflow
+from finance_quant.integrations.execution import CostAwareExchange
+from finance_quant.integrations.qlib_runner import run_qlib, write_features
 from finance_quant.storage import ResultStore
 from finance_quant.storage_tables import publish_tables
 from support.fakes import make_app
@@ -13,7 +20,6 @@ from support.synthetic import sample_factors, sample_prices
 
 @pytest.mark.parametrize("frequency", ["daily", "weekly", "monthly"])
 def test_terminal_calendar_bar_needs_no_fabricated_next_session(tmp_path, frequency):
-    from finance_quant.integrations.qlib_runner import run_qlib
 
     days = pd.to_datetime(["2024-01-04", "2024-01-05", "2024-01-08"])
     quotes = pd.concat(
@@ -66,12 +72,6 @@ def test_terminal_calendar_bar_needs_no_fabricated_next_session(tmp_path, freque
 
 
 def test_exchange_direct_impact_parameter_is_applied_without_final_volume_lookahead(tmp_path):
-    import qlib
-    from qlib.backtest.decision import Order
-    from qlib.backtest.position import Position
-
-    from finance_quant.integrations.execution import CostAwareExchange
-    from finance_quant.integrations.qlib_runner import write_features
 
     days = pd.to_datetime(["2024-01-04", "2024-01-05"])
     quotes = pd.DataFrame(
@@ -174,9 +174,6 @@ def test_bad_result_does_not_break_healthy_api_and_broken_tables_are_explicit(tm
 
 
 def test_historical_report_versions_do_not_change_factors_or_backtest(tmp_path, monkeypatch):
-    from test_historical_workflow import request, warehouse_fixture
-
-    from finance_quant.application import historical_workflow as workflow
 
     root = tmp_path / "warehouse"
     warehouse_fixture(root)

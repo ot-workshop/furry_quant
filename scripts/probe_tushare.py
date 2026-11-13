@@ -6,16 +6,22 @@ Credentials come from ``TUSHARE_TOKEN``; they are never written to the evidence 
 
 from __future__ import annotations
 
+import argparse
 import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from finance_quant.runtime import configure_runtime
+
+configure_runtime()
+
 import pandas as pd
+
+from finance_quant.data.providers import TushareProvider, TushareSettings
 
 
 def probe_service(output_dir: Path, trade_date: str) -> dict:
-    from finance_quant.data.providers import TushareProvider, TushareSettings
 
     provider = TushareProvider(TushareSettings.from_env())
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -61,11 +67,6 @@ def probe_service(output_dir: Path, trade_date: str) -> dict:
 
 
 def main() -> None:
-    import argparse
-
-    from finance_quant.runtime import configure_runtime
-
-    configure_runtime()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--output", type=Path, default=Path("storage/tushare-probe"))
     yesterday = (pd.Timestamp.now(tz="Asia/Shanghai").normalize() - pd.Timedelta(days=1)).strftime("%Y%m%d")

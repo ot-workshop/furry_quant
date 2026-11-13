@@ -5,8 +5,16 @@ import pytest
 from test_financial_download import Provider, market_version
 
 from finance_quant.application import financial_download as download
-from finance_quant.data.financials import FinancialBinding, FinancialStore, merge_observations, report_versions
-from support.financial import income
+from finance_quant.application.task_worker import financial_binding
+from finance_quant.data.financials import (
+    FinancialBinding,
+    FinancialStockMismatch,
+    FinancialStore,
+    merge_observations,
+    report_versions,
+)
+from finance_quant.data.managed import atomic_json
+from support.financial import income, publish
 
 
 def test_first_download_uses_announcement_date_for_historical_research():
@@ -34,7 +42,6 @@ def test_binding_pins_visibility_policy():
 
 
 def test_identical_numbers_from_different_stocks_cannot_share_an_object(tmp_path):
-    from support.financial import publish
 
     manifest = publish(tmp_path, [income(ts_code="600000.SH"), income(ts_code="000001.SZ")])
     stocks = manifest["stocks"]
@@ -44,8 +51,6 @@ def test_identical_numbers_from_different_stocks_cannot_share_an_object(tmp_path
 
 
 def test_legacy_cross_stock_collision_is_detected_and_redownloaded(tmp_path):
-    from finance_quant.data.financials import FinancialStockMismatch
-    from finance_quant.data.managed import atomic_json
 
     version = market_version(tmp_path, ("600000.SH", "000001.SZ"))
     spec = {"market_version": version, "refresh_days": 0}
@@ -111,8 +116,6 @@ def test_full_refresh_bypasses_freshness_and_restores_full_announcement_range(tm
 
 
 def test_old_first_observed_fields_cannot_select_the_removed_mode(workspace):
-    from finance_quant.application.task_worker import financial_binding
-    from support.financial import publish
 
     data, runs, request = workspace
     publish(

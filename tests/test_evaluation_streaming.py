@@ -4,11 +4,14 @@ import pandas as pd
 import pytest
 from scipy.stats import spearmanr
 from test_factor_evaluation import example
+from test_historical_workflow import request
 
+from finance_quant.application import historical_workflow, market_download
 from finance_quant.research.evaluation import evaluate_factors
 from finance_quant.research.registry import EvaluationConfig
 from finance_quant.storage import ResultStore
 from finance_quant.storage_tables import StreamingTables, factor_predictions, publish_tables
+from support.fakes import make_service, run_claimed
 
 
 def test_numeric_batch_input_and_streamed_horizons_keep_all_labels_and_diagnostics(tmp_path):
@@ -81,10 +84,6 @@ def test_numeric_batch_input_and_streamed_horizons_keep_all_labels_and_diagnosti
 
 @pytest.mark.parametrize("exception", [MemoryError, KeyError, OSError])
 def test_worker_persists_internal_error_stage_without_values_or_credentials(tmp_path, monkeypatch, exception):
-    from test_historical_workflow import request
-
-    from finance_quant.application import historical_workflow, market_download
-    from support.fakes import make_service, run_claimed
 
     monkeypatch.setattr(market_download, "warehouse_roots", lambda data_root: [(tmp_path / "warehouse").resolve()])
     service = make_service(tmp_path / "runs", tmp_path / "data")

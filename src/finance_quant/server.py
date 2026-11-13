@@ -12,9 +12,28 @@ import threading
 import time
 from pathlib import Path
 
+import uvicorn
+from alembic import command
+from alembic.config import Config
+from dotenv import load_dotenv
+from sqlalchemy import text
+
+from finance_quant import paths as locations
+from finance_quant.api import create_app
+from finance_quant.application.data_updates import enqueue_due, pause
+from finance_quant.application.tasks import TaskService
+from finance_quant.data.financials import financial_root
+from finance_quant.data.postgres_market import PostgresMarketStore
+from finance_quant.data.postgres_market import status as market_status
+from finance_quant.data.shared_market import configure_store
+from finance_quant.paths import PROJECT_ROOT
+from finance_quant.persistence.database import SchemaNotReady, check_schema, make_engine
+from finance_quant.persistence.results import PgResultStore
+from finance_quant.persistence.tasks import PgTaskStore, worker_lock
+from finance_quant.runtime import configure_runtime
+
 
 def paths():
-    from finance_quant import paths as locations
 
     root, runs, data = locations.storage_root(), locations.runs_root(), locations.data_root()
     for path in (root, runs / "tasks", data, locations.quota_database().parent, root / "logs"):
@@ -24,19 +43,11 @@ def paths():
 
 def create_http_app():
     """Uvicorn factory so reload workers rebuild the app from current sources."""
-    from finance_quant.data.postgres_market import PostgresMarketStore
-    from finance_quant.data.shared_market import configure_store
-    from finance_quant.persistence.database import check_schema, make_engine
 
     configure_store(PostgresMarketStore())
     engine = make_engine()
     check_schema(engine)
     root, runs, data = paths()
-    from finance_quant.api import create_app
-    from finance_quant.application.tasks import TaskService
-    from finance_quant.data.postgres_market import status as market_status
-    from finance_quant.persistence.results import PgResultStore
-    from finance_quant.persistence.tasks import PgTaskStore
 
     return create_app(
         result_store=PgResultStore(runs, engine=engine, storage_root=root),
@@ -71,15 +82,11 @@ def request_task_pause(store, identifier, data_root):
     """
     task = store.get(identifier, private=True)
     if task["kind"] == "data_update":
-        from finance_quant.application.data_updates import pause
-
         pause(data_root)
         return
     if task["kind"] in {"market_download", "industry_download"}:
         directory = Path(task["execution"]["root"])
     elif task["kind"] == "financial_download":
-        from finance_quant.data.financials import financial_root
-
         directory = financial_root(data_root)
     else:
         return
@@ -89,7 +96,6 @@ def request_task_pause(store, identifier, data_root):
 
 def consume(store, root, runs, data, stop, lock_connection):
     """Lock connection is checked during every child: loss of ownership stops work."""
-    from sqlalchemy import text
 
     log = logging.getLogger(__name__)
     next_schedule = 0.0
@@ -97,8 +103,6 @@ def consume(store, root, runs, data, stop, lock_connection):
         lock_connection.execute(text("SELECT 1"))
         lock_connection.commit()
         if time.monotonic() >= next_schedule:
-            from finance_quant.application.data_updates import enqueue_due
-
             enqueue_due(store, data)
             next_schedule = time.monotonic() + 60
         identifier = store.claim()
@@ -157,10 +161,6 @@ def consume(store, root, runs, data, stop, lock_connection):
 
 def migrate():
     """Apply Alembic migrations with the already-loaded environment (same as `alembic upgrade head`)."""
-    from alembic import command
-    from alembic.config import Config
-
-    from finance_quant.paths import PROJECT_ROOT
 
     config = Config(str(PROJECT_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
@@ -168,7 +168,6 @@ def migrate():
 
 
 def main():
-    from finance_quant.runtime import configure_runtime
 
     configure_runtime()
     parser = argparse.ArgumentParser()
@@ -181,7 +180,6 @@ def main():
     if args.env_file:
         if not args.env_file.is_file():
             parser.error(f"env file does not exist: {args.env_file}")
-        from dotenv import load_dotenv
 
         load_dotenv(args.env_file, override=False)
     logging.basicConfig(level=logging.INFO)
@@ -191,7 +189,6 @@ def main():
         migrate()
         print("Database schema is up to date")
         return
-    from finance_quant.persistence.database import SchemaNotReady, check_schema
 
     try:
         check_schema()
@@ -201,14 +198,10 @@ def main():
     if args.role == "check":
         print("Database schema and storage are ready")
     elif args.role == "api":
-        import uvicorn
-
         host = args.host or os.environ.get("HTTP_HOST", "0.0.0.0")
         port = args.port or int(os.environ.get("HTTP_PORT", "8000"))
         uvicorn.run("finance_quant.server:create_http_app", factory=True, host=host, port=port, reload=args.reload)
     else:
-        from finance_quant.persistence.tasks import PgTaskStore, worker_lock
-
         stop = threading.Event()
         for name in (signal.SIGTERM, signal.SIGINT):
             signal.signal(name, lambda *_: stop.set())

@@ -32,7 +32,10 @@ from finance_quant.data.managed import (
     year_ranges,
 )
 from finance_quant.data.providers import TushareProvider, TushareSettings
+from finance_quant.data.providers.baostock import BaoStockProvider, BaoStockProviderError
+from finance_quant.data.reconciliation import normalize_baostock, reconcile_market
 from finance_quant.data.suspensions import MemoizedSecondary
+from finance_quant.data.validation_config import CrosscheckConfig
 
 DATA_PACKAGE = Path(managed.__file__).parent
 
@@ -204,9 +207,6 @@ def _download_locked(config: DataConfig, provider, refresh: bool, secondary_prov
         catalog.set_total(job_id, len(calendar_ranges) + len(config.codes) * (1 + 4 * len(ranges)) + len(ranges))
         frames, benchmark_parts = [], []
         if config.validation.mode != "off":
-            from finance_quant.data.providers.baostock import BaoStockProvider
-            from finance_quant.data.reconciliation import normalize_baostock
-
             secondary_provider = MemoizedSecondary(
                 secondary_provider or BaoStockProvider(root / "secondary", namespace=fetch.generation)
             )
@@ -252,8 +252,6 @@ def _download_locked(config: DataConfig, provider, refresh: bool, secondary_prov
                         )
                         checked_secondary = normalize_baostock(bundle, code, expected)
                     except (ValueError, RuntimeError) as error:
-                        from finance_quant.data.providers.baostock import BaoStockProviderError
-
                         category = (
                             "secondary_connection_failed"
                             if isinstance(error, BaoStockProviderError) and error.retryable
@@ -334,9 +332,6 @@ def _download_locked(config: DataConfig, provider, refresh: bool, secondary_prov
         benchmark = pd.concat(benchmark_parts, ignore_index=True).sort_values("date").reset_index(drop=True)
         cross_validation = None
         if config.validation.mode != "off":
-            from finance_quant.data.providers.baostock import BaoStockProvider
-            from finance_quant.data.reconciliation import reconcile_market
-
             secondary_provider = secondary_provider or BaoStockProvider(root / "secondary", namespace=fetch.generation)
             market, cross_validation = reconcile_market(
                 market,
@@ -396,7 +391,6 @@ def publish_fixture_snapshot(
     benchmark="000300.SH",
 ):
     """Publish a selectable snapshot where the shared download exports them."""
-    from finance_quant.data.validation_config import CrosscheckConfig
 
     config = DataConfig(
         Path(data_root) / "research" / "downloads" / name,

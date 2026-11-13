@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import numpy as np
@@ -5,12 +6,14 @@ import pandas as pd
 import pytest
 from test_managed_data import Provider
 
-from finance_quant.configuration import DataConfig, load_config
+from finance_quant.application.evaluation_workflow import evaluate_configured
+from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig, load_config
 from finance_quant.data.managed import DatasetDownloadError
 from finance_quant.data.market import load_market
 from finance_quant.data.providers.baostock import BaoStockBundle, BaoStockProviderError
 from finance_quant.data.reconciliation import normalize_baostock, reconcile_market
 from finance_quant.data.validation_config import CrosscheckConfig
+from finance_quant.storage import ResultStore
 from support.fixed_pool import download_dataset
 
 
@@ -283,7 +286,6 @@ def test_missing_primary_daily_rows_use_secondary_without_manufacturing_prices(c
 
 @pytest.mark.parametrize("tamper", ["status", "row_source"])
 def test_loading_independently_rejects_inconsistent_joint_evidence(config, tamper):
-    import hashlib
 
     manifest = download_dataset(config, provider=Primary(), secondary_provider=Secondary())["manifest"]
     leaf = config.root / manifest["snapshot_path"]
@@ -321,9 +323,6 @@ def test_different_algorithms_on_same_action_date_are_reported_not_spliced():
 
 
 def test_joint_source_evidence_survives_factor_evaluation_and_portable_report(config, tmp_path):
-    from finance_quant.application.evaluation_workflow import evaluate_configured
-    from finance_quant.configuration import BacktestConfig, ResearchConfig
-    from finance_quant.storage import ResultStore
 
     primary = Primary()
     primary.corrupt = True

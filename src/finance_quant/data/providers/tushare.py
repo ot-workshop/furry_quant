@@ -1,7 +1,7 @@
 """Bounded adapter for the Tushare SDK.
 
-The SDK is imported lazily so callers can inject a client for offline use. This
-module keeps credentials out of reprs and error messages, throttles requests,
+Callers can inject a client for offline use. This module keeps credentials out
+of reprs and error messages, throttles requests,
 retries transient network failures, and normalizes the first batch of Tushare
 endpoints into plain pandas DataFrames.
 """
@@ -18,7 +18,11 @@ from urllib.parse import urlsplit
 
 import numpy as np
 import pandas as pd
+import requests
+import tushare as ts
+from dotenv import dotenv_values
 
+from finance_quant.data.network_budget import DownloadPaused, reserve_tushare
 from finance_quant.data.symbols import to_qlib
 
 DEFAULT_HTTP_URL = "https://api.tushare.pro"
@@ -156,8 +160,6 @@ class TushareSettings:
         path = Path(env_file) if env_file is not None else Path(".env")
         try:
             if env_file is not None or path.is_file():
-                from dotenv import dotenv_values
-
                 file_values = {key: value for key, value in dotenv_values(path).items() if value is not None}
         except OSError:
             file_values = {}
@@ -228,8 +230,6 @@ class TushareProvider:
                 self._client = _OfficialClient(self.settings)
                 return self._client
             try:
-                import tushare as ts
-
                 client = ts.pro_api(self.settings.token, timeout=20)
                 client._DataApi__http_url = self.settings.http_url
             except Exception:
@@ -257,8 +257,6 @@ class TushareProvider:
                 raw = client.query(api_name, fields=fields, **params)
                 break
             except Exception as exc:
-                from finance_quant.data.network_budget import DownloadPaused
-
                 if isinstance(exc, DownloadPaused):
                     raise
                 category = _error_category(exc)
@@ -285,9 +283,6 @@ class _OfficialClient:
         self.settings = settings
 
     def query(self, api_name, fields="", **params):
-        import requests
-
-        from finance_quant.data.network_budget import reserve_tushare
 
         reserve_tushare(api_name)
         response = requests.post(

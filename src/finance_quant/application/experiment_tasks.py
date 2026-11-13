@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from finance_quant.application.experiment_workflow import _preflight, run_experiment
 from finance_quant.application.research_requests import (
     MAX_CODES,
     _fields,
@@ -10,6 +13,7 @@ from finance_quant.application.research_requests import (
     snapshot_registry,
     validate_request,
 )
+from finance_quant.application.task_context import attach_outputs, prepare_snapshot
 from finance_quant.configuration import BacktestConfig, DataConfig
 from finance_quant.data.symbols import to_qlib
 from finance_quant.data.validation_config import CrosscheckConfig
@@ -57,7 +61,6 @@ def _pin_candidates(research: dict, execution: dict, plan: ExperimentPlan, data_
 
 def validate_experiment_request(document: dict, data_root, runs_root) -> tuple[dict, dict]:
     """Validate everything the worker will need before anything is queued or written."""
-    from finance_quant.application.experiment_workflow import _preflight
 
     _fields(
         document,
@@ -90,7 +93,6 @@ def validate_experiment_request(document: dict, data_root, runs_root) -> tuple[d
 
 
 def _data_config(manifest: dict, codes) -> DataConfig:
-    from pathlib import Path
 
     return DataConfig(
         Path(manifest["snapshot_dir"]),
@@ -108,8 +110,6 @@ def experiment_total(document: dict) -> int:
 
 
 def run_experiment_task(context, request: dict, execution: dict) -> dict:
-    from finance_quant.application.experiment_workflow import run_experiment
-    from finance_quant.application.task_worker import attach_outputs, prepare_snapshot
 
     plan = _plan(request)
     context.stage("prepare", "准备股票池并检查各候选方案的历史预热", 0)

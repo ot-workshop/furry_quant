@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
 
+from finance_quant.application.benchmark_workflow import publish_benchmark_view
 from finance_quant.application.factor_workflow import load_configured_snapshot, publish_factor_run
 from finance_quant.checksums import sha256_text
+from finance_quant.data.benchmarks import normalize_benchmark
 from finance_quant.data.execution_universe import validate_execution_universe
+from finance_quant.data.industries import load_industries
 from finance_quant.data.market import load_market
 from finance_quant.data.symbols import to_qlib
 from finance_quant.integrations.qlib_runner import run_qlib
 from finance_quant.provenance import source_provenance
 from finance_quant.research.execution_policy import EXECUTION_FIELDS
 from finance_quant.research.fundamentals import financial_provenance
+from finance_quant.research.industry_exposure import attach_industry_exposure
 from finance_quant.research.registry import FactorConfig
 from finance_quant.storage import ResultStore
 
@@ -181,8 +186,6 @@ def _run_real_execution(
     result["metadata"]["config"]["adjustment"] = (
         "price * (adj_factor / first_adj_factor); volume divided by same factor"
     )
-    from finance_quant.data.industries import load_industries
-    from finance_quant.research.industry_exposure import attach_industry_exposure
 
     industry_version = factors["metadata"].get("industry_data", {}).get("id")
     attach_industry_exposure(
@@ -217,13 +220,10 @@ def run_real(
 ) -> dict:
     result_store = kwargs.get("result_store")
     if benchmark is not None:
-        from finance_quant.data.benchmarks import normalize_benchmark
-
         benchmark = normalize_benchmark(benchmark)
     execution = _run_real_execution(snapshot_dir, runs_dir, start, end, topk, **kwargs)
     if benchmark is None:
         return execution
-    from finance_quant.application.benchmark_workflow import publish_benchmark_view
 
     calendar = load_market(snapshot_dir)[2]
     view = publish_benchmark_view(
@@ -246,7 +246,6 @@ def run_real(
 
 def run_configured(config, *, result_store=None) -> dict:
     """A config must match the frozen data selection, including the scoring universe."""
-    from dataclasses import asdict
 
     load_configured_snapshot(config)
     return run_real(

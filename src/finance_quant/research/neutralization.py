@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from finance_quant.data.industries import optional_industries
+
 INDUSTRY_LEVELS = ("L1", "L2", "L3")
 INDUSTRY_LEVEL_LABELS = {"L1": "一级", "L2": "二级", "L3": "三级"}
 
@@ -47,7 +49,6 @@ def parse_neutralization(value=None):
 
 
 def industry_context(config=None, history=None):
-    from finance_quant.data.industries import optional_industries
 
     config = config or NeutralizationConfig()
     history = history or optional_industries(config.industry_version)

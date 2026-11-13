@@ -6,21 +6,24 @@ Raw public data is retained in a separate, timestamped audit directory.
 
 from __future__ import annotations
 
-from finance_quant.runtime import configure_runtime
-
-configure_runtime()
 import argparse
 import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from finance_quant.runtime import configure_runtime
+
+configure_runtime()
+
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from finance_quant.application.market_download import warehouse_roots
 from finance_quant.data.industries import load_industries
 from finance_quant.data.providers.tushare import TushareProvider, TushareProviderError, TushareSettings
+from finance_quant.paths import data_root
 
 
 def main():
@@ -30,8 +33,6 @@ def main():
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--warehouse", type=Path, help="沪深300历史成分视图目录；默认取最新发布的共享下载版本")
     args = parser.parse_args()
-    from finance_quant.application.market_download import warehouse_roots
-    from finance_quant.paths import data_root
 
     views = [args.warehouse] if args.warehouse else warehouse_roots(data_root())
     if not views:

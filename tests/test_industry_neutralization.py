@@ -4,12 +4,23 @@ import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from test_factor_configuration import sample_market
+from test_factor_library import frame
+from test_pool_workflow_matrix import codes_for, request_for, run_request
 
-from finance_quant.data.industries import POLICY, IndustryHistory, load_industries, publish_industries
+from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig, load_config
+from finance_quant.data.industries import (
+    POLICY,
+    IndustryHistory,
+    download_industries,
+    load_industries,
+    publish_industries,
+)
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.neutralization import NeutralizationConfig, factor_industry_diagnostics, residualize
 from finance_quant.research.registry import FactorConfig, FactorSpec
 from finance_quant.storage import ResultStore
+from support.fakes import make_app
 
 
 def history(symbols, *, switch=False):
@@ -98,7 +109,6 @@ def test_residuals_match_independent_dummy_regression():
 
 
 def test_on_weights_windows_and_future_industry_changes_reach_real_scores():
-    from test_factor_library import frame
 
     market = frame(8, 70)
     h = history(sorted(market.instrument.unique()))
@@ -132,7 +142,6 @@ def test_on_weights_windows_and_future_industry_changes_reach_real_scores():
 
 
 def test_download_history_serial_resume_and_refuse_truncation(tmp_path):
-    from finance_quant.data.industries import download_industries
 
     class Provider:
         calls = []
@@ -161,7 +170,6 @@ def test_download_history_serial_resume_and_refuse_truncation(tmp_path):
 
 @pytest.mark.parametrize("size", [4, 8, 15])
 def test_switch_effect_and_off_reproduction_with_future_change(size):
-    from test_factor_library import frame
 
     market = frame(size, 60)
     symbols = sorted(market.instrument.unique())
@@ -205,7 +213,6 @@ def test_switch_effect_and_off_reproduction_with_future_change(size):
 
 
 def test_singleton_only_pool_fails_clearly_and_missing_is_not_zero():
-    from test_factor_configuration import sample_market
 
     m = sample_market()
     h = history(sorted(m.instrument.unique()))
@@ -221,7 +228,6 @@ def test_singleton_only_pool_fails_clearly_and_missing_is_not_zero():
 
 
 def test_versioned_cache_and_config_roundtrip(tmp_path):
-    from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig, load_config
 
     h = publish_industries(history(["SH600000", "SZ000001"]).frame)
     assert load_industries(h.manifest["id"]).manifest == h.manifest
@@ -242,7 +248,6 @@ def test_versioned_cache_and_config_roundtrip(tmp_path):
 
 @pytest.mark.parametrize("size,seed", [(4, 23), (8, 109)])
 def test_full_queue_native_and_off_rerun(tmp_path, size, seed):
-    from test_pool_workflow_matrix import codes_for, request_for, run_request
 
     codes = codes_for(size, seed)
     symbols = [c[-2:] + c[:6] for c in codes]
@@ -264,7 +269,6 @@ def test_full_queue_native_and_off_rerun(tmp_path, size, seed):
     assert neutral["metadata"]["factor_run_id"] == on["result"]["factor_run_id"]
     assert neutral["industry_exposure"]["days"]
     # Real API reads this task's frozen industry diagnostics, never latest cache.
-    from support.fakes import make_app
 
     with TestClient(make_app(tmp_path / "runs", data_root=tmp_path / "data")) as client:
         factor_id = on["result"]["factor_run_id"]

@@ -9,7 +9,9 @@ from test_joint_data import Primary, Secondary, market_frame
 
 from finance_quant.application import market_download as downloads
 from finance_quant.application.research_requests import research_options, validate_request
+from finance_quant.data import managed
 from finance_quant.data import shared_market as shared
+from finance_quant.data.historical_warehouse import load_historical_input, warehouse_option
 from finance_quant.data.managed import atomic_json
 from finance_quant.data.market import load_market
 from finance_quant.data.network_budget import DownloadPaused
@@ -233,7 +235,6 @@ def test_complete_csi_version_selectable_without_modifying_original_warehouse(wo
     result = downloads.run(root, plan["id"], provider=provider, secondary=Secondary())
     assert result["status"] == "complete"
     view = root / "versions" / result["version_id"] / "index-view"
-    from finance_quant.data.historical_warehouse import load_historical_input, warehouse_option
 
     option = warehouse_option(view)
     market, _, _, meta = load_historical_input(view, "2025-01-08", "2025-02-28", 2)
@@ -358,7 +359,6 @@ def test_invalid_dates_scope_and_codes_rejected(patch):
 
 
 def test_atomic_progress_retries_windows_read_handle_and_never_truncates(tmp_path, monkeypatch):
-    from finance_quant.data import managed
 
     path = tmp_path / "progress.json"
     atomic_json(path, {"completed": 298})
@@ -379,7 +379,6 @@ def test_atomic_progress_retries_windows_read_handle_and_never_truncates(tmp_pat
 
 
 def test_atomic_progress_persistent_denial_preserves_previous_document(tmp_path, monkeypatch):
-    from finance_quant.data import managed
 
     path = tmp_path / "progress.json"
     atomic_json(path, {"completed": 298})

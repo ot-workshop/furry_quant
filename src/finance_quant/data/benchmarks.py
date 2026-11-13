@@ -14,6 +14,7 @@ from filelock import FileLock
 from finance_quant.checksums import file_sha256, sha256_text
 from finance_quant.data.managed import atomic_json
 from finance_quant.data.providers.tushare import TushareProvider, TushareProviderError, TushareSettings
+from finance_quant.paths import data_root
 
 BENCHMARKS = {
     "000300.SH": ("沪深300价格指数", "price"),
@@ -37,7 +38,6 @@ def benchmark_root():
     configured = os.environ.get("FINANCE_QUANT_BENCHMARK_ROOT")
     if configured:
         return Path(configured)
-    from finance_quant.paths import data_root
 
     return data_root() / "benchmarks/official-tushare"
 

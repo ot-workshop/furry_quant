@@ -15,7 +15,10 @@ from filelock import FileLock
 
 from finance_quant.checksums import file_sha256, sha256_bytes
 from finance_quant.data.managed import atomic_json
+from finance_quant.data.network_budget import DownloadPaused
+from finance_quant.data.providers.tushare import TushareProvider, TushareSettings
 from finance_quant.data.symbols import TS_CODE, to_qlib
+from finance_quant.paths import data_root
 
 VERSION = "sw-l1-history-v1"
 VERSION_V2 = "sw-history-v2"
@@ -65,7 +68,6 @@ def industry_root():
     configured = os.environ.get("FINANCE_QUANT_INDUSTRY_ROOT")
     if configured:
         return Path(configured)
-    from finance_quant.paths import data_root
 
     return data_root() / "industries/official-tushare"
 
@@ -543,8 +545,6 @@ def download_industries(
     Defaults to L1 for backward compatibility; the web UI requests all levels.
     A sector response at the vendor row cap is rejected, never published truncated.
     """
-    from finance_quant.data.network_budget import DownloadPaused
-    from finance_quant.data.providers.tushare import TushareProvider, TushareSettings
 
     levels = tuple(dict.fromkeys(levels))
     if not levels or not set(levels) <= set(LEVELS):

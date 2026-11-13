@@ -12,6 +12,7 @@ import pytest
 from test_joint_data import bundle
 from test_managed_data import Provider
 
+import finance_quant.application.research_requests as requests
 from finance_quant.application.research_requests import snapshot_registry, validate_request
 from finance_quant.configuration import BacktestConfig, DataConfig
 from finance_quant.data.managed import DatasetDownloadError
@@ -215,7 +216,6 @@ def test_valuation_ineligible_pool_is_rejected_at_submission_then_price_only_tas
 )
 def test_unsupported_execution_types_are_rejected_before_queue_writes(tmp_path, monkeypatch, code):
     request = request_for([code, "600900.SH"])
-    import finance_quant.application.research_requests as requests
 
     manifest = {
         "id": "pending",

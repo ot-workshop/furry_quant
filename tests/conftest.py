@@ -1,4 +1,5 @@
 import os
+from dataclasses import asdict
 
 for variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ[variable] = "1"
@@ -6,9 +7,13 @@ for variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
 os.environ["MLFLOW_DISABLE_AGENT_HINT"] = "1"
 
 import pytest
+from test_managed_data import Provider
 
+from finance_quant.configuration import BacktestConfig
 from finance_quant.data import shared_market
+from finance_quant.research.registry import EvaluationConfig, FactorConfig
 from support.file_market import FileMarketStore
+from support.fixed_pool import publish_fixture_snapshot
 
 
 @pytest.fixture(autouse=True)
@@ -30,13 +35,6 @@ def market_store():
 @pytest.fixture
 def workspace(tmp_path):
     """A published four-stock snapshot and a valid three-stock research request."""
-    from dataclasses import asdict
-
-    from test_managed_data import Provider
-
-    from finance_quant.configuration import BacktestConfig
-    from finance_quant.research.registry import EvaluationConfig, FactorConfig
-    from support.fixed_pool import publish_fixture_snapshot
 
     data_root, runs_root = tmp_path / "data", tmp_path / "runs"
     codes = ("600000.SH", "000001.SZ", "600519.SH", "600036.SH")

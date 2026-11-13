@@ -1,21 +1,24 @@
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pandas as pd
 import pytest
+from filelock import FileLock
 from test_managed_data import Provider
+from test_real_workflow import sample_market
 
-from finance_quant.application.real_workflow import run_configured
-from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
+from finance_quant.application.real_workflow import adjusted_quotes, run_configured
+from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig, load_config
+from finance_quant.data.market import load_market
+from finance_quant.integrations.qlib_runner import run_qlib
+from finance_quant.research.registry import EvaluationConfig, FactorConfig, FactorSpec
+from finance_quant.storage import ResultStore
 from support.fixed_pool import download_dataset
+from support.synthetic import sample_factors, sample_prices
 
 
 def test_nondefault_benchmark_and_execution_config_reach_native_qlib(tmp_path):
-    from test_real_workflow import sample_market
-
-    from finance_quant.application.real_workflow import adjusted_quotes
-    from finance_quant.integrations.qlib_runner import run_qlib
-    from support.synthetic import sample_factors, sample_prices
 
     prices, benchmark = sample_market()
     benchmark["instrument"] = "SZ399006"
@@ -87,18 +90,14 @@ def test_changed_execution_parameters_create_independent_reproducible_runs(resea
     assert after["metadata"]["provenance"]["initial_cash"] == 150000
     assert after["metadata"]["config"]["risk_degree"] == 0.5
     assert second["factor_run_id"] == first["factor_run_id"]
-    from finance_quant.data.market import load_market
 
     snapshot_dir = load_market(research_config.data.root)[3]["snapshot_dir"]
-    from pathlib import Path
 
     assert not (Path(snapshot_dir) / "qlib").exists()
     assert (research_config.runs_dir / ".qlib").is_dir()
 
 
 def test_scheduled_itemized_config_roundtrips_and_reaches_real_workflow(research_config):
-    from finance_quant.configuration import load_config
-    from finance_quant.storage import ResultStore
 
     configured = replace(
         research_config,
@@ -126,8 +125,6 @@ def test_scheduled_itemized_config_roundtrips_and_reaches_real_workflow(research
 
 
 def test_factor_selection_reaches_native_strategy_and_evaluation_settings_do_not_change_execution(research_config):
-    from finance_quant.research.registry import EvaluationConfig, FactorConfig, FactorSpec
-    from finance_quant.storage import ResultStore
 
     config = replace(research_config, factors=FactorConfig((FactorSpec("momentum", 1, 5),)))
     result = run_configured(config)
@@ -162,9 +159,6 @@ def test_missing_daily_scores_cannot_silently_reuse_old_signals(tmp_path):
 
 
 def test_identical_qlib_workspaces_are_locked_before_feature_writes(tmp_path):
-    from filelock import FileLock
-
-    from finance_quant.integrations.qlib_runner import run_qlib
 
     directory = tmp_path / "features"
     with FileLock(directory.with_name(directory.name + ".lock"), timeout=0):

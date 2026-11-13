@@ -2,9 +2,11 @@
 
 import pandas as pd
 import pytest
+from test_factor_library import frame
 
 from finance_quant.data.industries import (
     IndustryDownloadIncomplete,
+    IndustryHistory,
     download_industries,
     load_industries,
     normalize_sectors,
@@ -12,11 +14,13 @@ from finance_quant.data.industries import (
     publish_industries,
 )
 from finance_quant.data.network_budget import DownloadPaused
+from finance_quant.research.market_factors import market_factors
 from finance_quant.research.neutralization import (
     NeutralizationConfig,
     industry_context,
     parse_neutralization,
 )
+from finance_quant.research.registry import FactorConfig, FactorSpec
 
 
 def catalogs():
@@ -233,11 +237,6 @@ def test_sectors_are_validated_not_inferred():
 
 
 def test_market_factors_uses_the_selected_level():
-    from test_factor_library import frame
-
-    from finance_quant.data.industries import IndustryHistory
-    from finance_quant.research.market_factors import market_factors
-    from finance_quant.research.registry import FactorConfig, FactorSpec
 
     market = frame(4, 70)
     symbols = sorted(market.instrument.unique())

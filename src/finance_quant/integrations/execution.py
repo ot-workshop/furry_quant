@@ -12,6 +12,7 @@ from qlib.backtest.executor import SimulatorExecutor
 from qlib.backtest.utils import TradeCalendarManager, epsilon_change
 from qlib.contrib.strategy.signal_strategy import TopkDropoutStrategy
 
+from finance_quant.data.china_a_rules import board, max_order_shares
 from finance_quant.research.execution_policy import ExecutionCosts
 
 
@@ -37,7 +38,6 @@ class CostAwareExchange(Exchange):
         return super()._get_buy_amount_by_cash_limit(trade_price, cash, cost_ratio)
 
     def _calc_trade_info_by_order(self, order, position, dealt_order_amount):
-        from finance_quant.data.china_a_rules import board, max_order_shares
 
         # Fixed pools and historical pools share the same A-share order bounds.
         # Keep generic synthetic Qlib instruments usable outside the real-data path.

@@ -10,15 +10,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from filelock import Timeout
 from starlette.concurrency import run_in_threadpool
 
+from finance_quant.application import backup_jobs, data_updates, financial_download, industry_download
+from finance_quant.application import market_download as downloads
+from finance_quant.application.market_download import shared_root, status
 from finance_quant.application.research_requests import research_options
-from finance_quant.application.tasks import TaskConflict
+from finance_quant.data.financials import financial_root
+from finance_quant.data.industries import industry_root
+from finance_quant.persistence.maintenance import write_gate
+from finance_quant.task_contracts import TaskConflict
 
 RESULT_TASK_KINDS = {"research", "experiment"}
 
 
 def research_router(service):
     def write_guard(request: Request):
-        from finance_quant.persistence.maintenance import write_gate
 
         engine = getattr(service.store, "engine", None)
         try:
@@ -84,7 +89,6 @@ def research_router(service):
 
     @router.get("/market-download")
     def market_download_status():
-        from finance_quant.application.market_download import shared_root, status
 
         try:
             return status(shared_root(service.data_root))
@@ -93,20 +97,17 @@ def research_router(service):
 
     @router.get("/data-updates")
     def data_updates_status():
-        from finance_quant.application import data_updates
 
         return data_updates.status(service.data_root)
 
     @router.get("/backups")
     def backups_status():
-        from finance_quant.application import backup_jobs
 
         return backup_jobs.status(service.store)
 
     @router.post("/backups")
     async def backup_operation(request: Request):
         document = await body(request)
-        from finance_quant.application import backup_jobs
 
         try:
             return await run_in_threadpool(backup_jobs.start, service.store, document)
@@ -116,7 +117,6 @@ def research_router(service):
     @router.post("/data-updates/{action}")
     async def data_updates_action(action: str, request: Request):
         document = await body(request)
-        from finance_quant.application import data_updates
 
         try:
             if action == "preview":
@@ -137,7 +137,6 @@ def research_router(service):
     @router.post("/market-download/{action}")
     async def market_download_action(action: str, request: Request):
         document = await body(request)
-        from finance_quant.application import market_download as downloads
 
         root = downloads.shared_root(service.data_root)
         try:
@@ -169,7 +168,6 @@ def research_router(service):
 
     @router.get("/financial-download")
     def financial_download_status():
-        from finance_quant.application import financial_download
 
         try:
             return financial_download.status(service.data_root)
@@ -179,7 +177,6 @@ def research_router(service):
     @router.post("/financial-download/{action}")
     async def financial_download_action(action: str, request: Request):
         document = await body(request)
-        from finance_quant.application import financial_download
 
         try:
             if action == "preview":
@@ -192,8 +189,6 @@ def research_router(service):
                 )
                 return {"id": document["plan_id"], "task_id": result["id"], "status": "queued"}
             if action == "pause" and document == {}:
-                from finance_quant.data.financials import financial_root
-
                 root = financial_root(service.data_root)
                 root.mkdir(parents=True, exist_ok=True)
                 (root / "PAUSE").write_text("pause", encoding="utf-8")
@@ -208,7 +203,6 @@ def research_router(service):
 
     @router.get("/industry-download")
     def industry_download_status():
-        from finance_quant.application import industry_download
 
         try:
             return industry_download.status()
@@ -218,7 +212,6 @@ def research_router(service):
     @router.post("/industry-download/{action}")
     async def industry_download_action(action: str, request: Request):
         document = await body(request)
-        from finance_quant.application import industry_download
 
         try:
             if action == "preview":
@@ -229,8 +222,6 @@ def research_router(service):
                 )
                 return {"id": document["plan_id"], "task_id": result["id"], "status": "queued"}
             if action == "pause" and document == {}:
-                from finance_quant.data.industries import industry_root
-
                 root = industry_root()
                 root.mkdir(parents=True, exist_ok=True)
                 (root / "PAUSE").write_text("pause", encoding="utf-8")

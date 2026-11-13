@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from finance_quant.data.financials import (
+    FinancialBinding,
     FinancialStore,
     covered_codes,
     empty_observations,
@@ -207,7 +208,6 @@ def test_duplicate_rows_from_the_vendor_are_collapsed():
 def test_fundamentals_cover_only_stocks_of_the_version(tmp_path):
     root = tmp_path / "financials"
     manifest = publish(root, [income(), balance(), cashflow()])
-    from finance_quant.data.financials import FinancialBinding
 
     data = load_fundamentals(FinancialBinding(root, manifest["id"]), ["600000.SH", "000001.SZ"])
     assert data.covered == ("SH600000",)

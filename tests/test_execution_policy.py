@@ -3,9 +3,17 @@ from dataclasses import replace
 
 import pandas as pd
 import pytest
+import qlib
+from qlib.backtest.decision import Order
+from qlib.backtest.position import Position
+from test_historical_workflow import request, warehouse_fixture
 
+from finance_quant.application.historical_workflow import run_historical_research
 from finance_quant.configuration import BacktestConfig
+from finance_quant.integrations.china_a import ChinaAExchange
+from finance_quant.integrations.qlib_runner import run_qlib, write_features
 from finance_quant.research.execution_policy import ExecutionCosts, rebalance_dates
+from finance_quant.storage import ResultStore
 
 
 def test_schedule_is_first_available_session_of_period_and_first_entry_even_mid_period():
@@ -78,12 +86,6 @@ def test_historical_fee_table_rejects_unsupported_earlier_range():
 
 
 def test_native_exchange_accounts_for_minimum_tax_impact_and_cash_before_fill(tmp_path):
-    import qlib
-    from qlib.backtest.decision import Order
-    from qlib.backtest.position import Position
-
-    from finance_quant.integrations.china_a import ChinaAExchange
-    from finance_quant.integrations.qlib_runner import write_features
 
     days = pd.to_datetime(["2022-04-28", "2022-04-29", "2022-05-05"])
     quotes = pd.DataFrame(
@@ -157,7 +159,6 @@ def test_native_exchange_accounts_for_minimum_tax_impact_and_cash_before_fill(tm
 
 
 def test_fixed_pool_frequency_changes_orders_and_exact_costs_flow_into_daily_account(tmp_path):
-    from finance_quant.integrations.qlib_runner import run_qlib
 
     days = pd.bdate_range("2023-08-21", "2023-10-03")
     codes = ["SH600000", "SZ000001"]
@@ -269,10 +270,6 @@ def test_fixed_pool_frequency_changes_orders_and_exact_costs_flow_into_daily_acc
 
 @pytest.mark.parametrize("frequency", ["weekly", "monthly"])
 def test_dynamic_forced_exits_retry_on_non_rebalance_days_and_cash_waits(tmp_path, frequency):
-    from test_historical_workflow import request, warehouse_fixture
-
-    from finance_quant.application.historical_workflow import run_historical_research
-    from finance_quant.storage import ResultStore
 
     warehouse = tmp_path / "warehouse"
     warehouse_fixture(warehouse, blocked=True)

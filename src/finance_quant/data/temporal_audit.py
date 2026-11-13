@@ -5,8 +5,12 @@ Checking chronology does not certify the historical vendor publication vintage.
 
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 import pandas as pd
+
+from finance_quant.data.china_a_rules import RULE_VERSION
 
 VERSION = "temporal-execution-audit-v1"
 VALUATION_FIELDS = {"pe_ttm", "pb", "total_mv"}
@@ -194,9 +198,6 @@ def capacity_diagnostics(quotes, trades):
 
 
 def add_execution_audit(result, quotes, factors):
-    import copy
-
-    from finance_quant.data.china_a_rules import RULE_VERSION
 
     audit = copy.deepcopy(factors["metadata"].get("temporal_audit") or factor_temporal_audit(factors["metadata"]))
     audit["items"] += [

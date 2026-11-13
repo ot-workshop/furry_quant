@@ -9,6 +9,7 @@ from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConf
 from finance_quant.data.managed import DatasetDownloadError
 from finance_quant.data.market import load_market
 from finance_quant.data.reconciliation import normalize_baostock
+from finance_quant.data.suspensions import carry_halt_rows, invalid_halt_rows
 from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.integrations.qlib_runner import run_qlib, write_features
 from finance_quant.research.evaluation import forward_open_labels
@@ -20,7 +21,6 @@ HALTS = ["2025-01-13", "2025-01-14", "2025-01-15"]
 
 
 def test_missing_pe_is_not_claimed_as_a_carried_value_or_invalid_price():
-    from finance_quant.data.suspensions import carry_halt_rows, invalid_halt_rows
 
     frame = market_frame().set_index("date")
     frame["pe_ttm"] = np.nan

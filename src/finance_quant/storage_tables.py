@@ -8,6 +8,7 @@ import os
 import tempfile
 from pathlib import Path
 
+import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
@@ -113,7 +114,6 @@ class StreamingTables:
 
 def factor_frame(store, identifier, result, *, include_raw=False):
     """Read only the numeric signal/diagnostic inputs, not rich scoring records."""
-    import pandas as pd
 
     columns = ["date", "instrument", "available_at", "composite"] + (["raw"] if include_raw else [])
     if "history" not in result.get("tables", {}):
@@ -127,7 +127,6 @@ def factor_frame(store, identifier, result, *, include_raw=False):
 
 def factor_predictions(store, identifier, result):
     """Decode raw values a batch at a time, retaining numeric columns only."""
-    import pandas as pd
 
     names = list(result["metadata"]["weights"])
     parts = []

@@ -16,6 +16,12 @@ import sys
 from datetime import datetime
 from typing import Any
 
+import baostock
+import baostock.util.socketutil as socketutil
+
+from finance_quant.data import network_budget
+from finance_quant.data.network_budget import DownloadPaused, NetworkBudget
+
 FIELDS = (
     "date",
     "code",
@@ -81,21 +87,13 @@ def _request_parts(request: Any) -> tuple[str, str, str]:
 
 
 def _sdk():
-    from finance_quant.data.network_budget import NetworkBudget
 
     NetworkBudget().assert_available("baostock", "sdk_message", daily=10000)
-    with contextlib.redirect_stdout(io.StringIO()):
-        import baostock
-
     # Every SDK message passes here, including login/logout and pagination.
-    import baostock.util.socketutil as socketutil
-
-    from finance_quant.data.network_budget import reserve_baostock
-
     original = socketutil.send_msg
 
     def counted(message):
-        reserve_baostock()
+        network_budget.reserve_baostock()
         return original(message)
 
     socketutil.send_msg = counted
@@ -105,8 +103,6 @@ def _sdk():
 
 def _ok(result: Any) -> bool:
     if str(getattr(result, "error_code", "")) == "10001011":
-        from finance_quant.data.network_budget import DownloadPaused, NetworkBudget
-
         NetworkBudget().hold("baostock")
         raise DownloadPaused("BaoStock限制访问，下载已暂停")
     return result is not None and str(getattr(result, "error_code", "")) == "0"
@@ -181,8 +177,6 @@ def main(argv=None) -> int:
         payload = fetch_history(request)
         output = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
     except Exception as error:
-        from finance_quant.data.network_budget import DownloadPaused
-
         if isinstance(error, DownloadPaused):
             print(json.dumps({"error": _ERROR, "category": "quota_or_hold"}))
             return 3

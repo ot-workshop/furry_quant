@@ -12,6 +12,7 @@ from finance_quant.data.market import load_market
 from finance_quant.provenance import fingerprint, source_provenance
 from finance_quant.research.fundamentals import financial_provenance, fundamentals_for
 from finance_quant.research.market_factors import market_factors
+from finance_quant.research.neutralization import NeutralizationConfig, industry_context
 from finance_quant.research.registry import FactorConfig
 from finance_quant.storage import ResultStore
 
@@ -45,7 +46,6 @@ def publish_factor_run(
     financials: FinancialBinding | None = None,
 ) -> dict:
     config = config or FactorConfig()
-    from finance_quant.research.neutralization import NeutralizationConfig, industry_context
 
     neutralization = neutralization or NeutralizationConfig()
     industry = industry_context(neutralization)

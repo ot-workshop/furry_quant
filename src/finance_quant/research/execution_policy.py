@@ -6,6 +6,8 @@ import math
 from dataclasses import asdict, dataclass
 from numbers import Real
 
+import pandas as pd
+
 EXECUTION_FIELDS = (
     "rebalance_frequency",
     "cost_mode",
@@ -25,7 +27,6 @@ def validate_frequency(value):
 
 
 def rebalance_dates(calendar, start, end, frequency="daily"):
-    import pandas as pd
 
     validate_frequency(frequency)
     sessions = pd.DatetimeIndex(calendar)

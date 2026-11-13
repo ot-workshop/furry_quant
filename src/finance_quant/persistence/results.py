@@ -8,9 +8,11 @@ from datetime import date
 from pathlib import Path
 
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert
 
 from finance_quant.checksums import sha256_text
 from finance_quant.storage import ResultStore as FileResultStore
+from finance_quant.storage_tables import StreamingTables, hydrate_tables
 
 from .database import make_engine
 from .market import chunks, file_digest
@@ -118,8 +120,6 @@ class PgResultStore(FileResultStore):
                     ).mappings()
                 ]
         if hydrate and result.get("tables"):
-            from finance_quant.storage_tables import hydrate_tables
-
             hydrate_tables(self, category, run_id, result)
         return result
 
@@ -181,7 +181,6 @@ class PgResultStore(FileResultStore):
                 self.attach_dataset(category, run_id, dataset_id)
             return destination
         compact = copy.deepcopy(document)
-        from finance_quant.storage_tables import StreamingTables
 
         external = ["positions"] if category == "backtests" else ["history"] if category == "factors" else []
         with StreamingTables(self, category, run_id) as writer:
@@ -309,7 +308,6 @@ class PgResultStore(FileResultStore):
 
     def publish_report(self, run_id, markdown, *, category="evaluations"):
         path = super().publish_report(run_id, markdown, category=category)
-        from sqlalchemy.dialects.postgresql import insert
 
         with self.engine.begin() as connection:
             statement = insert(run_artifact).values(

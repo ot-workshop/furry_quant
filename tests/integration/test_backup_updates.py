@@ -3,11 +3,13 @@
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from test_data_updates import CombinedProvider, spec
 from test_joint_data import Secondary
 
 from finance_quant import backup
+from finance_quant.api import create_app
 from finance_quant.application import (
     backup_jobs,
     data_updates,
@@ -16,9 +18,11 @@ from finance_quant.application import (
     market_download,
     task_worker,
 )
+from finance_quant.application.tasks import TaskService
 from finance_quant.data import benchmarks, industries, postgres_market, shared_market
 from finance_quant.data.financials import FinancialStore
 from finance_quant.persistence import database
+from finance_quant.persistence.maintenance import write_gate
 from finance_quant.persistence.market import MarketRepository
 from finance_quant.persistence.results import PgResultStore
 from finance_quant.persistence.tasks import PgTaskStore, worker_lock
@@ -131,10 +135,6 @@ def test_update_backup_restore_and_incremental_reuse(empty_databases, tmp_path, 
 
 
 def test_web_maintenance_queue_creates_verifies_and_restores_separate_database(empty_databases, tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-
-    from finance_quant.api import create_app
-    from finance_quant.application.tasks import TaskService
 
     source, target = empty_databases
     storage = tmp_path / "storage"
@@ -170,8 +170,6 @@ def test_web_maintenance_queue_creates_verifies_and_restores_separate_database(e
         saved = queue.get(task["id"])
         assert saved["status"] == "succeeded", saved
         return saved["result"]
-
-    from finance_quant.persistence.maintenance import write_gate
 
     with write_gate(source, exclusive=True):
         assert client.post("/api/v1/research/backups", json={"action": "create"}).status_code == 409

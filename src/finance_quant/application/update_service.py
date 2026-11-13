@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from finance_quant.data.shared_market import market_store
 from finance_quant.data.symbols import exchange_of
 
 
@@ -15,7 +16,6 @@ def refresh_dates(expected, covered, count):
 
 
 def publish_references(directory, plan):
-    from finance_quant.data.shared_market import market_store
 
     directory = Path(directory)
     frames = {

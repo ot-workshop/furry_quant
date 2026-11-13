@@ -26,6 +26,7 @@ import pandas as pd
 from filelock import FileLock
 
 from finance_quant.checksums import file_sha256, sha256_bytes
+from finance_quant.data.network_budget import DownloadPaused
 
 SCHEMA = "baostock-history-v1"
 FIELDS = (
@@ -221,8 +222,6 @@ class BaoStockProvider:
         except BaoStockProviderError:
             raise
         except Exception:
-            from finance_quant.data.network_budget import DownloadPaused
-
             if isinstance(sys.exception(), DownloadPaused):
                 raise
             raise BaoStockProviderError("BaoStock cache is unavailable") from None
@@ -401,8 +400,6 @@ class BaoStockProvider:
         except TimeoutError:
             raise BaoStockProviderError("BaoStock worker timed out", retryable=True) from None
         except Exception:
-            from finance_quant.data.network_budget import DownloadPaused
-
             if isinstance(sys.exception(), DownloadPaused):
                 raise
             raise BaoStockProviderError(_WORKER_ERROR, retryable=True) from None
@@ -423,8 +420,6 @@ class BaoStockProvider:
             raise BaoStockProviderError(_WORKER_ERROR, retryable=True) from None
 
         if completed.returncode == 3:
-            from finance_quant.data.network_budget import DownloadPaused
-
             raise DownloadPaused("BaoStock达到预算或限制访问，已保留断点")
         if completed.returncode != 0:
             raise BaoStockProviderError(_WORKER_ERROR, retryable=True)

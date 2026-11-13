@@ -11,6 +11,7 @@ from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
+from finance_quant.data.benchmarks import normalize_benchmark
 from finance_quant.data.financials import FinancialBinding
 from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.execution_policy import EXECUTION_FIELDS, ExecutionCosts, validate_frequency
@@ -229,8 +230,6 @@ class BacktestConfig:
         costs = ExecutionCosts(**{key: getattr(self, key) for key in ExecutionCosts.__dataclass_fields__})
         costs.validate_range(start_date.isoformat())
         if self.benchmark is not None:
-            from finance_quant.data.benchmarks import normalize_benchmark
-
             object.__setattr__(self, "benchmark", normalize_benchmark(self.benchmark))
         for key in ("commission_rate", "stamp_tax_rate", "transfer_fee_rate", "impact_cost"):
             object.__setattr__(self, key, getattr(costs, key))
