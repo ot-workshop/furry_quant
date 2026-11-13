@@ -18,6 +18,7 @@ frontend/.npm-cache/
 frontend/dist/
 *.log
 .agent-work/
+agent-work/
 mlruns/
 storage/
 backups/
