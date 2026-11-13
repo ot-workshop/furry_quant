@@ -50,6 +50,7 @@ POLICY = (
     "存在调整前原始数时，原始数按原公告日可用，被覆盖的新值待次年同期调整数公布或首次观测后才可用；"
     "缺少公告日的行隔离，不进入研究"
 )
+AVAILABILITY_POLICY = "announcement_estimate"
 _VERSION_ID = re.compile(r"[a-f0-9]{24}")
 _HASHED = ["statement", "report_type", "comp_type", "report_period", "ann_date", "f_ann_date", *FINANCIAL_VALUE_FIELDS]
 
@@ -111,7 +112,10 @@ def merge_observations(existing: pd.DataFrame, fresh: pd.DataFrame, seen_on) -> 
     ``update_flag`` follows the latest response, since it describes the vendor's
     current view rather than the reported numbers.
     """
-    seen_on = pd.Timestamp(seen_on).normalize()
+    seen_on = pd.Timestamp(seen_on)
+    if seen_on.tzinfo is not None:
+        seen_on = seen_on.tz_convert("Asia/Shanghai").tz_localize(None)
+    seen_on = seen_on.normalize()
     fresh = fresh.copy()
     fresh["row_sha256"] = row_hashes(fresh) if len(fresh) else pd.Series(dtype="string")
     fresh = fresh.drop_duplicates("row_sha256", keep="last")
@@ -127,8 +131,8 @@ def merge_observations(existing: pd.DataFrame, fresh: pd.DataFrame, seen_on) -> 
 
 def content_id(frame: pd.DataFrame) -> str:
     lines = sorted(
-        f"{sha}|{_cell(seen)}|{_cell(flag)}"
-        for sha, seen, flag in zip(frame.row_sha256, frame.first_seen, frame.update_flag)
+        f"{code}|{sha}|{_cell(seen)}|{_cell(flag)}"
+        for code, sha, seen, flag in zip(frame.ts_code, frame.row_sha256, frame.first_seen, frame.update_flag)
     )
     return sha256_text("\n".join([VERSION_SCHEMA, *lines]))
 
@@ -137,6 +141,16 @@ def quarantined_rows(frame: pd.DataFrame) -> pd.Series:
     """Rows that can never be placed in time: unknown period or announcement, or impossible order."""
     announced = frame.f_ann_date.fillna(frame.ann_date)
     return frame.report_period.isna() | announced.isna() | announced.lt(frame.report_period)
+
+
+class FinancialStockMismatch(ValueError):
+    """An older object digest may have collided across two stocks."""
+
+
+def check_stock(frame: pd.DataFrame, ts_code: str) -> pd.DataFrame:
+    if len(frame) and not frame.ts_code.eq(ts_code).all():
+        raise FinancialStockMismatch(f"{ts_code} 财务对象股票代码与清单不一致，请重新全量校订财务数据")
+    return frame
 
 
 @dataclass(frozen=True)
@@ -151,8 +165,17 @@ class FinancialBinding:
             raise ValueError("财务数据版本编号无效")
         object.__setattr__(self, "root", Path(self.root))
 
+    @property
+    def availability_policy(self) -> str:
+        return AVAILABILITY_POLICY
+
     def as_dict(self) -> dict:
-        return {"version": self.version}
+        return {"version": self.version, "availability_policy": self.availability_policy}
+
+    @classmethod
+    def from_dict(cls, root, document):
+        # Legacy request fields no longer select a separate first-observed mode.
+        return cls(root, document["version"])
 
 
 class FinancialStore:
@@ -199,10 +222,13 @@ class FinancialStore:
 
     def observations(self, ts_code: str) -> pd.DataFrame:
         pointer = self.pointer(ts_code)
-        return self._get(pointer["object"], pointer["sha256"]) if pointer else empty_observations()
+        return (
+            check_stock(self._get(pointer["object"], pointer["sha256"]), ts_code) if pointer else empty_observations()
+        )
 
-    def save_stock(self, ts_code: str, observations: pd.DataFrame, *, fetched_at: str) -> dict:
+    def save_stock(self, ts_code: str, observations: pd.DataFrame, *, fetched_at: str, fetch_state=None) -> dict:
         frame = _canonical(observations) if len(observations) else empty_observations()
+        check_stock(frame, ts_code)
         identifier = content_id(frame)
         usable = frame.loc[~quarantined_rows(frame)]
         pointer = {
@@ -213,6 +239,7 @@ class FinancialStore:
             "quarantined": int(len(frame) - len(usable)),
             "latest_period": usable.report_period.max().strftime("%Y-%m-%d") if len(usable) else None,
             "fetched_at": fetched_at,
+            **({"fetch_state": fetch_state} if fetch_state is not None else {}),
         }
         atomic_json(self.root / "stocks" / f"{ts_code}.json", pointer)
         return pointer
@@ -277,7 +304,7 @@ class FinancialStore:
     def load(self, manifest: dict, ts_codes) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
         """Observations of the requested stocks (those the version holds) and the exchange sessions."""
         parts = [
-            self._get(entry["object"], entry["sha256"])
+            check_stock(self._get(entry["object"], entry["sha256"]), code)
             for code in sorted(set(ts_codes))
             if (entry := manifest["stocks"].get(code)) and entry["rows"]
         ]
@@ -324,7 +351,11 @@ def report_versions(observations: pd.DataFrame, sessions) -> pd.DataFrame:
     # a reader of the original report would have seen.
     same_announcement = ["ts_code", "statement", "report_type", "report_period", "announced"]
     frame["_flag"] = frame.update_flag.eq("1").fillna(False).astype(int)
-    frame["_has_current"] = frame.groupby(same_announcement).update_flag.transform(lambda values: values.eq("1").any())
+    # Flags are the vendor's CURRENT view; they must not erase earlier observations.
+    # Only resolve duplicate flags within the same first-seen date.
+    frame["_has_current"] = frame.groupby([*same_announcement, "first_seen"]).update_flag.transform(
+        lambda values: values.eq("1").any()
+    )
     frame = frame.loc[~((frame._flag == 0) & frame._has_current)].drop(columns="_has_current")
     # Different numbers announced under one date that are not flagged apart: the first
     # observed stays on the announcement date; later ones are in-place corrections that

@@ -1,14 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Alert,
-  App,
-  Button,
-  Card,
-  Divider,
-  Flex,
-  List,
-  Typography,
-} from "antd";
+import { Alert, App, Button, Card, Divider, Flex, Typography } from "antd";
 import {
   CheckCircleFilled,
   ExclamationCircleFilled,
@@ -236,23 +227,19 @@ function ResearchForm({
             </Flex>
             <Divider style={{ margin: "16px 0" }} />
             {built.errors.length ? (
-              <List
-                size="small"
-                header={
-                  <Typography.Text type="warning">
-                    <ExclamationCircleFilled /> 还有 {built.errors.length}{" "}
-                    项需要处理
-                  </Typography.Text>
-                }
-                dataSource={built.errors}
-                renderItem={(item) => (
-                  <List.Item style={{ paddingInline: 0 }}>
+              <div>
+                <Typography.Text type="warning">
+                  <ExclamationCircleFilled /> 还有 {built.errors.length}{" "}
+                  项需要处理
+                </Typography.Text>
+                {built.errors.map((item) => (
+                  <div key={item} style={{ paddingBlock: 8 }}>
                     <Typography.Text style={{ fontSize: 13 }}>
                       {item}
                     </Typography.Text>
-                  </List.Item>
-                )}
-              />
+                  </div>
+                ))}
+              </div>
             ) : (
               <Typography.Text type="success">
                 <CheckCircleFilled /> 配置检查通过，可以提交

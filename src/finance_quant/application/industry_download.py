@@ -93,9 +93,11 @@ def preview(document: dict, *, root=None, provider=None) -> dict:
         "current_levels": sorted(current.levels) if current else [],
         "note": (
             "按申万2014/2021分类逐板块请求；单板块达到接口行数上限时拒绝发布，不会截断。"
-            "已完成的板块会缓存，可暂停后续传；全部成功才发布新版本，旧版本保持可用。"
+            "已核验的空分类标为“暂无A股成员”并正常跳过；已完成的板块会缓存，可暂停后续传。"
+            "其余板块全部成功才发布新版本，旧版本保持可用。"
         ),
         "point_in_time_certified": False,
+        **({"refresh_key": utc_now()} if spec["refresh"] else {}),
     }
     plan["id"] = sha256_text(json.dumps(plan, sort_keys=True, ensure_ascii=False))[:24]
     directory = _plan_dir(root, plan["id"])
@@ -140,6 +142,8 @@ def status(root=None) -> dict:
                 "data_asof": manifest.get("data_asof"),
                 "created_at": manifest.get("created_at"),
                 "current": current is not None and current.manifest["id"] == manifest["id"],
+                "empty_sectors": manifest.get("empty_sectors", []),
+                "excluded_members": manifest.get("excluded_members", []),
             }
         )
     jobs = []
@@ -163,6 +167,8 @@ def status(root=None) -> dict:
                 "data_asof": current.data_asof,
                 "created_at": current.manifest.get("created_at"),
                 "policy": current.manifest.get("policy"),
+                "empty_sectors": current.manifest.get("empty_sectors", []),
+                "excluded_members": current.manifest.get("excluded_members", []),
             }
             if current
             else None
@@ -184,6 +190,8 @@ def run(root=None, identifier=None, *, provider=None, on_progress=None) -> dict:
         "total": plan["estimated_requests"],
         "completed": 0,
         "failures": [],
+        "empty_sectors": [],
+        "excluded_members": [],
         "levels": plan["spec"]["levels"],
         "message": "准备行业分类目录",
         "updated_at": utc_now(),
@@ -194,12 +202,19 @@ def run(root=None, identifier=None, *, provider=None, on_progress=None) -> dict:
         atomic_json(directory / "progress.json", progress)
 
     def report(event):
-        if event.get("stage") in {"members", "failure"}:
+        if event.get("stage") in {"catalog", "members"} or (
+            event.get("stage") == "failure" and event.get("request_failed", True)
+        ):
             progress["completed"] = min(progress["total"], progress["completed"] + 1)
         if event.get("stage") == "members":
             progress["message"] = f"{event['taxonomy']} {event['level']} {event['code']}：{event.get('rows', 0)} 行"
         elif event.get("stage") == "failure":
             progress["message"] = f"{event['taxonomy']} {event['level']} {event['code']} 失败"
+        elif event.get("stage") == "empty_sector":
+            progress["empty_sectors"].append({key: value for key, value in event.items() if key != "stage"})
+            progress["message"] = f"{event['name']}：暂无A股成员，已正常跳过"
+        elif event.get("stage") == "excluded_member":
+            progress["excluded_members"].append({key: value for key, value in event.items() if key != "stage"})
         if event.get("stage") == "failure":
             progress["failures"].append(event)
         save()
@@ -216,6 +231,7 @@ def run(root=None, identifier=None, *, provider=None, on_progress=None) -> dict:
             refresh=plan["spec"]["refresh"],
             levels=plan["spec"]["levels"],
             pause_file=root / "PAUSE",
+            cache_key=identifier if plan["spec"]["refresh"] else None,
         )
     except DownloadPaused as error:
         progress.update(status="paused", message=str(error))
@@ -232,9 +248,17 @@ def run(root=None, identifier=None, *, provider=None, on_progress=None) -> dict:
     progress.update(
         status="complete",
         version_id=history.manifest["id"],
-        message="行业数据已发布，旧版本保留",
+        empty_sectors=history.manifest.get("empty_sectors", []),
+        excluded_members=history.manifest.get("excluded_members", []),
+        message=(
+            f"行业数据已发布；{len(progress['empty_sectors'])}个分类暂无A股成员，已正常跳过；旧版本保留"
+            if progress["empty_sectors"]
+            else "行业数据已发布，旧版本保留"
+        ),
         completed=progress["total"],
     )
+    if progress["excluded_members"]:
+        progress["message"] += f"；{len(progress['excluded_members'])}条不支持的股票代码记录未纳入研究"
     save()
     if on_progress:
         on_progress(progress)

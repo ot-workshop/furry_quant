@@ -63,14 +63,14 @@ def cashflow(ts_code="600000.SH", report_type=1, period="20241231", announce="20
     return statement_frame(ts_code, "cashflow", report_type, **payload)
 
 
-def publish(root, parts, *, calendar=TRADING_DAYS) -> dict:
+def publish(root, parts, *, calendar=TRADING_DAYS, seen_on="2025-06-30") -> dict:
     """Merge statement frames per stock into observations and publish one version."""
     store = FinancialStore(root)
     store.save_calendar(pd.DataFrame({"date": calendar, "is_open": True}))
     grouped: dict[str, pd.DataFrame] = {}
     for frame in parts:
         for code, part in frame.groupby("ts_code"):
-            grouped[code] = merge_observations(grouped.get(code), part, seen_on="2025-06-30")
+            grouped[code] = merge_observations(grouped.get(code), part, seen_on=seen_on)
     for code, observations in grouped.items():
         store.save_stock(code, observations, fetched_at="2025-06-30T00:00:00+00:00")
     return store.publish()

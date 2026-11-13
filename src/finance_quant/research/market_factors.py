@@ -317,8 +317,9 @@ def market_factors(
     if fundamental:
         result["metadata"]["financial_data"] = financials.metadata(frame.instrument.unique())
         result["metadata"]["notes"].append(
-            "基本面因子由三张财务报表自算（TTM口径）；报表按公告日后下一交易日09:30可见，"
-            "更正按调整前原始数与次年调整数重建，仍非严格PIT认证；财务数据缺失或过期的股票不参与排名",
+            "基本面因子由三张财务报表自算（TTM口径）；"
+            + financials.metadata(frame.instrument.unique())["policy"]
+            + "；仍非严格PIT认证；财务数据缺失或过期的股票不参与排名",
         )
     result["metadata"]["neutralization"] = neutralization.as_dict()
     if industry_history:

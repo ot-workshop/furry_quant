@@ -20,7 +20,10 @@ from filelock import FileLock, Timeout
 from finance_quant.checksums import sha256_text
 from finance_quant.data.financials import (
     REPORT_TYPES,
+    FinancialStockMismatch,
     FinancialStore,
+    content_id,
+    empty_observations,
     financial_root,
     merge_observations,
     utc_now,
@@ -35,10 +38,12 @@ from finance_quant.data.providers import (
     normalize_financial_statement,
 )
 
-PLAN_POLICY = "financial-download-v1"
+PLAN_POLICY = "financial-download-v2"
 DEFAULT_REFRESH_DAYS = 7
 STATEMENTS = ("income", "balance", "cashflow")
 REQUESTS_PER_STOCK = len(STATEMENTS) * len(REPORT_TYPES)
+REVISION_OVERLAP_DAYS = 400
+FULL_SCAN_DAYS = 90
 _CODE = re.compile(r"^\d{6}\.(?:SH|SZ)$")
 _IDENTIFIER = re.compile(r"[a-f0-9]{24}")
 
@@ -54,7 +59,7 @@ def _json(path):
 def validate_spec(document) -> dict:
     """``{"market_version": <.id>, "refresh_days": 0..3650}``; the stock list comes from the version."""
     required = {"market_version", "refresh_days"}
-    if not isinstance(document, dict) or set(document) != required:
+    if not isinstance(document, dict) or not required <= set(document) or set(document) - required - {"full_refresh"}:
         raise ValueError("下载参数须包含行情版本和更新间隔")
     identifier = document["market_version"]
     if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", identifier):
@@ -62,7 +67,9 @@ def validate_spec(document) -> dict:
     days = document["refresh_days"]
     if isinstance(days, bool) or not isinstance(days, int) or not 0 <= days <= 3650:
         raise ValueError("更新间隔须为 0 至 3650 的整数天")
-    return {"market_version": identifier, "refresh_days": days}
+    if not isinstance(document.get("full_refresh", False), bool):
+        raise ValueError("全量校订须为布尔值")
+    return {"market_version": identifier, "refresh_days": days, "full_refresh": document.get("full_refresh", False)}
 
 
 def _market_version(data_root: Path, version: str) -> dict:
@@ -94,10 +101,30 @@ def preview(data_root: Path, document: dict) -> dict:
     pending, skipped = [], 0
     for code in codes:
         pointer = store.pointer(code)
-        if pointer and pd.Timestamp(pointer["fetched_at"]) > cutoff:
+        if pointer and not spec["full_refresh"] and pd.Timestamp(pointer["fetched_at"]) > cutoff:
             skipped += 1
         else:
-            pending.append({"code": code, "rows": pointer["rows"] if pointer else 0})
+            state = pointer.get("fetch_state", {}) if pointer else {}
+            full = (
+                spec["full_refresh"]
+                or not state.get("full_scan_at")
+                or (pd.Timestamp.now(tz="UTC") - pd.Timestamp(state["full_scan_at"])).days >= FULL_SCAN_DAYS
+            )
+            start = (
+                "19900101"
+                if full
+                else (pd.Timestamp(pointer["fetched_at"]) - pd.Timedelta(days=REVISION_OVERLAP_DAYS)).strftime("%Y%m%d")
+            )
+            pending.append(
+                {
+                    "code": code,
+                    "rows": pointer["rows"] if pointer else 0,
+                    "base_object": pointer["object"] if pointer else None,
+                    "base_fetched_at": pointer["fetched_at"] if pointer else None,
+                    "start_date": start,
+                    "full_scan": full,
+                }
+            )
     plan = {
         "schema_version": PLAN_POLICY,
         "spec": spec,
@@ -109,6 +136,7 @@ def preview(data_root: Path, document: dict) -> dict:
             "财务接口按单只股票查询（2000 积分）；每只股票 "
             f"{REQUESTS_PER_STOCK} 次请求，共用每分钟 200 次、每接口每日约 10 万次的限额。"
             "下载完成后发布不可变版本，旧版本与已有结果不受影响。"
+            "首次及每90天全量校订；其余更新回看最近400天公告。每张报表独立续传，旧公告的就地修订由全量校订发现。"
         ),
         "point_in_time_certified": False,
     }
@@ -236,6 +264,11 @@ def run(data_root: Path, identifier: str, *, provider=None) -> dict:
 
     with FileLock(root / "worker.lock", timeout=0):
         try:
+            progress_path = directory / "progress.json"
+            if progress_path.exists() and (previous := _json(progress_path)).get("status") == "complete":
+                return previous
+            checkpoint_path = directory / "checkpoint.json"
+            checkpoint = _json(checkpoint_path) if checkpoint_path.exists() else {}
             (root / "PAUSE").unlink(missing_ok=True)
             _refresh_calendar(store, provider)
             save()
@@ -243,16 +276,57 @@ def run(data_root: Path, identifier: str, *, provider=None) -> dict:
                 if (root / "PAUSE").exists():
                     raise DownloadPaused("用户暂停；已完成的股票保留，可续传")
                 code = item["code"]
+                if checkpoint.get(code, {}).get("complete"):
+                    progress["completed"] += 1
+                    continue
                 progress["current_code"] = code
                 save()
                 try:
-                    observations = store.observations(code)
+                    saved = checkpoint.setdefault(code, {"streams": []})
+                    try:
+                        observations = store.observations(code)
+                    except FinancialStockMismatch:
+                        observations = empty_observations()
+                        item = {**item, "full_scan": True, "start_date": "19900101"}
+                        saved.clear()
+                        saved["streams"] = []
+                    if "object" in saved:
+                        # Another plan may have refreshed this stock while this one was paused.
+                        observations = pd.concat(
+                            [store._get(saved["object"], saved["sha256"]), observations], ignore_index=True
+                        )
+                        observations = observations.sort_values("first_seen").drop_duplicates(
+                            "row_sha256", keep="first"
+                        )
                     for statement in STATEMENTS:
                         for report_type in REPORT_TYPES:
-                            fresh = _statement(provider, code, statement, report_type)
-                            observations = merge_observations(observations, fresh, seen_on=utc_now()[:10])
+                            stream = f"{statement}:{report_type}"
+                            if stream in saved["streams"]:
+                                continue
+                            if (root / "PAUSE").exists():
+                                raise DownloadPaused("用户暂停；已完成的报表保留，可续传")
+                            fresh = _statement(
+                                provider, code, statement, report_type, start_date=item.get("start_date", "19900101")
+                            )
+                            observations = merge_observations(observations, fresh, seen_on=utc_now())
+                            saved["object"] = content_id(observations)
+                            saved["sha256"] = store._put(saved["object"], observations)
+                            saved["streams"].append(stream)
+                            atomic_json(checkpoint_path, checkpoint)
                     before = item["rows"]
-                    pointer = store.save_stock(code, observations, fetched_at=utc_now())
+                    previous_state = (store.pointer(code) or {}).get("fetch_state", {})
+                    pointer = store.save_stock(
+                        code,
+                        observations,
+                        fetched_at=utc_now(),
+                        fetch_state={
+                            "full_scan_at": utc_now()
+                            if item.get("full_scan", True)
+                            else previous_state.get("full_scan_at"),
+                        },
+                    )
+                    saved["complete"] = True
+                    atomic_json(checkpoint_path, checkpoint)
                     progress["downloaded_rows"] += max(0, pointer["rows"] - before)
                 except DownloadPaused:
                     raise
@@ -300,7 +374,7 @@ MAX_STATEMENT_ROWS = 100
 STATEMENT_WINDOW_YEARS = 10
 
 
-def _statement(provider, code: str, statement: str, report_type: int) -> pd.DataFrame:
+def _statement(provider, code: str, statement: str, report_type: int, start_date="19900101") -> pd.DataFrame:
     """One statement type for one stock, paging by window whenever the row cap may truncate."""
     api = _api(statement)
     fields = financial_request_fields(statement)
@@ -314,11 +388,11 @@ def _statement(provider, code: str, statement: str, report_type: int) -> pd.Data
         )
 
     today = datetime.now(ZoneInfo("Asia/Shanghai")).year
-    whole = query("19900101", f"{today}1231")
+    whole = query(start_date, f"{today}1231")
     if len(whole) < MAX_STATEMENT_ROWS:
         return whole
     parts = []
-    first = 1990
+    first = int(start_date[:4])
     while first <= today:
         parts.append(_window(query, first, min(first + STATEMENT_WINDOW_YEARS - 1, today), statement, code))
         first += STATEMENT_WINDOW_YEARS
@@ -349,11 +423,14 @@ def _refresh_calendar(store: FinancialStore, provider) -> pd.DataFrame:
     """Keep an official calendar spanning every stored report period plus the current year."""
     pointer = store.calendar_pointer()
     today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    parts = []
     if pointer is not None:
-        years = range(int(pointer["start"][:4]), today.year + 1)
+        parts.append(store._get(pointer["object"], pointer["sha256"]))
+        if pointer["end"] >= f"{today.year}-12-31":
+            return parts[0]
+        years = range(int(pointer["end"][:4]) + 1, today.year + 1)
     else:
         years = range(1990, today.year + 1)
-    parts = []
     for year in years:
         raw = provider.query("trade_cal", exchange="SSE", start_date=f"{year}0101", end_date=f"{year}1231")
         parts.append(normalize_calendar(raw))

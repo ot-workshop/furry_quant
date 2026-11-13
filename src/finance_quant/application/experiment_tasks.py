@@ -51,7 +51,7 @@ def _pin_candidates(research: dict, execution: dict, plan: ExperimentPlan, data_
         return
     binding = pin_financials_for([candidate.factors for candidate in plan.candidates], data_root)
     if binding is not None:
-        research["financials"] = {"version": binding.version}
+        research["financials"] = binding.as_dict()
         execution["financials"] = binding.as_dict()
 
 
@@ -59,7 +59,12 @@ def validate_experiment_request(document: dict, data_root, runs_root) -> tuple[d
     """Validate everything the worker will need before anything is queued or written."""
     from finance_quant.application.experiment_workflow import _preflight
 
-    _fields(document, ("name", "data", "backtest", "plan", "evaluation"), ("neutralization",), label="实验")
+    _fields(
+        document,
+        ("name", "data", "backtest", "plan", "evaluation"),
+        ("neutralization", "financial_policy"),
+        label="实验",
+    )
     _fields(document["backtest"], (), SHARED_BACKTEST_FIELDS, label="共用回测参数")
     if not isinstance(document["data"], dict) or document["data"].get("mode") != "snapshot":
         raise ValueError("方案比较需要固定股票池快照；沪深300动态成分仓库暂不支持分段实验")

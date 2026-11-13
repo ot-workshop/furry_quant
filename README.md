@@ -167,9 +167,9 @@ npm.cmd --prefix frontend run build
 
 ```sh
 mkdir -p ~/finance-quant && cd ~/finance-quant
-# 从本地复制：docker-compose.yaml、.env.example、scripts/backup.sh、scripts/restore.sh
+# 从本地复制：docker-compose.yaml、.env.example
 cp .env.example .env && chmod 600 .env
-mkdir -p storage backups
+mkdir -p storage backups restores
 ```
 
 `.env` 填写：
@@ -228,16 +228,22 @@ docker compose --env-file .env logs --tail=100 api worker
 
 ### 5. 备份与恢复
 
-没有运行中的任务时：
+日常使用网页“数据管理 → 备份与恢复”：创建完整备份、查看任务、校验归档，并恢复到新的 `fq_restore_*` 数据库和独立目录。恢复前显示目标位置并确认；原环境保持使用，恢复完成后不会自动切换。
+
+使用下面的命令行方式时，先停止 API 和 worker，数据库继续运行；网页备份由 worker 自行协调。备份覆盖数据库与整个存储目录，包括行情、财务、行业、版本、下载检查点、结果和报告：
 
 ```sh
-sh scripts/backup.sh                        # PostgreSQL dump + 被引用的数据集与结果 + SHA-256 清单
-sh scripts/restore.sh /path/to/backup-dir   # 目标必须是空数据库与空 storage
+docker compose stop -t 90 api worker
+docker compose run --rm maintenance python -m finance_quant.backup create /backups/my-backup
+docker compose run --rm maintenance python -m finance_quant.backup verify /backups/my-backup
+docker compose up -d api worker
 ```
 
-完整运维说明见 [docs/operations.md](docs/operations.md)。
+恢复必须使用另一个空数据库和空存储目录，且不要先执行迁移。原有环境不会被覆盖。原生开发环境可使用 `uv run python -m finance_quant.backup create <目录> --env-file <明确的配置文件>`；PostgreSQL客户端需在 PATH 中，或通过 `POSTGRES_BIN` 指定。完整恢复教程见 [docs/operations.md](docs/operations.md)。
 
 ## 使用流程
+
+**统一更新数据**：进入“数据管理 → 统一更新”，选择股票范围、日期和预热交易日，勾选行情、财务、行业与基准，预览后确认。财务使用本次发布行情的股票清单；失败后可续传，已成功项目不会重跑。自动更新按北京时间运行，需要 worker 持续在线；保存自动计划时结束日期会随数据日推进。恢复备份后自动计划默认关闭。
 
 1. **下载行情**：数据管理 → 行情下载。选择范围（自选股票 / 沪深300历史成分 / 全市场）、研究区间和向前预热天数，点击“预览下载方案”查看可复用与需下载的数据量，再“确认下载”。下载在 worker 中执行，可暂停、续传。
    - 不超过 50 只且覆盖完整的版本会自动生成**研究数据集**（数据管理 → 研究数据集）。
@@ -267,7 +273,7 @@ sh scripts/restore.sh /path/to/backup-dir   # 目标必须是空数据库与空 
 | `scripts/check_official_benchmark.py` | 下载并核对官方基准指数 |
 | `scripts/check_official_industries.py` | 下载历史申万行业（启用行业中性化需要） |
 | `scripts/audit_temporal_sources.py` | 审计估值数据的时点来源 |
-| `scripts/backup.sh` / `scripts/restore.sh` | 一致性备份与恢复 |
+| `python -m finance_quant.backup create/verify/restore` | 完整备份、校验与空环境恢复 |
 
 ## 常见问题
 

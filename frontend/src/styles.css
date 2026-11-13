@@ -23,17 +23,32 @@ body {
   min-height: 100vh;
 }
 
-.app-sider {
+.app-layout > .app-sider {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  height: 100dvh;
+  align-self: flex-start;
+  z-index: 11;
   border-inline-end: 1px solid var(--ant-color-border-secondary);
 }
 
 .app-sider .ant-layout-sider-children {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+}
+
+.app-sider .app-menu {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .brand {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 10px;
   height: 56px;

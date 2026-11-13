@@ -159,6 +159,10 @@ export interface Neutralization {
 }
 
 export interface ResearchRequest {
+  financials?: {
+    version: string;
+    availability_policy?: string;
+  };
   neutralization?: Neutralization;
   name: string;
   data: SnapshotData | HistoricalData;

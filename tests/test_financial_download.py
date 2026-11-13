@@ -35,8 +35,8 @@ class Provider:
         if self.fail and self.fail(api_name, params):
             raise RuntimeError("供应商暂时不可用")
         if api_name == "trade_cal":
-            days = pd.bdate_range("2024-01-01", "2025-12-31")
-            return pd.DataFrame({"cal_date": days.strftime("%Y%m%d"), "is_open": 1})
+            days = pd.date_range(params["start_date"], params["end_date"])
+            return pd.DataFrame({"cal_date": days.strftime("%Y%m%d"), "is_open": (days.dayofweek < 5).astype(int)})
         statement = {"income": "income", "balancesheet": "balance", "cashflow": "cashflow"}[api_name]
         report_type = params["report_type"]
         overrides = self.rows_by_type.get((statement, report_type), {})
@@ -126,7 +126,7 @@ def test_pause_keeps_completed_stocks_and_resumes(tmp_path):
 
     result = financial_download.run(tmp_path, plan["id"], provider=Pausing())
     assert result["status"] == "paused"
-    assert result["completed"] == 2
+    assert result["completed"] == 1
     assert (root / "stocks" / "000001.SZ.json").exists()
     assert not (root / "stocks" / "600519.SH.json").exists()
     resumed = financial_download.run(tmp_path, plan["id"], provider=Provider())
@@ -141,7 +141,7 @@ def test_statement_row_cap_forces_window_paging(tmp_path):
             frame = super().query(api_name, fields=fields, **params)
             if api_name != "balancesheet":
                 return frame
-            if "start_date" not in params:
+            if int(params["end_date"][:4]) - int(params["start_date"][:4]) > 10:
                 return pd.concat([frame] * MAX_STATEMENT_ROWS, ignore_index=True)
             # A real window holds far fewer rows than the cap.
             frame["end_date"] = params["start_date"][:4] + "1231"

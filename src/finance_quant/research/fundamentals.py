@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from finance_quant.data.financials import (
+    AVAILABILITY_POLICY,
     POLICY,
     FinancialBinding,
     FinancialStore,
@@ -33,7 +34,7 @@ from finance_quant.data.financials import (
 from finance_quant.data.point_in_time import EXCHANGE_TZ
 from finance_quant.data.symbols import from_qlib
 
-FEATURE_VERSION = "fundamental-ttm-v1"
+FEATURE_VERSION = "fundamental-ttm-v3"
 MAX_REPORT_AGE_DAYS = 400
 DECISION_TIME = pd.Timedelta(hours=15)
 FEATURES = (
@@ -204,6 +205,7 @@ class FundamentalData:
             "universe": len(members),
             "max_report_age_days": MAX_REPORT_AGE_DAYS,
             "policy": POLICY,
+            "availability_policy": AVAILABILITY_POLICY,
             "feature_policy": FEATURE_POLICY,
             "point_in_time_certified": False,
         }
@@ -239,7 +241,13 @@ def financial_provenance(binding: FinancialBinding | None, config) -> dict:
     """Fingerprint entry; empty when no fundamental factor is selected so old results stay reusable."""
     from finance_quant.research.factor_library import uses_financials
 
-    return {"financial_version": binding.version} if binding is not None and uses_financials(config) else {}
+    if binding is None or not uses_financials(config):
+        return {}
+    return {
+        "financial_version": binding.version,
+        "financial_availability_policy": binding.availability_policy,
+        "financial_feature_version": FEATURE_VERSION,
+    }
 
 
 def coverage(binding_root: Path, ts_codes) -> dict | None:

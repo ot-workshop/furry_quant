@@ -239,7 +239,12 @@ def coverage_row(financial: dict | None, codes, data_root: Path) -> dict | None:
 
 
 def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[dict, dict]:
-    _fields(document, ("name", "data", "backtest", "factors", "evaluation"), ("neutralization",), label="研究")
+    _fields(
+        document,
+        ("name", "data", "backtest", "factors", "evaluation"),
+        ("neutralization", "financial_policy"),
+        label="研究",
+    )
     neutralization = parse_neutralization(document.get("neutralization"))
     industry = industry_context(neutralization) if "neutralization" in document else None
     neutral_extra = {}
@@ -270,7 +275,7 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
         )
     )
     binding = pin_financials(factors, data_root)
-    financial_extra = {"financials": {"version": binding.version}} if binding else {}
+    financial_extra = {"financials": binding.as_dict()} if binding else {}
     obj = document["data"]
     if not isinstance(obj, dict) or obj.get("mode") not in {"snapshot", "index_warehouse"}:
         raise ValueError("请选择数据集：固定股票池快照或沪深300历史成分仓库")
@@ -397,7 +402,7 @@ def request_config(request: dict, data: DataConfig, runs_root: Path, data_root: 
     from finance_quant.data.financials import FinancialBinding
 
     pinned = request.get("financials", {}).get("version")
-    binding = FinancialBinding(financial_root(data_root), pinned) if pinned else None
+    binding = FinancialBinding.from_dict(financial_root(data_root), request["financials"]) if pinned else None
     return ResearchConfig(
         data,
         BacktestConfig(**request["backtest"]),

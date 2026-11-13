@@ -70,6 +70,11 @@ def request_task_pause(store, identifier, data_root):
     checkpoint and are terminated after the grace period instead.
     """
     task = store.get(identifier, private=True)
+    if task["kind"] == "data_update":
+        from finance_quant.application.data_updates import pause
+
+        pause(data_root)
+        return
     if task["kind"] in {"market_download", "industry_download"}:
         directory = Path(task["execution"]["root"])
     elif task["kind"] == "financial_download":
@@ -87,9 +92,15 @@ def consume(store, root, runs, data, stop, lock_connection):
     from sqlalchemy import text
 
     log = logging.getLogger(__name__)
+    next_schedule = 0.0
     while not stop.is_set():
         lock_connection.execute(text("SELECT 1"))
         lock_connection.commit()
+        if time.monotonic() >= next_schedule:
+            from finance_quant.application.data_updates import enqueue_due
+
+            enqueue_due(store, data)
+            next_schedule = time.monotonic() + 60
         identifier = store.claim()
         if not identifier:
             stop.wait(0.5)

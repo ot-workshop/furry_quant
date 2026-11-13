@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +15,7 @@ from filelock import FileLock
 
 from finance_quant.checksums import file_sha256, sha256_bytes
 from finance_quant.data.managed import atomic_json
-from finance_quant.data.symbols import to_qlib
+from finance_quant.data.symbols import TS_CODE, to_qlib
 
 VERSION = "sw-l1-history-v1"
 VERSION_V2 = "sw-history-v2"
@@ -34,6 +35,22 @@ POLICY_V2 = (
 )
 # A single sector response reaching this many rows may have been truncated by the vendor.
 MAX_MEMBER_ROWS = 2000
+# SW2021 classifications with no A-share constituents: official classification
+# table https://tushare.pro/document/2?doc_id=181, rechecked on 2026-11-13.
+# Only applies when BOTH current and historical member responses are empty.
+EMPTY_A_SHARE_SECTORS = {
+    ("L2", "801217.SI"),  # 本地生活服务Ⅱ
+    ("L2", "801786.SI"),  # 其他银行Ⅱ
+    ("L2", "801768.SI"),  # 社交Ⅱ
+    ("L3", "851332.SI"),  # 多品类奢侈品
+    ("L3", "851544.SI"),  # 互联网药店
+    ("L3", "852171.SI"),  # 本地生活服务Ⅲ
+    ("L3", "859931.SI"),  # 博彩
+    ("L3", "857861.SI"),  # 其他银行Ⅲ
+    ("L3", "857672.SI"),  # 音频媒体
+    ("L3", "857681.SI"),  # 社交Ⅲ
+    ("L3", "857693.SI"),  # 其他出版
+}
 
 
 class IndustryDownloadIncomplete(ValueError):
@@ -132,7 +149,7 @@ def normalize_sectors(parts) -> pd.DataFrame:
     return sectors.sort_values(["classification", "level", "industry_code"]).reset_index(drop=True)
 
 
-def normalize_level_intervals(parts) -> pd.DataFrame:
+def normalize_level_intervals(parts, *, excluded_members=None) -> pd.DataFrame:
     """Intervals for every level. ``parts`` is ``(taxonomy, sector, raw_member_frame)``."""
     rows = []
     for taxonomy, sector, raw in parts:
@@ -143,6 +160,19 @@ def normalize_level_intervals(parts) -> pd.DataFrame:
             raise ValueError("历史行业缺少日期或代码字段")
         for record in raw.to_dict("records"):
             symbol = str(record[stock])
+            if excluded_members is not None and not TS_CODE.fullmatch(symbol):
+                excluded_members.append(
+                    {
+                        "taxonomy": taxonomy,
+                        "level": sector["level"],
+                        "sector_code": sector["index_code"],
+                        "code": symbol,
+                        "in_date": str(record["in_date"]) if pd.notna(record["in_date"]) else None,
+                        "out_date": str(record["out_date"]) if pd.notna(record["out_date"]) else None,
+                        "reason": "不支持的供应商股票代码；原始记录已保留，未纳入研究",
+                    }
+                )
+                continue
             start = pd.to_datetime(record["in_date"], format="%Y%m%d", errors="coerce")
             end = pd.to_datetime(record["out_date"], format="%Y%m%d", errors="coerce")
             if pd.notna(record["out_date"]) and str(record["out_date"]).strip() and pd.isna(end):
@@ -200,7 +230,7 @@ def _levels_summary(frame, sectors) -> dict:
     return summary
 
 
-def publish_industries(frame, *, root=None, evidence=None, data_asof=None, sectors=None):
+def publish_industries(frame, *, root=None, evidence=None, data_asof=None, sectors=None, excluded_members=None):
     """Publish a v2 all-level version, or a legacy L1 version when no level information exists."""
     root = Path(root or industry_root())
     root.mkdir(parents=True, exist_ok=True)
@@ -244,6 +274,18 @@ def publish_industries(frame, *, root=None, evidence=None, data_asof=None, secto
         "data_asof": data_asof,
         "point_in_time_certified": False,
         "evidence": evidence or {},
+        "empty_sectors": [
+            {
+                "taxonomy": row.classification,
+                "level": row.level,
+                "code": row.index_code,
+                "name": row.industry_name,
+                "reason": "暂无A股成员",
+            }
+            for row in sectors.itertuples()
+            if getattr(row, "member_status", None) == "no_a_share_members"
+        ],
+        "excluded_members": excluded_members or [],
     }
     if not (directory / "manifest.json").exists():
         atomic_json(directory / "manifest.json", manifest)
@@ -494,6 +536,7 @@ def download_industries(
     refresh=False,
     levels=("L1",),
     pause_file=None,
+    cache_key=None,
 ):
     """Serial, restartable bounded requests for the requested SW levels.
 
@@ -509,7 +552,9 @@ def download_industries(
     root = Path(root or industry_root())
     raw_dir = root / "raw"
     if refresh:
-        raw_dir = raw_dir / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+        if cache_key is not None and not re.fullmatch(r"[a-f0-9]{24}", cache_key):
+            raise ValueError("行业刷新缓存编号无效")
+        raw_dir = raw_dir / (cache_key or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f"))
     raw_dir.mkdir(parents=True, exist_ok=True)
     provider = provider or TushareProvider(TushareSettings(TushareSettings.from_env().token))
     progress = progress or (lambda x: None)
@@ -533,6 +578,7 @@ def download_industries(
                 catalogs.append((taxonomy, level, pd.read_parquet(path)))
                 progress({"stage": "catalog", "taxonomy": taxonomy, "level": level})
         sectors = normalize_sectors(catalogs)
+        sectors["member_status"] = "available"
         for taxonomy in ("SW2014", "SW2021"):
             for level in levels:
                 listed = sectors.loc[sectors.classification.eq(taxonomy) & sectors.level.eq(level)]
@@ -560,8 +606,29 @@ def download_industries(
                                     "rows": len(frame),
                                 }
                             )
-                        raw = pd.concat([frame for frame in frames if not frame.empty], ignore_index=True)
-                        parts.extend([(taxonomy, sector, raw)] if len(raw) else [])
+                        nonempty = [frame for frame in frames if not frame.empty]
+                        if not nonempty:
+                            if taxonomy != "SW2021" or (level, code) not in EMPTY_A_SHARE_SECTORS:
+                                raise ValueError("当前和历史成员均为空，尚未确认是否暂无A股成员，请复核数据源")
+                            mask = (
+                                sectors.classification.eq(taxonomy)
+                                & sectors.level.eq(level)
+                                & sectors.index_code.eq(code)
+                            )
+                            sectors.loc[mask, "member_status"] = "no_a_share_members"
+                            progress(
+                                {
+                                    "stage": "empty_sector",
+                                    "taxonomy": taxonomy,
+                                    "level": level,
+                                    "code": code,
+                                    "name": sector["industry_name"],
+                                    "reason": "暂无A股成员",
+                                }
+                            )
+                            continue
+                        raw = pd.concat(nonempty, ignore_index=True)
+                        parts.append((taxonomy, sector, raw))
                     except DownloadPaused:
                         raise
                     except Exception as error:
@@ -581,6 +648,7 @@ def download_industries(
                                 "level": level,
                                 "code": code,
                                 "reason": str(error)[:240],
+                                "request_failed": len(frames) < 2,
                             }
                         )
         if failures:
@@ -589,11 +657,15 @@ def download_industries(
                 f"历史行业下载有{len(failures)}个分区失败，未发布新版本；已完成缓存可续传；首个错误：{detail}",
                 failures,
             )
-        intervals = normalize_level_intervals(parts)
+        excluded_members = []
+        intervals = normalize_level_intervals(parts, excluded_members=excluded_members)
+        for member in excluded_members:
+            progress({"stage": "excluded_member", **member})
         return publish_industries(
             intervals,
             root=root,
             evidence=evidence,
             data_asof=_today(),
             sectors=sectors,
+            excluded_members=excluded_members,
         )

@@ -114,6 +114,17 @@ def run_task(
         if task["status"] != "running":
             raise ValueError("Only a claimed task can execute")
         kind = task.get("kind", "research")
+        if kind == "maintenance":
+            from finance_quant.application.backup_jobs import execute
+
+            try:
+                return execute(store, task, root=storage_root)
+            except Exception as error:
+                details = runtime_failure_details(error, "download", identifier)
+                store.finish(identifier, "failed", error=details["summary"], error_details=details)
+                return
+        if kind == "data_update":
+            return run_data_update_task(store, task, data_root)
         if kind == "market_download":
             return run_download_task(store, task, data_root)
         if kind == "financial_download":
@@ -155,7 +166,7 @@ def financial_binding(execution: dict, data_root):
     from finance_quant.data.financials import FinancialBinding, financial_root
 
     pinned = execution.get("financials", {}).get("version")
-    return FinancialBinding(financial_root(data_root), pinned) if pinned else None
+    return FinancialBinding.from_dict(financial_root(data_root), execution["financials"]) if pinned else None
 
 
 def _run_historical(context: TaskContext, request: dict, execution: dict) -> dict:
@@ -274,6 +285,34 @@ def run_download_task(store, task, data_root):
         store.finish(identifier, "failed", error=details["summary"], error_details=details)
 
 
+def run_data_update_task(store, task, data_root):
+    from finance_quant.application import data_updates
+
+    identifier = task["id"]
+    try:
+        execution = task["execution"]
+        plan_id = execution.get("plan_id")
+        if not plan_id:
+            plan_id = data_updates.preview(data_root, execution["spec"])["id"]
+        result = data_updates.run(
+            data_root,
+            plan_id,
+            on_progress=lambda row: store.stage(
+                identifier, "download", row.get("message", row.get("current_stage", "更新数据")), row["completed"]
+            ),
+        )
+        succeeded = result["status"] == "complete"
+        store.finish(
+            identifier,
+            "succeeded" if succeeded else "interrupted",
+            result=result,
+            error=None if succeeded else result.get("message", "数据更新尚未完成，可续传"),
+        )
+    except Exception as error:
+        details = runtime_failure_details(error, "download", identifier)
+        store.finish(identifier, "failed", error=details["summary"], error_details=details)
+
+
 def run_financial_download_task(store, task, data_root):
     identifier = task["id"]
     execution = task["execution"]
@@ -315,7 +354,17 @@ def run_industry_download_task(store, task):
             "succeeded" if succeeded else "interrupted",
             result={
                 key: result[key]
-                for key in ("id", "status", "version_id", "completed", "total", "levels", "message")
+                for key in (
+                    "id",
+                    "status",
+                    "version_id",
+                    "completed",
+                    "total",
+                    "levels",
+                    "message",
+                    "empty_sectors",
+                    "excluded_members",
+                )
                 if key in result
             },
             error=None if succeeded else result.get("message", "行业数据尚未完整，请查看下载明细后续传"),

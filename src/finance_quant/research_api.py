@@ -3,9 +3,10 @@
 import json
 import os
 import uuid
+from contextlib import nullcontext
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from filelock import Timeout
 from starlette.concurrency import run_in_threadpool
 
@@ -16,7 +17,17 @@ RESULT_TASK_KINDS = {"research", "experiment"}
 
 
 def research_router(service):
-    router = APIRouter(prefix="/api/v1/research")
+    def write_guard(request: Request):
+        from finance_quant.persistence.maintenance import write_gate
+
+        engine = getattr(service.store, "engine", None)
+        try:
+            with write_gate(engine) if engine is not None and request.method == "POST" else nullcontext():
+                yield
+        except RuntimeError as error:
+            raise HTTPException(409, "数据维护期间暂停写入，请稍后重试") from error
+
+    router = APIRouter(prefix="/api/v1/research", dependencies=[Depends(write_guard)])
 
     async def body(request: Request):
         host = request.headers.get("host", "")
@@ -79,6 +90,49 @@ def research_router(service):
             return status(shared_root(service.data_root))
         except (OSError, ValueError, KeyError):
             raise HTTPException(503, "共享下载状态暂不可读，请稍后刷新；现有数据版本保持不变") from None
+
+    @router.get("/data-updates")
+    def data_updates_status():
+        from finance_quant.application import data_updates
+
+        return data_updates.status(service.data_root)
+
+    @router.get("/backups")
+    def backups_status():
+        from finance_quant.application import backup_jobs
+
+        return backup_jobs.status(service.store)
+
+    @router.post("/backups")
+    async def backup_operation(request: Request):
+        document = await body(request)
+        from finance_quant.application import backup_jobs
+
+        try:
+            return await run_in_threadpool(backup_jobs.start, service.store, document)
+        except (ValueError, TypeError) as error:
+            raise HTTPException(422, str(error) if isinstance(error, ValueError) else "备份操作参数类型无效") from None
+
+    @router.post("/data-updates/{action}")
+    async def data_updates_action(action: str, request: Request):
+        document = await body(request)
+        from finance_quant.application import data_updates
+
+        try:
+            if action == "preview":
+                return await run_in_threadpool(data_updates.preview, service.data_root, document)
+            if action == "schedule":
+                return data_updates.save_schedule(service.data_root, document)
+            if action == "start" and isinstance(document, dict) and set(document) == {"plan_id"}:
+                return data_updates.start_task(service.data_root, service.store, document["plan_id"])
+            if action == "pause" and document == {}:
+                data_updates.pause(service.data_root)
+                return {"status": "pause_requested"}
+            raise ValueError("不支持的统一更新操作")
+        except (ValueError, TypeError) as error:
+            raise HTTPException(422, str(error) if isinstance(error, ValueError) else "更新参数类型无效") from None
+        except (RuntimeError, OSError, Timeout):
+            raise HTTPException(409, "数据更新暂不可用，请等待当前任务完成或查看日志") from None
 
     @router.post("/market-download/{action}")
     async def market_download_action(action: str, request: Request):
