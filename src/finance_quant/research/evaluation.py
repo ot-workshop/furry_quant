@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+from operator import itemgetter
+
 import numpy as np
 import pandas as pd
 from qlib.contrib.eva.alpha import calc_ic
@@ -218,13 +221,13 @@ def evaluate_factors(
         values = (
             history["raw_" + name]
             if raw_predictions is not None
-            else history["processed" if neutralized else "raw"].map(lambda row: row[name])
+            else history["processed" if neutralized else "raw"].map(itemgetter(name))
         )
         predictions[name] = values if neutralized else values * (-1 if directions[name] == "lower" else 1)
     predictions["composite"] = history["composite"]
     if not np.isfinite(predictions[names + ["composite"]].to_numpy(dtype=float)).all():
         raise ValueError("Factor predictions must be finite")
-    next_session = {d.strftime("%Y-%m-%d"): n.strftime("%Y-%m-%d") for d, n in zip(sessions[:-1], sessions[1:])}
+    next_session = {d.strftime("%Y-%m-%d"): n.strftime("%Y-%m-%d") for d, n in pairwise(sessions)}
     predictions["entry_date"] = predictions["date"].map(next_session)
     predictions = predictions.loc[predictions["entry_date"].between(start, end)].copy()
     if predictions.empty:
@@ -243,7 +246,7 @@ def evaluate_factors(
             "scored_instruments": int(counts.get(day.strftime("%Y-%m-%d"), 0)),
             "universe": int(market["instrument"].nunique()),
         }
-        for day, entry in zip(sessions[:-1], sessions[1:])
+        for day, entry in pairwise(sessions)
         if start <= entry.strftime("%Y-%m-%d") <= end
     ]
     for horizon in config.horizons:

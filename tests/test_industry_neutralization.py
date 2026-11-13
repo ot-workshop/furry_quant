@@ -16,6 +16,7 @@ from finance_quant.data.industries import (
     load_industries,
     publish_industries,
 )
+from finance_quant.research.industry_exposure import attach_industry_exposure
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.neutralization import NeutralizationConfig, factor_industry_diagnostics, residualize
 from finance_quant.research.registry import FactorConfig, FactorSpec
@@ -182,7 +183,8 @@ def test_switch_effect_and_off_reproduction_with_future_change(size):
     assert [{k: r[k] for k in original_fields} for r in baseline["history"]] == [
         {k: r[k] for k in original_fields} for r in off["history"]
     ]
-    assert any(a["composite"] != b["composite"] for a, b in zip(off["history"], on["history"]))
+    off_scores = {(row["date"], row["instrument"]): row["composite"] for row in off["history"]}
+    assert any(row["composite"] != off_scores[row["date"], row["instrument"]] for row in on["history"])
     # Direction aligned values and scores are recomputed independently each day.
     day = on["metadata"]["as_of"]
     rows = [r for r in on["history"] if r["date"] == day]
@@ -210,6 +212,86 @@ def test_switch_effect_and_off_reproduction_with_future_change(size):
     report = factor_industry_diagnostics(rows, on["metadata"])
     for row in report["items"]:
         assert max(abs(v) for v in row["residual_mean"].values()) < 1e-10
+
+
+def test_industry_diagnostics_keep_each_group_and_factor_separate():
+    rows = []
+    for code, before, after, residual in [
+        ("I0", (10, 30), (5, 60), (1, -2)),
+        ("I1", (90, 20), (80, 10), (-4, 5)),
+        ("I0", (30, 50), (15, 80), (3, 2)),
+    ]:
+        rows.append(
+            {
+                "industry_code": code,
+                "industry_name": code,
+                "before_scores": {"momentum": before[0], "value": before[1]},
+                "scores": {"momentum": after[0], "value": after[1]},
+                "processed": {"momentum": residual[0], "value": residual[1]},
+            }
+        )
+    report = factor_industry_diagnostics(rows, {"weights": {"momentum": 0.5, "value": 0.5}})
+    first, second = report["items"]
+    assert first["industry_code"] == "I0" and first["count"] == 2
+    assert first["pool_weight"] == pytest.approx(2 / 3)
+    assert first["before_mean"] == {"momentum": 20, "value": 40}
+    assert first["after_mean"] == {"momentum": 10, "value": 70}
+    assert first["residual_mean"] == {"momentum": 2, "value": 0}
+    assert second["industry_code"] == "I1" and second["count"] == 1 and second["singleton"]
+    assert second["before_mean"] == {"momentum": 90, "value": 20}
+    assert second["after_mean"] == {"momentum": 80, "value": 10}
+    assert second["residual_mean"] == {"momentum": -4, "value": 5}
+
+
+def test_daily_exposure_keeps_historical_industry_and_benchmark_changes_separate():
+    symbols = ["SH600000", "SZ000001", "SH600519"]
+    industries = history(symbols, switch=True)
+    for column in ("in_date", "out_date"):
+        industries.frame[column] = industries.frame[column].replace(
+            pd.Timestamp("2025-02-03"), pd.Timestamp("2025-01-07")
+        )
+    weights = {"2025-01-06": (0.6, 0.2), "2025-01-07": (0.2, 0.5), "2025-01-08": (0.7, 0.1)}
+    result = {
+        "equity": [{"date": date} for date in weights],
+        "positions": [
+            {"date": date, "instrument": symbol, "weight": weight}
+            for date, (first, second) in weights.items()
+            for symbol, weight in ((symbols[0], first), (symbols[2], second))
+        ],
+        "metadata": {},
+    }
+    memberships = pd.DataFrame(
+        [
+            {
+                "code": code,
+                "weight": weight,
+                "snapshot_date": pd.Timestamp(snapshot),
+                "effective_from": pd.Timestamp(start),
+                "effective_until": pd.Timestamp(end) if end else pd.NaT,
+            }
+            for snapshot, start, end, first, second in [
+                ("2025-01-03", "2025-01-06", "2025-01-08", 80, 20),
+                ("2025-01-07", "2025-01-08", None, 10, 90),
+            ]
+            for code, weight in (("600000.SH", first), ("600519.SH", second))
+        ]
+    )
+    attach_industry_exposure(result, industries, pd.bdate_range("2025-01-02", "2025-01-10"), memberships=memberships)
+    days = result["industry_exposure"]["days"]
+    assert [row["date"] for row in days] == list(weights)
+    for day, expected, benchmark, snapshot in [
+        (days[0], {"I0": 0.6, "I1": 0.2}, {"I0": 0.8, "I1": 0.2}, "2025-01-03"),
+        (days[1], {"I0": 0.2, "I1": 0.5}, {"I0": 0.8, "I1": 0.2}, "2025-01-03"),
+        (days[2], {"I1": 0.8}, {"I1": 1.0}, "2025-01-07"),
+    ]:
+        assert {item["industry_code"]: item["weight"] for item in day["items"]} == pytest.approx(expected)
+        assert {item["industry_code"]: item["benchmark_weight"] for item in day["items"]} == pytest.approx(benchmark)
+        assert day["benchmark_available"] and day["benchmark_snapshot_date"] == snapshot
+        assert day["cash_weight"] == pytest.approx(1 - sum(expected.values()))
+        assert day["industry_hhi"] == pytest.approx(sum(value**2 for value in expected.values()))
+        for item in day["items"]:
+            code = item["industry_code"]
+            assert item["active_weight"] == pytest.approx(expected[code] - benchmark[code])
 
 
 def test_singleton_only_pool_fails_clearly_and_missing_is_not_zero():

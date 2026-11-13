@@ -7,6 +7,26 @@ import pandas as pd
 from finance_quant.data.symbols import to_qlib
 
 
+def _add_exposure(grouped, label, weight, field):
+    code = label["industry_code"] or "unknown"
+    group = grouped.setdefault(
+        code,
+        {
+            "industry_code": code,
+            "industry_name": label["industry_name"] or "未知/冲突",
+            "weight": 0.0,
+            "count": 0,
+            "benchmark_weight": None,
+            "active_weight": None,
+        },
+    )
+    if field == "weight":
+        group["weight"] += weight
+        group["count"] += 1
+    else:
+        group["benchmark_weight"] = (group["benchmark_weight"] or 0.0) + weight
+
+
 def attach_industry_exposure(result, history, calendar, *, neutralization=None, memberships=None, level="L1"):
     if history is None:
         return
@@ -20,28 +40,8 @@ def attach_industry_exposure(result, history, calendar, *, neutralization=None, 
         labels = history.at(date, [r["instrument"] for r in positions], calendar, level=level)
         grouped = {}
 
-        def add(symbol, weight, field):
-            label = labels[symbol]
-            code = label["industry_code"] or "unknown"
-            group = grouped.setdefault(
-                code,
-                {
-                    "industry_code": code,
-                    "industry_name": label["industry_name"] or "未知/冲突",
-                    "weight": 0.0,
-                    "count": 0,
-                    "benchmark_weight": None,
-                    "active_weight": None,
-                },
-            )
-            if field == "weight":
-                group["weight"] += weight
-                group["count"] += 1
-            else:
-                group["benchmark_weight"] = (group["benchmark_weight"] or 0.0) + weight
-
         for position in positions:
-            add(position["instrument"], position["weight"], "weight")
+            _add_exposure(grouped, labels[position["instrument"]], position["weight"], "weight")
         benchmark_available = False
         snapshot = None
         if memberships is not None:
@@ -54,8 +54,8 @@ def attach_industry_exposure(result, history, calendar, *, neutralization=None, 
             if len(active):
                 symbols = active.code.map(to_qlib)
                 labels.update(history.at(date, symbols, calendar, level=level))
-                for symbol, weight in zip(symbols, active.weight):
-                    add(symbol, float(weight) / 100.0, "benchmark_weight")
+                for symbol, weight in zip(symbols, active.weight, strict=True):
+                    _add_exposure(grouped, labels[symbol], float(weight) / 100.0, "benchmark_weight")
                 benchmark_available = True
                 snapshot = str(active.snapshot_date.max().date())
         if benchmark_available:

@@ -243,7 +243,7 @@ def test_market_factors_uses_the_selected_level():
     l1 = ["A", "A", "B", "B"]
     l2 = ["X", "Y", "X", "Y"]
     rows = []
-    for symbol, first, second in zip(symbols, l1, l2):
+    for symbol, first, second in zip(symbols, l1, l2, strict=True):
         for level, code in (("L1", first), ("L2", second)):
             rows.append(
                 {

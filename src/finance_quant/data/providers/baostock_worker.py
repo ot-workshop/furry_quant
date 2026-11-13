@@ -122,7 +122,7 @@ def _collect(result: Any) -> list[dict[str, str]]:
             row = result.get_row_data()
             if not isinstance(row, list) or len(row) != len(FIELDS):
                 raise WorkerError("invalid row")
-            rows.append(dict(zip(FIELDS, row)))
+            rows.append(dict(zip(FIELDS, row, strict=True)))
     if not _ok(result):
         raise WorkerError("query failed")
     if not rows:

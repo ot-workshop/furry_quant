@@ -54,7 +54,7 @@ def section_eligibility(section, date, specs, universe, *, dynamic, industry_his
 
 def exclusion_rows(section, eligible, specs, *, day, assigned, neutralization, dynamic):
     diagnostics = []
-    for (_, row), included in zip(section.iterrows(), eligible):
+    for (_, row), included in zip(section.iterrows(), eligible, strict=True):
         if included and eligible.sum() >= 2:
             continue
         reasons, raw = {}, {}

@@ -1,4 +1,5 @@
 import json
+from operator import itemgetter
 
 import pandas as pd
 import pytest
@@ -53,8 +54,8 @@ def test_numeric_batch_input_and_streamed_horizons_keep_all_labels_and_diagnosti
     for pair in actual["correlations"]["pairs"]:
         reference = {}
         for day, rows in history.groupby("date"):
-            a = rows.raw.map(lambda r: r[pair["first"]])
-            b = rows.raw.map(lambda r: r[pair["second"]])
+            a = rows.raw.map(itemgetter(pair["first"]))
+            b = rows.raw.map(itemgetter(pair["second"]))
             if len(rows) >= 3 and a.nunique() > 1 and b.nunique() > 1:
                 reference[day] = float(spearmanr(a, b).statistic)
         assert {r["date"] for r in pair["daily"]} == set(reference)

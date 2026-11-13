@@ -152,7 +152,7 @@ def test_relative_metrics_match_independent_math_and_handle_missing_zero_risk():
     dates = pd.bdate_range("2025-01-02", periods=4).strftime("%Y-%m-%d")
     equity = [
         {"date": d, "equity": a, "benchmark": b}
-        for d, a, b in zip(dates, [1.0, 1.1, 1.045, 1.1495], [1.0, 1.02, 1.01, 1.04])
+        for d, a, b in zip(dates, [1.0, 1.1, 1.045, 1.1495], [1.0, 1.02, 1.01, 1.04], strict=True)
     ]
     result = calculate_performance(equity)["relative_metrics"]
     active = np.diff([1.0, 1.1, 1.045, 1.1495]) / np.array([1.0, 1.1, 1.045]) - np.diff(

@@ -243,7 +243,7 @@ def _download_locked(config: DataConfig, provider, refresh: bool, secondary_prov
                 period_sessions = expected[(expected >= pd.Timestamp(start)) & (expected <= pd.Timestamp(end))]
                 missing_bars = any(
                     frame is not None and len(period_sessions.difference(pd.DatetimeIndex(frame.date)))
-                    for api, frame in zip(parts, monthly)
+                    for api, frame in zip(parts, monthly, strict=True)
                 )
                 if config.validation.mode != "off" and missing_bars:
                     try:
@@ -265,7 +265,7 @@ def _download_locked(config: DataConfig, provider, refresh: bool, secondary_prov
                         catalog.finish(job_id, "failed", {"status": "failed", "failures": fetch.errors})
                         raise DatasetDownloadError(f"Independent suspension evidence unavailable for {code}") from None
                     halted_dates = pd.DatetimeIndex(checked_secondary.loc[checked_secondary.is_suspended, "date"])
-                for api, frame in zip(parts, monthly):
+                for api, frame in zip(parts, monthly, strict=True):
                     if frame is not None:
                         checked = []
                         for month_start, month_end in month_ranges(start, end):

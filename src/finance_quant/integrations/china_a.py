@@ -37,7 +37,7 @@ class MarketStates:
         position = dates.searchsorted(stamp)
         if position >= len(dates) or dates[position] != stamp:
             return None
-        return {name: array[position] for name, array in zip(self.columns, values)}
+        return {name: array[position] for name, array in zip(self.columns, values, strict=True)}
 
 
 class ChinaAExchange(CostAwareExchange):

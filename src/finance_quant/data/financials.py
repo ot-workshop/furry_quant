@@ -120,7 +120,7 @@ def merge_observations(existing: pd.DataFrame, fresh: pd.DataFrame, seen_on) -> 
     fresh["row_sha256"] = row_hashes(fresh) if len(fresh) else pd.Series(dtype="string")
     fresh = fresh.drop_duplicates("row_sha256", keep="last")
     existing = existing.copy() if existing is not None and len(existing) else empty_observations()
-    flags = dict(zip(fresh.row_sha256, fresh.update_flag))
+    flags = dict(zip(fresh.row_sha256, fresh.update_flag, strict=True))
     known = existing.row_sha256.isin(flags)
     existing.loc[known, "update_flag"] = existing.loc[known, "row_sha256"].map(flags)
     added = fresh.loc[~fresh.row_sha256.isin(set(existing.row_sha256))].copy()
@@ -132,7 +132,9 @@ def merge_observations(existing: pd.DataFrame, fresh: pd.DataFrame, seen_on) -> 
 def content_id(frame: pd.DataFrame) -> str:
     lines = sorted(
         f"{code}|{sha}|{_cell(seen)}|{_cell(flag)}"
-        for code, sha, seen, flag in zip(frame.ts_code, frame.row_sha256, frame.first_seen, frame.update_flag)
+        for code, sha, seen, flag in zip(
+            frame.ts_code, frame.row_sha256, frame.first_seen, frame.update_flag, strict=True
+        )
     )
     return sha256_text("\n".join([VERSION_SCHEMA, *lines]))
 

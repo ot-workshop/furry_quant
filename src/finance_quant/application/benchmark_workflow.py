@@ -71,9 +71,9 @@ def _publish_benchmark_view(
     result.pop("tables", None)
     nav = series.close / float(series.close.iloc[0])
     returns = series.close.pct_change(fill_method=None)
-    for point, value in zip(result["equity"], nav):
+    for point, value in zip(result["equity"], nav, strict=True):
         point["benchmark"] = float(value)
-    by_date = dict(zip(series.date.dt.strftime("%Y-%m-%d"), returns))
+    by_date = dict(zip(series.date.dt.strftime("%Y-%m-%d"), returns, strict=True))
     for row in result.get("qlib_report", []):
         row["bench"] = float(by_date[row["date"]])
     meta = result["metadata"]

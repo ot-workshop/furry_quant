@@ -179,7 +179,9 @@ class ManagedFetcher:
                 previous, _ = self.cached_partition(self.key(api, params)[1])
                 cached = previous and previous["status"] == "succeeded"
                 futures.append(None if cached else executor.submit(self.request, api, params))
-            return [self.get(api, _future=future, **params) for (api, params), future in zip(requests, futures)]
+            return [
+                self.get(api, _future=future, **params) for (api, params), future in zip(requests, futures, strict=True)
+            ]
 
     def request(self, api: str, params: dict) -> pd.DataFrame:
         # This compatible service also returns intermittent unclassified provider errors.
