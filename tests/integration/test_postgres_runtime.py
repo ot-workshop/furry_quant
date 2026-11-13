@@ -10,11 +10,18 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
+from test_fundamental_factors import statements
+from test_pool_workflow_matrix import DiversePrimary, codes_for, request_for
 
+from finance_quant.application.task_worker import run_task
+from finance_quant.application.tasks import TaskService
 from finance_quant.persistence.database import check_schema, database_url, make_engine
+from finance_quant.persistence.market import MarketRepository
 from finance_quant.persistence.results import PgResultStore
 from finance_quant.persistence.schema import dataset
 from finance_quant.persistence.tasks import PgTaskStore
+from support.financial import publish
+from support.fixed_pool import publish_fixture_snapshot
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("FINANCE_QUANT_TEST_POSTGRES") != "1",
@@ -109,14 +116,6 @@ def test_postgres_result_store_persists_dataset_binding(engine, tmp_path):
 
 
 def test_financial_research_queue_to_qlib_and_postgres_results(engine, tmp_path):
-    from test_fundamental_factors import statements
-    from test_pool_workflow_matrix import DiversePrimary, codes_for, request_for
-
-    from finance_quant.application.task_worker import run_task
-    from finance_quant.application.tasks import TaskService
-    from finance_quant.persistence.market import MarketRepository
-    from support.financial import publish
-    from support.fixed_pool import publish_fixture_snapshot
 
     root = tmp_path / "storage"
     data, runs = root / "data", root / "runs"

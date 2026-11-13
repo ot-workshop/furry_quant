@@ -11,6 +11,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from finance_quant.checksums import file_sha256
+from finance_quant.research.performance import enrich_backtest
+from finance_quant.storage_tables import hydrate_tables
+
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
 
 
@@ -22,8 +26,6 @@ def _listing_record(filename, category, modified, size, created):
         raise ValueError("Invalid artifact metadata")
     metadata = dict(document["metadata"])
     if category == "backtests":
-        from finance_quant.research.performance import enrich_backtest
-
         summary = enrich_backtest(document)["summary"]
         summary = {**summary, "id": Path(filename).parent.name}
         text_fields = ["name", "status", "strategy", "start_date", "end_date", "created_at"]
@@ -108,15 +110,12 @@ class ResultStore:
 
     def digest(self, category: str, run_id: str) -> str:
         """Content digest of the published document; changes if the stored artifact is altered."""
-        from finance_quant.checksums import file_sha256
 
         return file_sha256(self.path(category, run_id))
 
     def get(self, category: str, run_id: str, *, hydrate=True) -> dict[str, Any]:
         result = json.loads(self.path(category, run_id).read_text(encoding="utf-8"))
         if hydrate and result.get("tables"):
-            from finance_quant.storage_tables import hydrate_tables
-
             hydrate_tables(self, category, run_id, result)
         return result
 

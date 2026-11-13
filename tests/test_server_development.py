@@ -1,10 +1,10 @@
 import os
 import sys
+import threading
 from unittest.mock import patch
 
 from finance_quant import server
 from finance_quant.data.financials import financial_root
-from finance_quant.persistence import database
 from support.fakes import MemoryTaskStore
 
 
@@ -59,7 +59,6 @@ def test_service_stop_does_not_touch_research_or_experiment(tmp_path):
 
 def test_worker_shutdown_pauses_the_running_download_instead_of_crashing(tmp_path, monkeypatch):
     """Regression: the pause branch read ``task`` before it was assigned and killed the worker."""
-    import threading
 
     store = MemoryTaskStore()
     data, runs, root = tmp_path / "data", tmp_path / "runs", tmp_path / "storage"
@@ -112,7 +111,7 @@ def test_native_api_loads_development_env_and_passes_uvicorn_options(tmp_path, m
         "HTTP_PORT=8123\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(database, "check_schema", lambda: None)
+    monkeypatch.setattr(server, "check_schema", lambda: None)
     monkeypatch.setattr(server, "paths", lambda: (tmp_path, tmp_path / "runs", tmp_path / "data"))
     captured = {}
 
@@ -121,7 +120,7 @@ def test_native_api_loads_development_env_and_passes_uvicorn_options(tmp_path, m
         def run(app, **options):
             captured.update(app=app, **options)
 
-    monkeypatch.setitem(sys.modules, "uvicorn", FakeUvicorn)
+    monkeypatch.setattr(server.uvicorn, "run", FakeUvicorn.run)
     monkeypatch.setattr(
         sys,
         "argv",

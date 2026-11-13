@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+import requests
 
 from finance_quant.data.providers import (
     TushareConfigError,
@@ -36,7 +37,6 @@ def _settings(token="test-token", url="https://api.tushare.pro"):
 
 
 def test_official_transport_posts_root_without_sdk_proxy_parameters(monkeypatch):
-    import requests
 
     calls = []
 
@@ -62,7 +62,6 @@ def test_official_transport_posts_root_without_sdk_proxy_parameters(monkeypatch)
 
 
 def test_official_rejection_is_classified_without_exposing_credentials(monkeypatch):
-    import requests
 
     class Response:
         status_code = 200
@@ -422,7 +421,6 @@ def test_normalize_daily_basic_tolerates_missing_valuation_columns():
 
 
 def test_rate_limit_retries_are_bounded_and_permission_errors_do_not_retry(monkeypatch):
-    from finance_quant.data.providers.tushare import TushareProvider, TushareProviderError, TushareSettings
 
     waits = []
     monkeypatch.setattr("finance_quant.data.providers.tushare.time.sleep", waits.append)

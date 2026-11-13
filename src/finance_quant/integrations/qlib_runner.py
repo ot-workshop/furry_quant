@@ -7,7 +7,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import qlib
 from filelock import FileLock, Timeout
+from qlib.backtest import backtest
 
 from finance_quant.integrations.qlib_results import export_qlib_result
 from finance_quant.integrations.qlib_runtime import (
@@ -101,8 +103,6 @@ def run_qlib(
     transfer_fee_rate: float = 0.00001,
     impact_cost: float = 0.0,
 ) -> dict:
-    import qlib
-    from qlib.backtest import backtest
 
     cost_arguments = {
         "cost_mode": cost_mode,

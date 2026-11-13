@@ -9,7 +9,9 @@ import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select, tuple_
+import pyarrow as pa
+import pyarrow.parquet as pq
+from sqlalchemy import select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 
 from finance_quant.checksums import file_sha256, sha256_bytes
@@ -53,7 +55,6 @@ class MarketRepository:
         fetched = datetime.now(timezone.utc)
         with self.engine.begin() as connection:
             # Serialize market publishers, independently of the queue process.
-            from sqlalchemy import text
 
             connection.execute(text("SELECT pg_advisory_xact_lock(663420121)"))
             existing_batch = (
@@ -198,8 +199,6 @@ class MarketRepository:
         Files are complete before the ready row is committed. A crash between the
         two leaves an unreferenced directory, never a falsely ready dataset.
         """
-        import pyarrow as pa
-        import pyarrow.parquet as pq
 
         root = Path(storage_root).resolve()
         identifier = "dataset-" + uuid.uuid4().hex

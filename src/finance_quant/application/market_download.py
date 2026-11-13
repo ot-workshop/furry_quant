@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import uuid
@@ -14,12 +15,15 @@ import pandas as pd
 from filelock import FileLock, Timeout
 
 from finance_quant.application.quote_capture import download_asset, validation_signature
+from finance_quant.application.update_service import publish_references, refresh_dates
 from finance_quant.checksums import sha256_text
+from finance_quant.data import postgres_market
 from finance_quant.data import shared_market as shared
 from finance_quant.data.catalog import Catalog, utc_now
+from finance_quant.data.execution_universe import validate_execution_universe
 from finance_quant.data.index_universe import historical_codes, members_on, normalize_memberships
-from finance_quant.data.managed import ManagedFetcher, atomic_json, month_ranges, year_ranges
-from finance_quant.data.market import SnapshotFetcher
+from finance_quant.data.managed import ManagedFetcher, atomic_json, coverage_report, month_ranges, year_ranges
+from finance_quant.data.market import SnapshotFetcher, load_market
 from finance_quant.data.network_budget import DownloadPaused, NetworkBudget
 from finance_quant.data.providers import TushareProvider, TushareSettings, normalize_calendar, normalize_index_daily
 from finance_quant.data.providers.baostock import BaoStockProvider
@@ -128,7 +132,6 @@ def prepare(root, document, *, provider=None):
 
 def _prepare(root, document, *, provider=None):
     """Only reference queries during preview. Never downloads stock quotes."""
-    from finance_quant.application.update_service import refresh_dates
 
     spec = validate_spec(document)
     root = Path(root).resolve()
@@ -457,8 +460,6 @@ class SegmentFetch:
 
 
 def run(root, identifier, *, provider=None, secondary=None):
-    from finance_quant.application.update_service import publish_references
-    from finance_quant.data import postgres_market
 
     root = Path(root).resolve()
     directory, plan = load_plan(root, identifier)
@@ -662,7 +663,6 @@ def _publish(root, identifier):
 
 def publish_index_view(root, identifier, version_id):
     """Full CSI300 versions keep memberships separate; hardlinks reuse canonical composites."""
-    import os
 
     root = Path(root)
     directory, plan = load_plan(root, identifier)
@@ -738,8 +738,6 @@ def warehouse_roots(data_root):
 
 def export_snapshot(root, identifier, version_id):
     """Small selectable research projections; official quotes stay shared and immutable."""
-    from finance_quant.data.execution_universe import validate_execution_universe
-    from finance_quant.data.managed import coverage_report
 
     root = Path(root)
     directory, plan = load_plan(root, identifier)
@@ -767,8 +765,6 @@ def export_snapshot(root, identifier, version_id):
     snapshot.mkdir(parents=True, exist_ok=True)
     manifest_path = snapshot / "manifest.json"
     if manifest_path.exists():
-        from finance_quant.data.market import load_market
-
         return load_market(snapshot)[3]["id"]
     for name, frame in [("market", market), ("benchmark", benchmark), ("calendar", calendar)]:
         _save(snapshot / f"{name}.parquet", frame)

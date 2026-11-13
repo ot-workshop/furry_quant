@@ -14,6 +14,8 @@ from finance_quant.data.providers import (
     TushareProvider,
 )
 from finance_quant.data.quality import adjustment_discontinuities
+from finance_quant.data.reconciliation import validate_published_sources
+from finance_quant.data.shared_market import validate_snapshot
 
 
 class SnapshotFetcher:
@@ -85,12 +87,8 @@ def load_market(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, d
     ) not in {"market-v3", "market-v4-shared"}:
         raise ValueError("Suspended valuation rows require an independently validated joint snapshot")
     if manifest.get("schema_version") == "market-v3":
-        from finance_quant.data.reconciliation import validate_published_sources
-
         validate_published_sources(market, manifest)
     if manifest.get("schema_version") == "market-v4-shared":
-        from finance_quant.data.shared_market import validate_snapshot
-
         validate_snapshot(market, manifest)
     if adjustment_discontinuities(market):
         raise ValueError(

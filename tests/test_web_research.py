@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from test_joint_data import Secondary
 from test_managed_data import Provider
 
 from finance_quant.application import task_worker
@@ -114,7 +115,6 @@ def test_subset_snapshot_preserves_parent_and_recalculates_stock_universe(worksp
 
 
 def test_joint_subset_keeps_per_stock_evidence_and_recomputes_fallback_status(tmp_path):
-    from test_joint_data import Secondary
 
     class Primary(Provider):
         def query(self, api, **params):

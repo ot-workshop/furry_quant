@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -142,7 +143,7 @@ def load_historical_input(root, start, end, lookback, *, expected_sha=None):
     membership = {}
     declared = {}
     exclusions = {}
-    for day, next_day in zip(sessions[:-1], sessions[1:]):
+    for day, next_day in pairwise(sessions):
         if day < signal_start or next_day > finish:
             continue
         members = members_on(intervals, next_day)

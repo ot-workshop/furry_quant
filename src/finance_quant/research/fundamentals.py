@@ -33,20 +33,11 @@ from finance_quant.data.financials import (
 )
 from finance_quant.data.point_in_time import EXCHANGE_TZ
 from finance_quant.data.symbols import from_qlib
+from finance_quant.research.factor_library import uses_financials
+from finance_quant.research.financial_features import FEATURE_VERSION, FEATURES
 
-FEATURE_VERSION = "fundamental-ttm-v3"
 MAX_REPORT_AGE_DAYS = 400
 DECISION_TIME = pd.Timedelta(hours=15)
-FEATURES = (
-    "roe_ttm",
-    "roa_ttm",
-    "gross_margin_ttm",
-    "asset_turnover_ttm",
-    "debt_to_assets",
-    "accruals_ttm",
-    "profit_growth_ttm",
-    "revenue_growth_ttm",
-)
 REPORT_COLUMNS = ("financial_report_period", "financial_available_at")
 FEATURE_POLICY = (
     f"利润表与现金流量表为年初至今累计值，统一换算为TTM（滚动四季度）；资产负债表分母取本期与上年同期的平均；"
@@ -228,7 +219,6 @@ def load_fundamentals(binding: FinancialBinding, ts_codes) -> FundamentalData:
 
 def fundamentals_for(binding: FinancialBinding | None, config, market: pd.DataFrame) -> FundamentalData | None:
     """The features a factor configuration needs for this market frame, or ``None`` if unused."""
-    from finance_quant.research.factor_library import uses_financials
 
     if not uses_financials(config):
         return None
@@ -239,7 +229,6 @@ def fundamentals_for(binding: FinancialBinding | None, config, market: pd.DataFr
 
 def financial_provenance(binding: FinancialBinding | None, config) -> dict:
     """Fingerprint entry; empty when no fundamental factor is selected so old results stay reusable."""
-    from finance_quant.research.factor_library import uses_financials
 
     if binding is None or not uses_financials(config):
         return {}

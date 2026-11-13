@@ -1,8 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 
+import baostock.util.socketutil as wire
 import pytest
 
+import finance_quant.data.network_budget as module
 from finance_quant.data.network_budget import DownloadPaused, NetworkBudget
+from finance_quant.data.providers.baostock import BaoStockProvider
+from finance_quant.data.providers.baostock_worker import _sdk
 
 
 def test_daily_budget_is_shared_durable_and_resets_in_shanghai(tmp_path):
@@ -59,10 +63,6 @@ def test_restriction_hold_persists_and_does_not_send_probe(tmp_path):
 
 
 def test_sdk_wire_hook_counts_messages_not_returned_rows(monkeypatch):
-    import baostock.util.socketutil as wire
-
-    import finance_quant.data.network_budget as module
-    from finance_quant.data.providers.baostock_worker import _sdk
 
     calls = []
     monkeypatch.setattr(module, "reserve_baostock", lambda: calls.append("reserved"))
@@ -73,7 +73,6 @@ def test_sdk_wire_hook_counts_messages_not_returned_rows(monkeypatch):
 
 
 def test_worker_quota_stops_without_reconnect(tmp_path):
-    from finance_quant.data.providers.baostock import BaoStockProvider
 
     calls = []
 

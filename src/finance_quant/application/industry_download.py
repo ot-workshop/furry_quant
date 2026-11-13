@@ -18,7 +18,7 @@ from filelock import FileLock, Timeout
 from finance_quant.checksums import sha256_text
 from finance_quant.data import industries
 from finance_quant.data.managed import atomic_json
-from finance_quant.data.network_budget import DownloadPaused
+from finance_quant.data.network_budget import DownloadPaused, NetworkBudget
 from finance_quant.data.providers import TushareProvider, TushareSettings
 
 PLAN_POLICY = "industry-download-v1"
@@ -154,7 +154,6 @@ def status(root=None) -> dict:
         if row["status"] == "running" and not active(root):
             row = {**row, "status": "interrupted", "message": "进程已停止，可续传；旧版本仍可用"}
         jobs.append(row)
-    from finance_quant.data.network_budget import NetworkBudget
 
     return {
         "worker_running": active(root),

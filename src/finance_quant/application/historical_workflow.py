@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from finance_quant.application.benchmark_workflow import publish_benchmark_view
 from finance_quant.application.factor_workflow import fingerprint, source_provenance
 from finance_quant.application.real_workflow import adjusted_quotes, financial_limitation
 from finance_quant.configuration import BacktestConfig
@@ -18,7 +19,9 @@ from finance_quant.provenance import report_code_sha256
 from finance_quant.research.evaluation import evaluate_factors
 from finance_quant.research.execution_policy import EXECUTION_FIELDS
 from finance_quant.research.fundamentals import financial_provenance, fundamentals_for
+from finance_quant.research.industry_exposure import attach_industry_exposure
 from finance_quant.research.market_factors import market_factors
+from finance_quant.research.neutralization import industry_context, parse_neutralization
 from finance_quant.research.registry import EvaluationConfig, FactorConfig, FactorSpec
 from finance_quant.research.report import evaluation_markdown
 from finance_quant.storage import ResultStore
@@ -40,7 +43,6 @@ def run_historical_research(
     config = FactorConfig(tuple(FactorSpec(**s) for s in request["factors"]))
     backtest = BacktestConfig(**request["backtest"])
     evaluation = EvaluationConfig(**request["evaluation"])
-    from finance_quant.research.neutralization import industry_context, parse_neutralization
 
     neutralization = parse_neutralization(request.get("neutralization"))
     industry = industry_context(neutralization)
@@ -149,7 +151,6 @@ def run_historical_research(
                 financial_limitation(factors["metadata"]),
             ],
         )
-        from finance_quant.research.industry_exposure import attach_industry_exposure
 
         memberships = pd.read_parquet(Path(warehouse_root) / "reference/memberships.parquet")
         attach_industry_exposure(
@@ -164,8 +165,6 @@ def run_historical_research(
         del quotes, signals, result
         gc.collect()
     if backtest.benchmark is not None:
-        from finance_quant.application.benchmark_workflow import publish_benchmark_view
-
         view = publish_benchmark_view(
             runs_root,
             run_id,

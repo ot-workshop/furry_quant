@@ -17,6 +17,7 @@ from finance_quant.checksums import sha256_text
 from finance_quant.data import benchmarks, industries
 from finance_quant.data.financials import utc_now
 from finance_quant.data.managed import atomic_json
+from finance_quant.task_contracts import TaskConflict
 
 STAGES = {"market": "行情与参考数据", "financial": "财务报表", "industry": "历史行业", "benchmarks": "评价基准"}
 
@@ -274,7 +275,6 @@ def save_schedule(data_root, document):
 
 
 def enqueue_due(store, data_root):
-    from finance_quant.application.tasks import TaskConflict
 
     path = root(data_root) / "schedule.json"
     if not path.exists():

@@ -1,10 +1,11 @@
 import copy
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from finance_quant.application.research_readiness import validate_warmup
-from finance_quant.application.research_requests import research_options
+from finance_quant.application.research_requests import project_snapshot, research_options
 from finance_quant.data.market import load_market
 from finance_quant.research.registry import FactorConfig, FactorSpec
 from support.fakes import fixture_root, make_client
@@ -63,9 +64,6 @@ def test_invalid_warmup_fails_api_before_queue_or_projection(workspace):
 
 
 def test_options_mark_derived_subsets_without_exposing_paths(workspace):
-    from pathlib import Path
-
-    from finance_quant.application.research_requests import project_snapshot
 
     data, runs, request = workspace
     parent = load_market(fixture_root(data))[3]

@@ -7,10 +7,12 @@ import pandas as pd
 import pytest
 
 from finance_quant.application import financial_download
+from finance_quant.application.experiment_tasks import _data_config
 from finance_quant.application.financial_download import MAX_STATEMENT_ROWS
 from finance_quant.application.research_requests import (
     pin_financials_for,
     request_config,
+    snapshot_registry,
 )
 from finance_quant.data.financials import FinancialBinding, financial_root
 from finance_quant.research.factor_library import FACTOR_LIBRARY
@@ -222,9 +224,7 @@ def test_request_pins_the_current_version_and_skips_it_for_price_factors(tmp_pat
 
 
 def _data(request, data_root):
-    from finance_quant.application.research_requests import snapshot_registry
 
     manifest = snapshot_registry(data_root)[request["data"]["snapshot_id"]][3]
-    from finance_quant.application.experiment_tasks import _data_config
 
     return _data_config(manifest, request["data"]["codes"])

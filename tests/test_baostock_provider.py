@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -74,9 +77,6 @@ def _payload():
 
 
 def test_network_is_serial_across_different_cache_roots(tmp_path):
-    import threading
-    import time
-    from concurrent.futures import ThreadPoolExecutor
 
     active = 0
     maximum = 0

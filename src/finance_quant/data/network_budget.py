@@ -9,13 +9,14 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from finance_quant.paths import quota_database
+
 
 class DownloadPaused(RuntimeError):
     """A resumable stop, never an instruction to bypass the source."""
 
 
 def budget_path():
-    from finance_quant.paths import quota_database
 
     return quota_database()
 

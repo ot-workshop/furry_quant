@@ -18,8 +18,8 @@ from finance_quant.research.experiments import (
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.registry import EvaluationConfig
 from finance_quant.storage import ResultStore
-from support.fakes import make_app
-from support.fixed_pool import download_dataset
+from support.fakes import make_app, make_service, run_claimed
+from support.fixed_pool import download_dataset, publish_fixture_snapshot
 
 
 def plan_document():
@@ -295,8 +295,6 @@ def experiment_request(snapshot_id):
 
 
 def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path):
-    from support.fakes import make_service, run_claimed
-    from support.fixed_pool import publish_fixture_snapshot
 
     data, runs = tmp_path / "data", tmp_path / "runs"
     manifest = publish_fixture_snapshot(

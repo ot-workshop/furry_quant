@@ -5,12 +5,15 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
+from finance_quant.application import market_download
+from finance_quant.application.research_requests import snapshot_registry
+from finance_quant.data.historical_warehouse import warehouse_option
+
 SYNTHETIC_NOTICE = "合成样本，仅验证系统流程，不代表真实股票表现"
 
 
 def research_snapshots(data_root) -> list[dict]:
     """Selectable research datasets with their coverage evidence, newest first."""
-    from finance_quant.application.research_requests import snapshot_registry
 
     items = []
     for identifier, (_, _, _, manifest) in snapshot_registry(data_root).items():
@@ -44,11 +47,9 @@ def research_snapshots(data_root) -> list[dict]:
 
 def historical_indices(data_root) -> list[dict]:
     """Published CSI 300 dynamic-universe versions, newest first, without the per-day calendar."""
-    from finance_quant.application.market_download import warehouse_roots
-    from finance_quant.data.historical_warehouse import warehouse_option
 
     items = []
-    for root in warehouse_roots(data_root):
+    for root in market_download.warehouse_roots(data_root):
         option = warehouse_option(root)
         if option:
             dates = option.pop("trading_dates")

@@ -16,12 +16,14 @@ from filelock import FileLock
 
 from finance_quant.application import quote_capture
 from finance_quant.application.quote_capture import WAREHOUSE_POLICY, download_asset, validation_signature
+from finance_quant.application.update_service import publish_references
 from finance_quant.checksums import file_sha256, sha256_text
+from finance_quant.data import shared_market
 from finance_quant.data.catalog import Catalog, utc_now
 from finance_quant.data.index_universe import members_on
 from finance_quant.data.managed import ManagedFetcher, atomic_json
 from finance_quant.data.network_budget import DownloadPaused
-from finance_quant.data.providers.baostock import BaoStockProvider
+from finance_quant.data.providers.baostock import BaoStockProvider, BaoStockProviderError
 
 __all__ = ["index_observations_on", "quote_capture", "run_index_download"]
 
@@ -50,8 +52,6 @@ def run_index_download(
             raise FileNotFoundError("Test warehouse needs a prepared plan.json")
         if prepare_only:
             return plan
-        from finance_quant.application.update_service import publish_references
-        from finance_quant.data import shared_market
 
         plan_id = sha256_text(json.dumps(plan, sort_keys=True))[:24]
         publish_references(root, {**plan, "id": plan_id})
@@ -144,7 +144,6 @@ def run_index_download(
                         "dates": getattr(error, "validation_dates", [])[:31],
                     }
                     print(f"INDEX {task['code']} failed: {type(error).__name__}", flush=True)
-                    from finance_quant.data.providers.baostock import BaoStockProviderError
 
                     consecutive_connections = (
                         consecutive_connections + 1

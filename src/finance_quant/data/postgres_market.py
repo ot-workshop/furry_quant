@@ -7,9 +7,23 @@ from contextvars import ContextVar
 from pathlib import Path
 
 import pandas as pd
+from sqlalchemy import and_, func, select
 
 from finance_quant.checksums import file_sha256, sha256_text
 from finance_quant.data.symbols import to_qlib
+from finance_quant.data.temporal_audit import restore_valuation_dates
+from finance_quant.persistence.market import MarketRepository
+from finance_quant.persistence.schema import (
+    MARKET_TABLES,
+    adjustment,
+    daily_bar,
+    data_release,
+    data_revision,
+    dataset,
+    source_check,
+    trading_status,
+    valuation,
+)
 
 # Request-scoped REPEATABLE READ connection; a ContextVar keeps concurrent API requests isolated.
 _snapshot = ContextVar("market_read_snapshot", default=None)
@@ -25,7 +39,6 @@ class PostgresMarketStore:
         return covered_dates(code, sessions, provider_id)
 
     def publish_segment(self, root, record, path, *, batch_id):
-        from finance_quant.data.temporal_audit import restore_valuation_dates
 
         frame = restore_valuation_dates(pd.read_parquet(path))
         return publish_frame(frame, record, batch_id=batch_id)
@@ -41,7 +54,6 @@ class PostgresMarketStore:
 
 
 def repository():
-    from finance_quant.persistence.market import MarketRepository
 
     return MarketRepository()
 
@@ -72,9 +84,6 @@ def connection():
 
 
 def inventory():
-    from sqlalchemy import select
-
-    from finance_quant.persistence.schema import daily_bar
 
     with connection() as active:
         codes = active.execute(select(daily_bar.c.ts_code).distinct()).scalars().all()
@@ -83,15 +92,6 @@ def inventory():
 
 def status():
     """Small read-only operational summary for the web data overview."""
-    from sqlalchemy import func, select
-
-    from finance_quant.persistence.schema import (
-        MARKET_TABLES,
-        data_release,
-        data_revision,
-        dataset,
-        source_check,
-    )
 
     with connection() as active:
         rows = {
@@ -105,7 +105,6 @@ def status():
             active.execute(select(data_release).order_by(data_release.c.created_at.desc()).limit(1)).mappings().first()
         )
         checks = active.execute(select(source_check.c.status, func.count()).group_by(source_check.c.status)).all()
-        from finance_quant.persistence.schema import daily_bar
 
         coverage = active.execute(
             select(
@@ -139,9 +138,6 @@ def status():
 
 def covered_dates(code, sessions, provider_id):
     """Coverage is the actual intersection of four components, never min/max dates."""
-    from sqlalchemy import and_, select
-
-    from finance_quant.persistence.schema import adjustment, daily_bar, trading_status, valuation
 
     if sessions.empty:
         return pd.DatetimeIndex([])
@@ -161,9 +157,6 @@ def covered_dates(code, sessions, provider_id):
 
 
 def read_frame(code, expected, provider_id):
-    from sqlalchemy import and_, select
-
-    from finance_quant.persistence.schema import adjustment, daily_bar, trading_status, valuation
 
     tables = (daily_bar, adjustment, valuation, trading_status)
     ignored = {"source", "quality", "fetched_at", "published_at", "release_id", "provider_id"}
@@ -215,9 +208,6 @@ class FullHistoryRequired(ValueError):
 
 
 def publish_frame(frame, record, *, batch_id):
-    from sqlalchemy import func, select
-
-    from finance_quant.persistence.schema import MARKET_TABLES, adjustment, daily_bar
 
     code = record["code"]
     frame = frame.drop(

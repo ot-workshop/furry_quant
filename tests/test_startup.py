@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -41,21 +42,80 @@ def child_environment():
     return environment
 
 
-@pytest.mark.skipif(sys.platform != "win32" or sys.version_info[:2] != (3, 12), reason="Windows Python 3.12 regression")
-def test_worker_bootstrap_prevents_wmi_even_when_loading_native_qlib():
+@pytest.mark.parametrize(
+    "modules",
+    [
+        ("finance_quant.application.task_worker", "finance_quant.server"),
+        ("finance_quant.server", "finance_quant.application.task_worker"),
+        ("finance_quant.research.factor_library", "finance_quant.research.fundamentals"),
+        ("finance_quant.research.fundamentals", "finance_quant.research.factor_library"),
+        ("finance_quant.data.providers.baostock_worker", "finance_quant.research_api"),
+    ],
+)
+def test_module_imports_do_not_connect_or_load_settings(tmp_path, modules):
+    """Eager imports must be safe in API, worker and research entry orders."""
     script = """
+import importlib
+import socket
+import sys
+from pathlib import Path
+import dotenv
+import sqlalchemy
+
+def forbidden(*args, **kwargs):
+    raise AssertionError('Import attempted external work')
+
+socket.socket.connect = forbidden
+socket.create_connection = forbidden
+sqlalchemy.create_engine = forbidden
+dotenv.load_dotenv = forbidden
+dotenv.dotenv_values = forbidden
+for module in sys.argv[2:]:
+    importlib.import_module(module)
+assert not Path(sys.argv[1]).exists()
+print('IMPORT_OK')
+"""
+    root = tmp_path / "storage-must-not-exist"
+    environment = child_environment()
+    environment.update(
+        STORAGE_ROOT=str(root),
+        FINANCE_QUANT_DATA=str(root / "data"),
+        FINANCE_QUANT_RUNS=str(root / "runs"),
+        FINANCE_QUANT_QUOTA_DB=str(root / "quota.sqlite3"),
+        FINANCE_QUANT_INDUSTRY_ROOT=str(root / "industries"),
+        FINANCE_QUANT_BENCHMARK_ROOT=str(root / "benchmarks"),
+    )
+    result = subprocess.run(
+        [sys.executable, "-X", "utf8", "-c", script, str(root), *modules],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        cwd=Path(__file__).resolve().parents[1],
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "IMPORT_OK" in result.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32" or sys.version_info[:2] != (3, 12), reason="Windows Python 3.12 regression")
+@pytest.mark.parametrize("entrypoint", ["finance_quant.application.task_worker", "finance_quant.server"])
+def test_bootstrap_prevents_wmi_even_when_loading_native_qlib(entrypoint):
+    script = """
+import importlib
 import platform
+import sys
 def forbidden(*args, **kwargs):
     raise AssertionError('Scientific import attempted WMI')
 platform._wmi_query = forbidden
-import finance_quant.application.task_worker
+importlib.import_module(sys.argv[1])
 from qlib.backtest import backtest
 from qlib.contrib.strategy.signal_strategy import TopkDropoutStrategy
 assert isinstance(platform.machine(), str)
 print('WORKER_BOOTSTRAP_OK')
 """
     result = subprocess.run(
-        [sys.executable, "-X", "utf8", "-c", script],
+        [sys.executable, "-X", "utf8", "-c", script, entrypoint],
         capture_output=True,
         text=True,
         encoding="utf-8",

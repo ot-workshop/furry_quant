@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from finance_quant.checksums import sha256_text
+from finance_quant.integrations.qlib_runner import run_qlib
 from support.synthetic import INSTRUMENTS, NOTICE
 
 INITIAL_CASH = 100_000.0
@@ -89,7 +90,6 @@ def execute_qlib(
     close_cost: float = 0.001,
     min_cost: float = 5.0,
 ) -> dict:
-    from finance_quant.integrations.qlib_runner import run_qlib
 
     source_hash = export_sample(prices, data_dir)
     quotes = prices.copy()

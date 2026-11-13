@@ -8,7 +8,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from finance_quant.research.fundamentals import FEATURE_VERSION
+from finance_quant.research.financial_features import FEATURE_VERSION
 
 FUNDAMENTAL = "fundamental"
 FAMILY_LABELS = {

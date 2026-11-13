@@ -117,9 +117,11 @@ def test_changes_to_all_future_inputs_leave_past_raw_scores_and_diagnostics_unch
     for field in ["close", "adj_factor", "pe_ttm", "pb", "total_mv", "amount"]:
         changed.loc[changed.date > cutoff, field] *= 7.3
     second = market_factors(changed, "same", config)
+    cutoff_day = pd.Timestamp(cutoff).strftime("%Y-%m-%d")
     for key in ["history", "diagnostics"]:
-        before = lambda out: [row for row in out[key] if row["date"] <= pd.Timestamp(cutoff).strftime("%Y-%m-%d")]
-        assert before(first) == before(second)
+        before = [row for row in first[key] if row["date"] <= cutoff_day]
+        after = [row for row in second[key] if row["date"] <= cutoff_day]
+        assert before == after
     prefix = market_factors(market.loc[market.date <= cutoff], "prefix", config)
     assert prefix["history"] == [r for r in first["history"] if r["date"] <= pd.Timestamp(cutoff).strftime("%Y-%m-%d")]
 

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from finance_quant.data.industries import optional_industries
+
 INDUSTRY_LEVELS = ("L1", "L2", "L3")
 INDUSTRY_LEVEL_LABELS = {"L1": "一级", "L2": "二级", "L3": "三级"}
 
@@ -47,7 +49,6 @@ def parse_neutralization(value=None):
 
 
 def industry_context(config=None, history=None):
-    from finance_quant.data.industries import optional_industries
 
     config = config or NeutralizationConfig()
     history = history or optional_industries(config.industry_version)
@@ -73,6 +74,10 @@ def residualize(values, groups):
     return residual / scale
 
 
+def _mean_factor(members, field, key):
+    return float(np.mean([row.get(field, {}).get(key, 0.0) for row in members]))
+
+
 def factor_industry_diagnostics(rows, metadata):
     names = list(metadata["weights"])
     groups = {}
@@ -83,9 +88,6 @@ def factor_industry_diagnostics(rows, metadata):
     for code, members in sorted(groups.items()):
         count = len(members)
 
-        def mean(field, key):
-            return float(np.mean([row.get(field, {}).get(key, 0.0) for row in members]))
-
         output.append(
             {
                 "industry_code": code,
@@ -94,10 +96,13 @@ def factor_industry_diagnostics(rows, metadata):
                 "singleton": count == 1,
                 "pool_weight": count / len(rows),
                 "before_mean": {
-                    k: mean("before_scores" if "before_scores" in members[0] else "scores", k) for k in names
+                    k: _mean_factor(members, "before_scores" if "before_scores" in members[0] else "scores", k)
+                    for k in names
                 },
-                "after_mean": {k: mean("scores", k) for k in names},
-                "residual_mean": {k: mean("processed", k) for k in names} if "processed" in members[0] else None,
+                "after_mean": {k: _mean_factor(members, "scores", k) for k in names},
+                "residual_mean": {k: _mean_factor(members, "processed", k) for k in names}
+                if "processed" in members[0]
+                else None,
             }
         )
     return {

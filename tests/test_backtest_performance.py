@@ -59,7 +59,9 @@ def test_hand_calculated_after_cost_statistics_and_initial_day_count():
 def test_annual_bars_compound_each_return_in_its_own_year_including_first_day():
     dates = ["2024-12-27", "2024-12-30", "2024-12-31", "2025-01-02", "2025-01-03"]
     values = [1.0, 0.9, 0.99, 0.891, 0.98]
-    result = calculate_performance([{"date": day, "equity": v, "benchmark": v * 4} for day, v in zip(dates, values)])
+    result = calculate_performance(
+        [{"date": day, "equity": v, "benchmark": v * 4} for day, v in zip(dates, values, strict=True)]
+    )
     first, second = result["annual_returns"]
     assert first["year"] == 2024 and second["year"] == 2025
     assert first["start_date"] == "2024-12-30" and second["start_date"] == "2025-01-02"

@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from filelock import FileLock, Timeout
 
+from finance_quant.application.market_download import shared_root
 from finance_quant.checksums import sha256_text
 from finance_quant.data.financials import (
     REPORT_TYPES,
@@ -29,9 +30,11 @@ from finance_quant.data.financials import (
     utc_now,
 )
 from finance_quant.data.managed import atomic_json
-from finance_quant.data.network_budget import DownloadPaused
+from finance_quant.data.network_budget import DownloadPaused, NetworkBudget
 from finance_quant.data.providers import (
+    FINANCIAL_STATEMENTS,
     TushareProvider,
+    TushareProviderError,
     TushareSettings,
     financial_request_fields,
     normalize_calendar,
@@ -74,7 +77,6 @@ def validate_spec(document) -> dict:
 
 def _market_version(data_root: Path, version: str) -> dict:
     """The manifest of one published shared market version (its asset list and plan)."""
-    from finance_quant.application.market_download import shared_root
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", version):
         raise ValueError("行情版本编号无效")
@@ -172,7 +174,6 @@ def active(data_root: Path) -> bool:
 
 
 def status(data_root: Path) -> dict:
-    from finance_quant.application.market_download import shared_root
 
     root = financial_root(data_root)
     store = FinancialStore(root)
@@ -215,7 +216,6 @@ def status(data_root: Path) -> dict:
                 "restricted": version.get("restricted", False),
             }
         )
-    from finance_quant.data.network_budget import NetworkBudget
 
     return {
         "worker_running": active(data_root),
@@ -331,8 +331,6 @@ def run(data_root: Path, identifier: str, *, provider=None) -> dict:
                 except DownloadPaused:
                     raise
                 except Exception as error:
-                    from finance_quant.data.providers import TushareProviderError
-
                     if isinstance(error, TushareProviderError) and error.category in {"access_denied", "rate_limit"}:
                         raise
                     progress["failures"].append(
@@ -362,7 +360,6 @@ def run(data_root: Path, identifier: str, *, provider=None) -> dict:
 
 
 def _api(statement: str) -> str:
-    from finance_quant.data.providers import FINANCIAL_STATEMENTS
 
     return FINANCIAL_STATEMENTS[statement][0]
 

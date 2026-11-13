@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -194,7 +196,6 @@ def test_full_account_interval_is_required(tmp_path):
 
 
 def test_cache_is_scoped_to_provider_origin(tmp_path):
-    from types import SimpleNamespace
 
     class Provider:
         def __init__(self, url):

@@ -14,6 +14,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from finance_quant.checksums import file_sha256
+from finance_quant.data.suspensions import invalid_halt_rows
 
 FIELDS = {
     "instrument",
@@ -133,7 +134,6 @@ def gap_ranges(expected, covered):
 
 def validate_snapshot(market, manifest):
     """Shared projections preserve per-row source levels, never invent dual verification."""
-    from finance_quant.data.suspensions import invalid_halt_rows
 
     if manifest.get("source") != "official_tushare_shared" or manifest.get("coverage", {}).get("status") != "complete":
         raise ValueError("共享研究快照未通过覆盖检查")

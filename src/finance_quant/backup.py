@@ -12,12 +12,16 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text, update
 
 from finance_quant.checksums import file_sha256, stream_sha256
+from finance_quant.data.benchmarks import benchmark_root
+from finance_quant.data.industries import industry_root
 from finance_quant.paths import data_root, quota_database, runs_root, storage_root
 from finance_quant.persistence.database import database_url
 from finance_quant.persistence.maintenance import offline_lock, write_gate
+from finance_quant.persistence.schema import research_task
 
 FORMAT = "finance-quant-backup-v2"
 
@@ -52,8 +56,6 @@ def _safe_name(name):
 
 
 def _configured_layout(root):
-    from finance_quant.data.benchmarks import benchmark_root
-    from finance_quant.data.industries import industry_root
 
     layout = {}
     for name, location in {
@@ -179,7 +181,6 @@ def restore(directory, *, root, engine):
             ],
             engine.url,
         )
-        from finance_quant.persistence.schema import research_task
 
         with engine.begin() as connection:
             # Restoring must not unexpectedly execute a preserved queue on worker startup.
@@ -212,8 +213,6 @@ def main():
     parser.add_argument("--env-file", type=Path, help="Explicit native configuration; Compose passes settings directly")
     args = parser.parse_args()
     if args.env_file:
-        from dotenv import load_dotenv
-
         if not args.env_file.is_file():
             parser.error("配置文件不存在")
         load_dotenv(args.env_file, override=False)

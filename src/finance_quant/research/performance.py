@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import statistics
 from datetime import date
+from itertools import pairwise
 
 VERSION = "daily-nav-performance-v3"
 TRADING_DAYS = 252
@@ -36,7 +37,7 @@ def _stats(values, dates):
     drawdown = {"peak_date": None, "trough_date": None}
     if len(values) < 2 or any(not _valid(v) or v < 0 for v in values) or any(v <= 0 for v in values[:-1]):
         return empty, drawdown, None
-    returns = [current / previous - 1 for previous, current in zip(values, values[1:])]
+    returns = [current / previous - 1 for previous, current in pairwise(values)]
     if not all(_valid(r) for r in returns):
         return empty, drawdown, None
     n = len(returns)
@@ -120,7 +121,7 @@ def calculate_performance(equity: list[dict]) -> dict:
         "annualized_active_return": None,
     }
     if returns is not None and benchmark_returns is not None:
-        active = [a - b for a, b in zip(returns, benchmark_returns)]
+        active = [a - b for a, b in zip(returns, benchmark_returns, strict=True)]
         average = statistics.fmean(active) * TRADING_DAYS
         tracking = statistics.stdev(active) * math.sqrt(TRADING_DAYS) if len(active) >= 2 else None
         relative.update(

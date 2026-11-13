@@ -2,8 +2,18 @@ import json
 
 import pandas as pd
 import pytest
+import qlib
+from qlib.backtest.decision import Order
+from qlib.backtest.position import Position
+from test_factor_configuration import sample_market
+from test_industry_neutralization import history
 
+from finance_quant.data.industries import load_industries, publish_industries
 from finance_quant.data.temporal_audit import capacity_diagnostics, restore_valuation_dates, validate_valuation_times
+from finance_quant.integrations.execution import CostAwareExchange
+from finance_quant.integrations.qlib_runner import run_qlib, write_features
+from finance_quant.research.market_factors import market_factors
+from finance_quant.research.registry import FactorConfig, FactorSpec
 
 
 @pytest.mark.parametrize(
@@ -19,10 +29,6 @@ def test_active_future_valuation_dates_are_rejected(field, column):
 
 
 def test_actual_factor_path_rejects_unknown_or_future_availability():
-    from test_factor_configuration import sample_market
-
-    from finance_quant.research.market_factors import market_factors
-    from finance_quant.research.registry import FactorConfig, FactorSpec
 
     m = sample_market()
     m["valuation_available_at"] = m.date.dt.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=19)
@@ -94,12 +100,6 @@ def test_capacity_uses_only_previous_turnover_and_does_not_claim_fill_guarantee(
     [("SH600000", "2024-01-02", 1000000), ("SZ300001", "2020-08-21", 1000000), ("SZ300001", "2020-08-24", 300000)],
 )
 def test_fixed_exchange_limits_large_orders_and_conserves_odd_remainders(tmp_path, code, day, cap):
-    import qlib
-    from qlib.backtest.decision import Order
-    from qlib.backtest.position import Position
-
-    from finance_quant.integrations.execution import CostAwareExchange
-    from finance_quant.integrations.qlib_runner import write_features
 
     days = pd.bdate_range(day, periods=2)
     q = pd.DataFrame(
@@ -154,7 +154,6 @@ def test_fixed_exchange_limits_large_orders_and_conserves_odd_remainders(tmp_pat
     "available,match", [("2024-01-02T09:00:00+08:00", "收盘前"), ("2024-01-03T09:30:00+08:00", "before next-session")]
 )
 def test_real_signals_cannot_be_backdated_or_arrive_at_execution_open(tmp_path, available, match):
-    from finance_quant.integrations.qlib_runner import run_qlib
 
     dates = pd.bdate_range("2024-01-02", periods=3)
     codes = ["SH600000", "SH000300"]
@@ -198,9 +197,6 @@ def test_real_signals_cannot_be_backdated_or_arrive_at_execution_open(tmp_path, 
 
 
 def test_industry_manifest_cannot_extend_known_date_or_upgrade_certification(tmp_path):
-    from test_industry_neutralization import history
-
-    from finance_quant.data.industries import load_industries, publish_industries
 
     h = publish_industries(history(["SH600000"]).frame, root=tmp_path)
     path = tmp_path / h.manifest["id"] / "manifest.json"

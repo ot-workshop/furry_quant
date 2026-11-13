@@ -14,6 +14,7 @@ import pandas as pd
 
 from finance_quant.checksums import file_sha256, sha256_text
 from finance_quant.data.catalog import Catalog, utc_now
+from finance_quant.data.network_budget import DownloadPaused
 from finance_quant.data.providers import (
     TushareProviderError,
     normalize_adj_factor,
@@ -178,7 +179,9 @@ class ManagedFetcher:
                 previous, _ = self.cached_partition(self.key(api, params)[1])
                 cached = previous and previous["status"] == "succeeded"
                 futures.append(None if cached else executor.submit(self.request, api, params))
-            return [self.get(api, _future=future, **params) for (api, params), future in zip(requests, futures)]
+            return [
+                self.get(api, _future=future, **params) for (api, params), future in zip(requests, futures, strict=True)
+            ]
 
     def request(self, api: str, params: dict) -> pd.DataFrame:
         # This compatible service also returns intermittent unclassified provider errors.
@@ -245,8 +248,6 @@ class ManagedFetcher:
             )
             return frame
         except Exception as exc:
-            from finance_quant.data.network_budget import DownloadPaused
-
             if isinstance(exc, DownloadPaused):
                 raise
             if api == "stock_basic" and stage == "invalid_response":

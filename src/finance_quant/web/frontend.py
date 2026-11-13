@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
+from finance_quant.paths import frontend_dist as default_dist
+
 FRONTEND_ROUTES = {
     "",
     "research",
@@ -20,7 +22,6 @@ FRONTEND_ROUTES = {
 
 
 def mount_frontend(app: FastAPI, frontend_dist: Path | None) -> None:
-    from finance_quant.paths import frontend_dist as default_dist
 
     dist = frontend_dist or default_dist()
     if not (dist / "index.html").exists():

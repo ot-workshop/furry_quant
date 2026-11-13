@@ -1,12 +1,18 @@
 import copy
+import math
+import statistics
 from dataclasses import replace
 
 import numpy as np
 import pandas as pd
 import pytest
+from test_historical_workflow import request, warehouse_fixture
+from test_managed_data import Provider
 
 from finance_quant.application.benchmark_workflow import publish_benchmark_view
-from finance_quant.configuration import BacktestConfig
+from finance_quant.application.historical_workflow import run_historical_research
+from finance_quant.application.real_workflow import run_configured
+from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
 from finance_quant.data.benchmarks import (
     ensure_series,
     load_series,
@@ -15,8 +21,11 @@ from finance_quant.data.benchmarks import (
     publish_series,
     validate_coverage,
 )
+from finance_quant.data.market import load_market
+from finance_quant.data.providers.tushare import TushareProviderError, TushareSettings
 from finance_quant.research.performance import METRIC_KEYS, calculate_performance
 from finance_quant.storage import ResultStore
+from support.fixed_pool import download_dataset
 
 
 def seed(root, dates, code="H00300.CSI", slope=0.2):
@@ -80,7 +89,6 @@ def test_benchmark_cache_is_immutable_and_no_network_when_covered(tmp_path):
 
 
 def test_missing_data_does_not_publish_or_replace_an_existing_cache(tmp_path):
-    from finance_quant.data.providers.tushare import TushareProviderError
 
     dates = pd.bdate_range("2025-01-02", periods=6)
     seed(tmp_path, dates[:-1])
@@ -113,7 +121,6 @@ def test_missing_data_does_not_publish_or_replace_an_existing_cache(tmp_path):
 
 
 def test_download_uses_official_settings_even_if_stock_source_is_a_proxy(tmp_path, monkeypatch):
-    from finance_quant.data.providers.tushare import TushareSettings
 
     monkeypatch.setattr(
         TushareSettings, "from_env", classmethod(lambda cls: cls("test-secret", "https://example.test/proxy"))
@@ -141,13 +148,11 @@ def test_download_uses_official_settings_even_if_stock_source_is_a_proxy(tmp_pat
 
 
 def test_relative_metrics_match_independent_math_and_handle_missing_zero_risk():
-    import math
-    import statistics
 
     dates = pd.bdate_range("2025-01-02", periods=4).strftime("%Y-%m-%d")
     equity = [
         {"date": d, "equity": a, "benchmark": b}
-        for d, a, b in zip(dates, [1.0, 1.1, 1.045, 1.1495], [1.0, 1.02, 1.01, 1.04])
+        for d, a, b in zip(dates, [1.0, 1.1, 1.045, 1.1495], [1.0, 1.02, 1.01, 1.04], strict=True)
     ]
     result = calculate_performance(equity)["relative_metrics"]
     active = np.diff([1.0, 1.1, 1.045, 1.1495]) / np.array([1.0, 1.1, 1.045]) - np.diff(
@@ -196,10 +201,6 @@ def test_switch_benchmark_reuses_native_execution_and_preserves_all_strategy_evi
     benchmark_root = tmp_path / "benchmarks"
     monkeypatch.setenv("FINANCE_QUANT_BENCHMARK_ROOT", str(benchmark_root))
     if historical:
-        from test_historical_workflow import request, warehouse_fixture
-
-        from finance_quant.application.historical_workflow import run_historical_research
-
         root = tmp_path / "warehouse"
         warehouse_fixture(root)
         doc = request()
@@ -213,12 +214,6 @@ def test_switch_benchmark_reuses_native_execution_and_preserves_all_strategy_evi
 
         calendar = pd.read_parquet(root / "reference/calendar.parquet").date
     else:
-        from test_managed_data import Provider
-
-        from finance_quant.application.real_workflow import run_configured
-        from finance_quant.configuration import DataConfig, ResearchConfig
-        from support.fixed_pool import download_dataset
-
         config = ResearchConfig(
             DataConfig(tmp_path / "data", "20241202", "20250228", ("600000.SH", "000001.SZ")),
             BacktestConfig("2025-01-02", "2025-02-28", topk=1),
@@ -228,8 +223,6 @@ def test_switch_benchmark_reuses_native_execution_and_preserves_all_strategy_evi
 
         def run(code):
             return run_configured(replace(config, backtest=replace(config.backtest, benchmark=code)))
-
-        from finance_quant.data.market import load_market
 
         cal = load_market(config.data.root)[2]
         calendar = cal.loc[cal.is_open, "date"]

@@ -15,16 +15,21 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from filelock import FileLock
 
+from finance_quant.application import market_download
 from finance_quant.application.research_readiness import validate_warmup
 from finance_quant.checksums import file_sha256, sha256_text
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
+from finance_quant.data.benchmarks import benchmark_options
 from finance_quant.data.execution_universe import validate_execution_universe
-from finance_quant.data.financials import financial_root
+from finance_quant.data.financials import FinancialBinding, FinancialStore, covered_codes, financial_root
+from finance_quant.data.historical_warehouse import warehouse_header, warehouse_option
+from finance_quant.data.industries import optional_industries
 from finance_quant.data.managed import atomic_json, coverage_report
 from finance_quant.data.market import load_market
+from finance_quant.data.shared_market import validation_counts
 from finance_quant.data.symbols import to_qlib
 from finance_quant.data.validation_config import CrosscheckConfig
-from finance_quant.research.factor_library import FACTOR_LIBRARY
+from finance_quant.research.factor_library import FACTOR_LIBRARY, uses_financials
 from finance_quant.research.fundamentals import fundamentals_for
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.neutralization import industry_context, parse_neutralization
@@ -129,10 +134,10 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
         if selected
         else {"mode": "snapshot", "snapshot_id": None, "codes": []}
     )
-    from finance_quant.application.market_download import warehouse_roots
-    from finance_quant.data.historical_warehouse import warehouse_option
 
-    historical_indices = [option for root in warehouse_roots(data_root) if (option := warehouse_option(root))]
+    historical_indices = [
+        option for root in market_download.warehouse_roots(data_root) if (option := warehouse_option(root))
+    ]
     if not selected and historical_indices:
         # Only a CSI 300 version exists: default to its newest research range.
         latest = historical_indices[0]
@@ -155,8 +160,6 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
     backtest = BacktestConfig(start, end, topk=min(3, len(data["codes"]) or 3))
     factors, evaluation = FactorConfig(), EvaluationConfig()
     neutralization = parse_neutralization()
-    from finance_quant.data.benchmarks import benchmark_options
-    from finance_quant.data.industries import optional_industries
 
     industry = optional_industries()
     financial = financial_summary(data_root)
@@ -199,7 +202,6 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
 
 def financial_summary(data_root: Path) -> dict | None:
     """Current financial version, described for the research form and the data page."""
-    from finance_quant.data.financials import FinancialStore
 
     store = FinancialStore(financial_root(data_root))
     try:
@@ -229,7 +231,6 @@ def coverage_row(financial: dict | None, codes, data_root: Path) -> dict | None:
     """How many of these codes hold a usable report in the current financial version."""
     if financial is None:
         return None
-    from finance_quant.data.financials import FinancialStore, covered_codes
 
     try:
         manifest = FinancialStore(financial_root(data_root)).version(financial["version"])
@@ -281,11 +282,13 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
         raise ValueError("请选择数据集：固定股票池快照或沪深300历史成分仓库")
     if obj["mode"] == "index_warehouse":
         _fields(obj, ("mode", "warehouse_id"), label="历史成分仓库")
-        from finance_quant.application.market_download import warehouse_roots
-        from finance_quant.data.historical_warehouse import warehouse_header, warehouse_option
 
         root = next(
-            (r for r in warehouse_roots(data_root) if (o := warehouse_option(r)) and o["id"] == obj["warehouse_id"]),
+            (
+                r
+                for r in market_download.warehouse_roots(data_root)
+                if (o := warehouse_option(r)) and o["id"] == obj["warehouse_id"]
+            ),
             None,
         )
         option = warehouse_option(root) if root is not None else None
@@ -362,20 +365,17 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
 
 def pin_financials(factors: FactorConfig, data_root: Path):
     """Pin the current financial version when any factor needs statements."""
-    from finance_quant.research.factor_library import uses_financials
 
     return _pin_financials(data_root) if uses_financials(factors) else None
 
 
 def pin_financials_for(configs, data_root: Path):
     """Pin for a set of alternative factor configurations (experiment candidates)."""
-    from finance_quant.research.factor_library import uses_financials
 
     return _pin_financials(data_root) if any(uses_financials(config) for config in configs) else None
 
 
 def _pin_financials(data_root: Path):
-    from finance_quant.data.financials import FinancialBinding, FinancialStore
 
     root = financial_root(data_root)
     manifest = FinancialStore(root).current()
@@ -388,7 +388,6 @@ def require_financial_coverage(binding, codes) -> None:
     """Refuse a request whose universe holds no usable report in the pinned version."""
     if binding is None:
         return
-    from finance_quant.data.financials import FinancialStore, covered_codes
 
     manifest = FinancialStore(binding.root).version(binding.version)
     covered = covered_codes(manifest, codes)
@@ -399,7 +398,6 @@ def require_financial_coverage(binding, codes) -> None:
 
 
 def request_config(request: dict, data: DataConfig, runs_root: Path, data_root: Path) -> ResearchConfig:
-    from finance_quant.data.financials import FinancialBinding
 
     pinned = request.get("financials", {}).get("version")
     binding = FinancialBinding.from_dict(financial_root(data_root), request["financials"]) if pinned else None
@@ -503,8 +501,6 @@ def project_snapshot(snapshot_dir: Path, codes: tuple[str, ...], data_root: Path
             id="subset-" + digest, codes=sorted(codes), rows=len(chosen), coverage=coverage, projection=projection
         )
         if manifest.get("schema_version") == "market-v4-shared":
-            from finance_quant.data.shared_market import validation_counts
-
             manifest["validation_counts"] = validation_counts(chosen)
         if "cross_validation" in manifest:
             report = manifest["cross_validation"]

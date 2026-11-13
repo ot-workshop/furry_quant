@@ -9,47 +9,35 @@ import re
 import traceback
 from pathlib import Path
 
-from finance_quant.runtime import configure_runtime
-
-configure_runtime()
-
 from filelock import FileLock
 
+from finance_quant.application import (
+    data_updates,
+    financial_download,
+    historical_workflow,
+    industry_download,
+    market_download,
+)
+from finance_quant.application.backup_jobs import execute
 from finance_quant.application.evaluation_workflow import evaluate_configured
+from finance_quant.application.experiment_tasks import run_experiment_task
 from finance_quant.application.factor_workflow import publish_factor_run
 from finance_quant.application.real_workflow import run_configured
-from finance_quant.application.research_requests import project_snapshot, request_config, validate_research_data
-from finance_quant.configuration import DataConfig
+from finance_quant.application.research_requests import request_config, validate_research_data
+from finance_quant.application.task_context import TaskContext, attach_outputs, financial_binding, prepare_snapshot
+from finance_quant.application.task_context import register_snapshot_dataset as register_snapshot_dataset
 from finance_quant.data.managed import DatasetDownloadError
-from finance_quant.data.market import load_market
-from finance_quant.data.validation_config import CrosscheckConfig
+from finance_quant.data.network_budget import DownloadPaused
+from finance_quant.data.postgres_market import PostgresMarketStore
+from finance_quant.data.shared_market import configure_store
+from finance_quant.persistence.market import MarketRepository
+from finance_quant.persistence.results import PgResultStore
+from finance_quant.persistence.tasks import PgTaskStore
 
 LOGGER = logging.getLogger(__name__)
 
 
-def register_snapshot_dataset(root, request, repository, storage_root):
-    """Register an immutable dataset when a PostgreSQL repository was injected."""
-    if repository is None:
-        return None
-    return repository.register_snapshot(root, storage_root, request=request.get("data", {}))
-
-
-def attach_outputs(result_store, dataset_id, result):
-    if not dataset_id:
-        return
-    attach = getattr(result_store, "attach_dataset", None)
-    if attach is None:
-        return
-    for category, key in (
-        ("factors", "factor_run_id"),
-        ("backtests", "backtest_run_id"),
-        ("evaluations", "evaluation_run_id"),
-    ):
-        attach(category, result[key], dataset_id)
-
-
 def safe_error(error):
-    from finance_quant.data.network_budget import DownloadPaused
 
     if isinstance(error, DatasetDownloadError):
         return "数据下载或联合校验未通过，请检查服务权限、股票代码与日期；重新运行会复用已完成缓存。"
@@ -115,8 +103,6 @@ def run_task(
             raise ValueError("Only a claimed task can execute")
         kind = task.get("kind", "research")
         if kind == "maintenance":
-            from finance_quant.application.backup_jobs import execute
-
             try:
                 return execute(store, task, root=storage_root)
             except Exception as error:
@@ -136,8 +122,6 @@ def run_task(
         )
         try:
             if kind == "experiment":
-                from finance_quant.application.experiment_tasks import run_experiment_task
-
                 result = run_experiment_task(context, task["request"], task["execution"])
             elif task["execution"]["mode"] == "index_warehouse":
                 result = _run_historical(context, task["request"], task["execution"])
@@ -150,31 +134,10 @@ def run_task(
             store.finish(identifier, "failed", error=details["summary"], error_details=details)
 
 
-class TaskContext:
-    """Collaborators shared by every task kind executed in this worker process."""
-
-    def __init__(self, identifier, store, runs_root, data_root, storage_root, result_store_factory, repository):
-        self.identifier, self.store = identifier, store
-        self.runs_root, self.data_root, self.storage_root = runs_root, data_root, storage_root
-        self.result_store_factory, self.repository = result_store_factory, repository
-
-    def stage(self, phase, message, completed):
-        self.store.stage(self.identifier, phase, message, completed)
-
-
-def financial_binding(execution: dict, data_root):
-    from finance_quant.data.financials import FinancialBinding, financial_root
-
-    pinned = execution.get("financials", {}).get("version")
-    return FinancialBinding.from_dict(financial_root(data_root), execution["financials"]) if pinned else None
-
-
 def _run_historical(context: TaskContext, request: dict, execution: dict) -> dict:
-    from finance_quant.application.historical_workflow import run_historical_research
-    from finance_quant.application.market_download import warehouse_roots
 
     root = Path(execution["warehouse_dir"]).resolve()
-    if root not in warehouse_roots(context.data_root):
+    if root not in market_download.warehouse_roots(context.data_root):
         raise ValueError("历史数据仓路径不合法")
     binding = financial_binding(execution, context.data_root)
     dataset_record = None
@@ -184,7 +147,7 @@ def _run_historical(context: TaskContext, request: dict, execution: dict) -> dic
         )
         root = dataset_record["path"]
     result_store = context.result_store_factory(dataset_record["id"] if dataset_record else None)
-    result = run_historical_research(
+    result = historical_workflow.run_historical_research(
         request,
         root,
         context.runs_root,
@@ -197,28 +160,6 @@ def _run_historical(context: TaskContext, request: dict, execution: dict) -> dic
         attach_outputs(result_store, dataset_record["id"], result)
         result["dataset_id"] = dataset_record["id"]
     return result
-
-
-def prepare_snapshot(context: TaskContext, request: dict, execution: dict):
-    """Pin the queued snapshot version and project the requested stock pool."""
-    snapshot_dir = Path(execution["snapshot_dir"])
-    if not snapshot_dir.resolve().is_relative_to(context.data_root.resolve()):
-        raise ValueError("Invalid snapshot location")
-    parent = load_market(snapshot_dir)[3]
-    if parent["id"] != execution["data_version"] or parent["files"] != execution["files"]:
-        raise ValueError("排队期间数据版本发生变化，请刷新数据列表后重新提交")
-    root = project_snapshot(snapshot_dir, tuple(request["data"]["codes"]), context.data_root)
-    market, _, calendar, manifest = load_market(root)
-    data = DataConfig(
-        root,
-        manifest["start"],
-        manifest["end"],
-        manifest["codes"],
-        manifest.get("benchmark", "000300.SH"),
-        CrosscheckConfig(manifest.get("cross_validation", {}).get("mode", "off")),
-    )
-    dataset_record = register_snapshot_dataset(root, request, context.repository, context.storage_root)
-    return market, calendar, manifest, data, dataset_record
 
 
 def _run_snapshot(context: TaskContext, request: dict, execution: dict) -> dict:
@@ -266,9 +207,8 @@ def run_download_task(store, task, data_root):
     try:
         store.stage(identifier, "download", "下载并检查数据", 0)
         (root / "PAUSE").unlink(missing_ok=True)
-        from finance_quant.application.market_download import run
 
-        result = run(root, task["execution"]["plan_id"])
+        result = market_download.run(root, task["execution"]["plan_id"])
         succeeded = result["status"] == "complete"
         store.finish(
             identifier,
@@ -286,7 +226,6 @@ def run_download_task(store, task, data_root):
 
 
 def run_data_update_task(store, task, data_root):
-    from finance_quant.application import data_updates
 
     identifier = task["id"]
     try:
@@ -318,7 +257,6 @@ def run_financial_download_task(store, task, data_root):
     execution = task["execution"]
     try:
         store.stage(identifier, "download", "按股票下载并核对财务报表", 0)
-        from finance_quant.application import financial_download
 
         result = financial_download.run(data_root, execution["plan_id"])
         succeeded = result["status"] == "complete"
@@ -342,7 +280,6 @@ def run_industry_download_task(store, task):
     execution = task["execution"]
     try:
         store.stage(identifier, "download", "下载申万行业分类与历史成分", 0)
-        from finance_quant.application import industry_download
 
         def progress(row):
             store.stage(identifier, "download", row.get("message", "下载行业数据"), row.get("completed", 0))
@@ -381,11 +318,6 @@ def main():
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--storage-root", type=Path, required=True)
     args = parser.parse_args()
-    from finance_quant.data.postgres_market import PostgresMarketStore
-    from finance_quant.data.shared_market import configure_store
-    from finance_quant.persistence.market import MarketRepository
-    from finance_quant.persistence.results import PgResultStore
-    from finance_quant.persistence.tasks import PgTaskStore
 
     configure_store(PostgresMarketStore())
     runs_root, storage_root = args.runs_root.resolve(), args.storage_root.resolve()

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select, text, update
 
 from finance_quant.checksums import sha256_text
+from finance_quant.task_contracts import TaskConflict
 
 from .database import check_schema, make_engine
 from .schema import research_task as task
@@ -24,8 +25,6 @@ def now():
 
 
 def conflict(message):
-    from finance_quant.application.tasks import TaskConflict
-
     return TaskConflict(message)
 
 

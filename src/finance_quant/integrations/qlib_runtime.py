@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from finance_quant.integrations.china_a import ChinaAExchange, MarketStates
 from finance_quant.integrations.execution import CostAwareExchange
 from finance_quant.integrations.recording_strategy import (
     RecordingHistoricalStrategy,
@@ -192,8 +193,6 @@ def build_execution(
     }
     exchange_kwargs = {**exchange_kwargs, "start_time": start, "end_time": end}
     if historical is not None:
-        from finance_quant.integrations.china_a import ChinaAExchange, MarketStates
-
         historical_kwargs = {
             **exchange_kwargs,
             "limit_threshold": ("($volume <= 0)", "($volume <= 0)"),

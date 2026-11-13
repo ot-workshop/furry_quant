@@ -5,8 +5,12 @@ Checking chronology does not certify the historical vendor publication vintage.
 
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 import pandas as pd
+
+from finance_quant.data.china_a_rules import RULE_VERSION
 
 VERSION = "temporal-execution-audit-v1"
 VALUATION_FIELDS = {"pe_ttm", "pb", "total_mv"}
@@ -38,7 +42,7 @@ def validate_valuation_times(frame, required_fields):
         if available not in frame:
             continue
         cutoff = frame.date.dt.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=18)
-        for value, until in zip(frame.loc[present, available], cutoff.loc[present]):
+        for value, until in zip(frame.loc[present, available], cutoff.loc[present], strict=True):
             if value is None or pd.isna(value):
                 continue  # Unknown stays unverified, like an absent optional field.
             try:
@@ -173,7 +177,7 @@ def capacity_diagnostics(quotes, trades):
         part = part.sort_values("date")
         turnover = part["amount"] if "amount" in part else part.volume * part.close
         prior = turnover.shift(1).rolling(20, min_periods=20).mean()
-        for date, mean in zip(part.date, prior):
+        for date, mean in zip(part.date, prior, strict=True):
             value = totals.get((instrument, date.strftime("%Y-%m-%d")))
             if value is None:
                 continue
@@ -194,9 +198,6 @@ def capacity_diagnostics(quotes, trades):
 
 
 def add_execution_audit(result, quotes, factors):
-    import copy
-
-    from finance_quant.data.china_a_rules import RULE_VERSION
 
     audit = copy.deepcopy(factors["metadata"].get("temporal_audit") or factor_temporal_audit(factors["metadata"]))
     audit["items"] += [

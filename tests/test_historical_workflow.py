@@ -4,10 +4,15 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
+import qlib
+from qlib.backtest.decision import Order
+from qlib.backtest.position import Position
 
 from finance_quant.application.historical_workflow import run_historical_research
 from finance_quant.data.china_a_rules import apply_execution_rules, round_shares
 from finance_quant.data.historical_warehouse import load_historical_input
+from finance_quant.integrations.china_a import ChinaAExchange
+from finance_quant.integrations.qlib_runner import write_features
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.registry import FactorConfig, FactorSpec
 
@@ -295,12 +300,6 @@ def test_new_ipo_history_is_excluded_and_bad_snapshot_or_holes_are_rejected(tmp_
 
 
 def test_qlib_exchange_enforces_star_minimum_tplusone_and_odd_lot_full_exit(tmp_path):
-    import qlib
-    from qlib.backtest.decision import Order
-    from qlib.backtest.position import Position
-
-    from finance_quant.integrations.china_a import ChinaAExchange
-    from finance_quant.integrations.qlib_runner import write_features
 
     days = pd.bdate_range("2024-01-02", periods=3)
     quotes = pd.DataFrame(

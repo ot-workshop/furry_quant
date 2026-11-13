@@ -72,6 +72,21 @@ def test_low_volatility_direction_matches_trading_scores():
     assert result["factors"]["volatility"]["horizons"]["1"]["daily"][0]["rank_ic"] == pytest.approx(1)
 
 
+@pytest.mark.parametrize("names", [("momentum", "value", "volatility"), ("volatility", "value", "momentum")])
+def test_multiple_factor_directions_keep_their_own_values_when_reordered(names):
+    quotes, factors, sessions = example()
+    factors["metadata"]["weights"] = dict.fromkeys(names, 1 / len(names))
+    for row in factors["history"]:
+        opposite = 6 - row["raw"]["momentum"]
+        row["raw"].update(value=opposite, volatility=opposite)
+    result = evaluate(quotes, factors, sessions)
+    for name, expected in {"momentum": 1, "value": -1, "volatility": 1}.items():
+        daily = result["factors"][name]["horizons"]["1"]["daily"][0]
+        assert daily["date"] == "2025-01-02"
+        assert daily["ic"] == pytest.approx(expected)
+        assert daily["rank_ic"] == pytest.approx(expected)
+
+
 def test_labels_do_not_buy_at_signal_close_and_ignore_future_closes():
     quotes, factors, sessions = example()
     quotes["close"] = 1_000_000.0
