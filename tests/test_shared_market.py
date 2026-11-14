@@ -25,6 +25,20 @@ class SharedProvider(Primary):
         self.conflict = False
 
     def query(self, api, **params):
+        if api == "namechange":
+            self.calls.append((api, tuple(sorted(params.items()))))
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": params["ts_code"],
+                        "name": "测试股票",
+                        "start_date": "20100101",
+                        "end_date": None,
+                        "ann_date": "20100101",
+                        "change_reason": "上市",
+                    }
+                ]
+            )
         if api == "stock_basic":
             self.calls.append((api, tuple(sorted(params.items()))))
             status = params["list_status"]

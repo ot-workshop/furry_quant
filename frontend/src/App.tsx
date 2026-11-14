@@ -20,7 +20,12 @@ function Page({ route }: { route: Route }) {
   const [first, second] = route.params;
   switch (route.section) {
     case "research":
-      return <ResearchNewPage fromTask={route.search.get("from")} />;
+      return (
+        <ResearchNewPage
+          fromTask={route.search.get("from")}
+          marketVersion={route.search.get("market")}
+        />
+      );
     case "tasks":
       return <TasksPage focus={route.search.get("focus")} />;
     case "backtests":

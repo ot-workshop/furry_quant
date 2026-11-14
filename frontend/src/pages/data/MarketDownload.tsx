@@ -252,7 +252,7 @@ export default function MarketDownload() {
                     {
                       key: "requests",
                       label: "预计请求",
-                      children: `${formatNumber(plan.estimated_quote_requests, 0)} 次`,
+                      children: `行情 ${formatNumber(plan.estimated_quote_requests, 0)} 次；历史名称至多 ${formatNumber(plan.estimated_name_requests ?? 0, 0)} 次（缓存可复用）`,
                     },
                   ]}
                 />

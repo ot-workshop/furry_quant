@@ -155,5 +155,7 @@ def export_qlib_result(
         result["metadata"]["universe_policy"] = historical["membership_policy"]
         result["metadata"]["market_rule_version"] = RULE_VERSION
         result["summary"]["strategy"] = "HistoricalIndexTopkStrategy"
+        if "universe_filters" in historical:
+            result["summary"]["strategy"] = "DynamicUniverseTopkStrategy"
     add_execution_audit(result, quotes, factors)
     return enrich_backtest(result)

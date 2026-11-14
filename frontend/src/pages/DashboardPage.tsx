@@ -34,7 +34,8 @@ export default function DashboardPage() {
 
   const fixed = status.data?.snapshots.filter((item) => !item.is_subset) ?? [];
   const historical = status.data?.historical_indices ?? [];
-  const datasetCount = fixed.length + historical.length;
+  const market = status.data?.market_universes ?? [];
+  const datasetCount = fixed.length + historical.length + market.length;
   const database = status.data?.database;
   const active =
     tasks.data?.items.filter(
@@ -93,7 +94,8 @@ export default function DashboardPage() {
           />
           {status.data ? (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              固定股票池 {fixed.length} · 沪深300历史成分 {historical.length}
+              固定股票池 {fixed.length} · 沪深300历史成分 {historical.length} ·
+              条件筛选 {market.length}
             </Typography.Text>
           ) : null}
         </Card>

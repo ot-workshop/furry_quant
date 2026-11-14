@@ -90,14 +90,20 @@ def factor_temporal_audit(metadata):
         & VALUATION_FIELDS
     )
     dynamic = bool(metadata.get("membership_policy"))
+    market_universe = metadata.get("universe_kind") in {"market", "custom"}
+    pool_filters = metadata.get("universe_filters", {})
+    if pool_filters.get("min_market_cap") is not None or pool_filters.get("max_market_cap") is not None:
+        fields = sorted(set(fields) | {"total_mv"})
     industry = metadata.get("industry_data")
-    industry_used = metadata.get("neutralization", {}).get("mode") == "industry"
+    industry_used = metadata.get("neutralization", {}).get("mode") == "industry" or bool(pool_filters.get("industries"))
     items = [
         {
             "key": "membership",
             "label": "股票池时间口径",
             "status": "assumption" if dynamic else "selection_bias",
-            "detail": "月度权重快照后下一交易日起使用；trade_date是观察日，未取得完整调整公告、生效日和历史发布时刻，不能视为精确历史成分。"
+            "detail": "按信号日历史生命周期与条件筛选；ST使用历史名称变更估计，开启ST剔除时同时剔除未知状态。"
+            if market_universe
+            else "月度权重快照后下一交易日起使用；trade_date是观察日，未取得完整调整公告、生效日和历史发布时刻，不能视为精确历史成分。"
             if dynamic
             else "用户固定股票池；历史表现可能包含选择和幸存者偏差，不视为历史全市场或历史指数成分。",
         },
@@ -116,7 +122,8 @@ def factor_temporal_audit(metadata):
                 if industry
                 else "本批次未使用独立历史行业数据。"
             )
-            + ("行业仅用于诊断，不参与本次评分。" if industry and not industry_used else ""),
+            + ("行业仅用于诊断，不参与本次评分。" if industry and not industry_used else "")
+            + (f"股票池另按{pool_filters['industry_level']}历史行业筛选。" if pool_filters.get("industries") else ""),
         },
         {
             "key": "valuation",

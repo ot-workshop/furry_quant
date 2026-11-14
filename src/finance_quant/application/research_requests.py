@@ -16,6 +16,11 @@ import pandas as pd
 from filelock import FileLock
 
 from finance_quant.application import market_download
+from finance_quant.application.market_requests import (
+    pool_industry_display,
+    validate_market_request,
+    validate_pool_filters,
+)
 from finance_quant.application.research_readiness import validate_warmup
 from finance_quant.checksums import file_sha256, sha256_text
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
@@ -26,6 +31,8 @@ from finance_quant.data.historical_warehouse import warehouse_header, warehouse_
 from finance_quant.data.industries import optional_industries
 from finance_quant.data.managed import atomic_json, coverage_report
 from finance_quant.data.market import load_market
+from finance_quant.data.market_universe import market_option, market_roots
+from finance_quant.data.pool_inputs import security_coverage
 from finance_quant.data.shared_market import validation_counts
 from finance_quant.data.symbols import to_qlib
 from finance_quant.data.validation_config import CrosscheckConfig
@@ -34,6 +41,7 @@ from finance_quant.research.fundamentals import fundamentals_for
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.neutralization import industry_context, parse_neutralization
 from finance_quant.research.registry import EvaluationConfig, FactorConfig, FactorSpec
+from finance_quant.research.universe import UniverseFilters
 
 MAX_CODES = 50
 BENCHMARKS = [
@@ -121,6 +129,7 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
                 "benchmark": manifest.get("benchmark", "000300.SH"),
                 "is_subset": "projection" in manifest,
                 "codes": codes,
+                **security_coverage(manifest["snapshot_dir"], manifest, sorted(manifest["codes"])),
                 "validation_mode": manifest.get("cross_validation", {}).get("mode", "off"),
                 "source": manifest.get("source", "third_party_tushare_compatible"),
             }
@@ -138,6 +147,7 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
     historical_indices = [
         option for root in market_download.warehouse_roots(data_root) if (option := warehouse_option(root))
     ]
+    market_universes = [option for root in market_roots(data_root) if (option := market_option(root))]
     if not selected and historical_indices:
         # Only a CSI 300 version exists: default to its newest research range.
         latest = historical_indices[0]
@@ -155,9 +165,16 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
         )
         start = days[min(21, len(days) - 1)].strftime("%Y-%m-%d")
         end = selected["end"]
+    elif market_universes:
+        latest = market_universes[0]
+        end = latest["end"]
+        history = max(spec.lookback for spec in FactorConfig().specs) + 1
+        start = latest["trading_dates"][min(history, len(latest["trading_dates"]) - 1)]
+        start = max(start, latest["start"])
+        data = {"mode": "market_warehouse", "warehouse_id": latest["id"], "filters": UniverseFilters().as_dict()}
     else:
         start = str(int(end[:4]) - 1) + "-03-03"
-    backtest = BacktestConfig(start, end, topk=min(3, len(data["codes"]) or 3))
+    backtest = BacktestConfig(start, end, topk=min(3, len(data.get("codes", [])) or 3))
     factors, evaluation = FactorConfig(), EvaluationConfig()
     neutralization = parse_neutralization()
 
@@ -172,6 +189,9 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
             {**row, "financial_coverage": coverage_row(financial, row["codes"], data_root)}
             for row in historical_indices
         ],
+        "market_universes": [
+            {**row, "financial_coverage": coverage_row(financial, row["codes"], data_root)} for row in market_universes
+        ],
         "financial_data": financial,
         "comparison_benchmarks": benchmark_options(),
         "industry_data": (
@@ -182,6 +202,10 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
                 },
                 "data_asof": industry.data_asof,
                 "levels": industry.levels,
+                "sectors": industry.frame[["level", "industry_code", "industry_name"]]
+                .drop_duplicates()
+                .sort_values(["level", "industry_code"])
+                .to_dict("records"),
             }
             if industry
             else None
@@ -278,10 +302,25 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
     binding = pin_financials(factors, data_root)
     financial_extra = {"financials": binding.as_dict()} if binding else {}
     obj = document["data"]
-    if not isinstance(obj, dict) or obj.get("mode") not in {"snapshot", "index_warehouse"}:
+    if not isinstance(obj, dict) or obj.get("mode") not in {"snapshot", "index_warehouse", "market_warehouse"}:
         raise ValueError("请选择数据集：固定股票池快照或沪深300历史成分仓库")
+    if obj["mode"] == "market_warehouse":
+        selected, pins, option = validate_market_request(obj, data_root, backtest, factors, evaluation)
+        neutral_extra = pool_industry_display(selected, neutral_extra, neutralization)
+        require_financial_coverage(binding, option["codes"])
+        if binding:
+            pins["financials"] = binding.as_dict()
+        return {
+            "name": name.strip(),
+            "data": selected,
+            "backtest": _backtest_dict(backtest),
+            "factors": factors.as_list(),
+            "evaluation": evaluation.as_dict(),
+            **neutral_extra,
+            **financial_extra,
+        }, pins
     if obj["mode"] == "index_warehouse":
-        _fields(obj, ("mode", "warehouse_id"), label="历史成分仓库")
+        _fields(obj, ("mode", "warehouse_id"), ("filters",), label="历史成分仓库")
 
         root = next(
             (
@@ -307,10 +346,17 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
         if backtest.topk > 300 or backtest.initial_cash > 1e12:
             raise ValueError("目标持股最多300只，资金不超过一万亿元")
         validate_warmup(option["data_start"], option["end"], backtest.start, factors, calendar)
+        filter_extra = (
+            {"filters": validate_pool_filters(obj["filters"], option, backtest, factors, calendar)}
+            if "filters" in obj
+            else {}
+        )
+        if filter_extra:
+            neutral_extra = pool_industry_display(filter_extra, neutral_extra, neutralization)
         require_financial_coverage(binding, option["codes"])
         normalized = {
             "name": name.strip(),
-            "data": {"mode": "index_warehouse", "warehouse_id": option["id"]},
+            "data": {"mode": "index_warehouse", "warehouse_id": option["id"], **filter_extra},
             "backtest": _backtest_dict(backtest),
             "factors": factors.as_list(),
             "evaluation": evaluation.as_dict(),
@@ -321,7 +367,7 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
         if binding:
             pins["financials"] = binding.as_dict()
         return normalized, pins
-    _fields(obj, ("mode", "snapshot_id", "codes"), label="快照")
+    _fields(obj, ("mode", "snapshot_id", "codes"), ("filters",), label="快照")
     identifier = obj["snapshot_id"]
     if not isinstance(identifier, str) or identifier not in (registry := snapshot_registry(data_root)):
         raise ValueError("数据快照不存在或未通过校验，请刷新数据列表")
@@ -351,7 +397,26 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
         raise ValueError("初始资金不能超过一万亿元")
     require_financial_coverage(binding, list(data.codes))
     config = ResearchConfig(data, backtest, runs_root, factors, evaluation, neutralization, binding)
-    validate_research_data(config, market, calendar)
+    if "filters" in obj:
+        execution["manifest_sha256"] = file_sha256(Path(manifest["snapshot_dir"]) / "manifest.json")
+        validate_warmup(data.start, data.end, backtest.start, factors, calendar)
+        sessions = pd.DatetimeIndex(calendar.loc[calendar.is_open, "date"])
+        if (
+            pd.Timestamp(backtest.start) not in sessions
+            or pd.Timestamp(backtest.end) not in sessions
+            or not _iso(manifest["start"]) <= backtest.start <= backtest.end <= _iso(manifest["end"])
+        ):
+            raise ValueError("回测区间须在所选行情范围内，且起止为交易日")
+        if len(sessions[(sessions >= backtest.start) & (sessions <= backtest.end)]) <= max(evaluation.horizons):
+            raise ValueError("回测交易日数须超过最长评估持有期")
+        option = {
+            "data_start": _iso(manifest["start"]),
+            **security_coverage(manifest["snapshot_dir"], manifest, list(data.codes)),
+        }
+        normalized_data["filters"] = validate_pool_filters(obj["filters"], option, backtest, factors, calendar)
+        neutral_extra = pool_industry_display(normalized_data, neutral_extra, neutralization)
+    else:
+        validate_research_data(config, market, calendar)
     return {
         "name": name.strip(),
         "data": normalized_data,

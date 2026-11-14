@@ -17,6 +17,7 @@ import { formatDateTime, formatPercent } from "../utils/format";
 const STRATEGIES: Record<string, string> = {
   TopkDropoutStrategy: "固定股票池",
   HistoricalIndexTopkStrategy: "历史成分动态池",
+  DynamicUniverseTopkStrategy: "动态条件股票池",
 };
 
 export default function BacktestListPage() {

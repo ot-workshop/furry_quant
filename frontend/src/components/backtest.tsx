@@ -593,6 +593,7 @@ export function IndustryPanel({
 
 const EVENT_LABELS: Record<string, string> = {
   index_exit: "成分调出",
+  pool_exit: "不再符合股票池条件",
   outside_listing_lifecycle: "生命周期结束",
   score_rotation: "评分轮换",
   rank_selection: "排名选入",

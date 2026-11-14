@@ -27,6 +27,7 @@ from finance_quant.application.research_requests import request_config, validate
 from finance_quant.application.task_context import TaskContext, attach_outputs, financial_binding, prepare_snapshot
 from finance_quant.application.task_context import register_snapshot_dataset as register_snapshot_dataset
 from finance_quant.data.managed import DatasetDownloadError
+from finance_quant.data.market_universe import market_roots
 from finance_quant.data.network_budget import DownloadPaused
 from finance_quant.data.postgres_market import PostgresMarketStore
 from finance_quant.data.shared_market import configure_store
@@ -123,7 +124,7 @@ def run_task(
         try:
             if kind == "experiment":
                 result = run_experiment_task(context, task["request"], task["execution"])
-            elif task["execution"]["mode"] == "index_warehouse":
+            elif task["execution"]["mode"] in {"index_warehouse", "market_warehouse"}:
                 result = _run_historical(context, task["request"], task["execution"])
             else:
                 result = _run_snapshot(context, task["request"], task["execution"])
@@ -137,7 +138,12 @@ def run_task(
 def _run_historical(context: TaskContext, request: dict, execution: dict) -> dict:
 
     root = Path(execution["warehouse_dir"]).resolve()
-    if root not in market_download.warehouse_roots(context.data_root):
+    allowed = (
+        market_roots(context.data_root)
+        if execution["mode"] == "market_warehouse"
+        else market_download.warehouse_roots(context.data_root)
+    )
+    if root not in allowed:
         raise ValueError("历史数据仓路径不合法")
     binding = financial_binding(execution, context.data_root)
     dataset_record = None
@@ -165,6 +171,20 @@ def _run_historical(context: TaskContext, request: dict, execution: dict) -> dic
 def _run_snapshot(context: TaskContext, request: dict, execution: dict) -> dict:
     context.stage("prepare", "准备所选股票池并检查预热数据", 0)
     market, calendar, manifest, data, dataset_record = prepare_snapshot(context, request, execution)
+    if "filters" in request["data"]:
+        result_store = context.result_store_factory(dataset_record["id"] if dataset_record else None)
+        result = historical_workflow.run_historical_research(
+            request,
+            data.root,
+            context.runs_root,
+            stage=context.stage,
+            result_store=result_store,
+            financials=financial_binding(execution, context.data_root),
+        )
+        if dataset_record:
+            attach_outputs(result_store, dataset_record["id"], result)
+            result["dataset_id"] = dataset_record["id"]
+        return result
     config = request_config(request, data, context.runs_root, context.data_root)
     validate_research_data(config, market, calendar)
     result_store = context.result_store_factory(dataset_record["id"] if dataset_record else None)

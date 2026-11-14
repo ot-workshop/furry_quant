@@ -17,6 +17,7 @@ import {
   BacktestSection,
   CostSection,
   DataSection,
+  UniverseFilters,
   EvaluationSection,
   FactorSection,
 } from "../research/sections";
@@ -28,6 +29,7 @@ import {
   earliestStart,
   formFromRequest,
   mergeDraft,
+  marketOption,
   poolSize,
   pruneFactors,
   readDraft,
@@ -40,8 +42,10 @@ import { useApiResource } from "../hooks/useApiResource";
 
 export default function ResearchNewPage({
   fromTask,
+  marketVersion = null,
 }: {
   fromTask: string | null;
+  marketVersion?: string | null;
 }) {
   const options = useApiResource((signal) => researchApi.options(signal), []);
   if (options.data === null)
@@ -50,22 +54,52 @@ export default function ResearchNewPage({
     ) : (
       <Loading rows={10} />
     );
-  return <ResearchForm options={options.data} fromTask={fromTask} />;
+  return (
+    <ResearchForm
+      key={fromTask ?? marketVersion ?? "draft"}
+      options={options.data}
+      fromTask={fromTask}
+      marketVersion={marketVersion}
+    />
+  );
 }
 
 function ResearchForm({
   options,
   fromTask,
+  marketVersion,
 }: {
   options: ResearchOptions;
   fromTask: string | null;
+  marketVersion: string | null;
 }) {
   const { message } = App.useApp();
   const [form, setForm] = useState<FormState>(() => {
-    const draft = fromTask ? null : readDraft();
-    const initial = draft
+    const draft = fromTask || marketVersion ? null : readDraft();
+    let initial = draft
       ? mergeDraft(defaultForm(options), draft, options)
       : defaultForm(options);
+    if (marketVersion && marketOption(options, marketVersion)) {
+      initial = {
+        ...initial,
+        sourceMode: "market_warehouse",
+        marketWarehouseId: marketVersion,
+        filtersEnabled: true,
+      };
+      const option = marketOption(options, marketVersion)!;
+      const earliest = earliestStart(initial, options) ?? option.start;
+      initial = {
+        ...initial,
+        start:
+          initial.start < earliest || initial.start > option.end
+            ? earliest
+            : initial.start,
+        end:
+          initial.end < earliest || initial.end > option.end
+            ? option.end
+            : initial.end,
+      };
+    }
     return pruneFactors(initial, options);
   });
   const [notice, setNotice] = useState<string[]>([]);
@@ -127,7 +161,11 @@ function ResearchForm({
     }
   }
 
-  if (!options.snapshots.length && !options.historical_indices?.length)
+  if (
+    !options.snapshots.length &&
+    !options.historical_indices?.length &&
+    !options.market_universes?.length
+  )
     return (
       <>
         <PageHeader title="新建研究" />
@@ -175,6 +213,7 @@ function ResearchForm({
       <div className="with-aside">
         <Flex vertical gap={16}>
           <DataSection form={form} options={options} update={update} />
+          <UniverseFilters form={form} options={options} update={update} />
           <FactorSection
             form={form}
             options={options}
@@ -197,10 +236,16 @@ function ResearchForm({
               <Summary
                 label="数据"
                 value={
-                  form.sourceMode === "index_warehouse"
-                    ? "沪深300历史成分（动态）"
-                    : `${poolSize(form, options)} 只股票`
+                  form.sourceMode === "market_warehouse"
+                    ? `动态股票池 · 数据覆盖${poolSize(form, options)}只`
+                    : form.sourceMode === "index_warehouse"
+                      ? "沪深300历史成分（动态）"
+                      : `${poolSize(form, options)} 只股票`
                 }
+              />
+              <Summary
+                label="条件筛选"
+                value={form.filtersEnabled ? "开启" : "关闭"}
               />
               <Summary
                 label="数据范围"

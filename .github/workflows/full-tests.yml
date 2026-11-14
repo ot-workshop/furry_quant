@@ -78,7 +78,7 @@ jobs:
           POSTGRES_PASSWORD: test-only-password
           FINANCE_QUANT_TEST_POSTGRES: "1"
         run: >-
-          uv run pytest -q tests/integration/test_postgres_runtime.py
+          uv run pytest -q tests/integration/test_postgres_runtime.py tests/integration/test_market_universe_postgres.py
           --basetemp /tmp/finance-quant-postgres-tests
           -o cache_dir=/tmp/finance-quant-postgres-pytest-cache
 

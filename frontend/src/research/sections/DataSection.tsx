@@ -1,7 +1,7 @@
 import {
-  Alert,
   Button,
   Card,
+  Descriptions,
   Form,
   Input,
   Segmented,
@@ -10,12 +10,16 @@ import {
   Typography,
 } from "antd";
 import type { ResearchOptions } from "../../api/research";
-import { historicalOption, snapshotOf, type FormState } from "../form";
+import {
+  customStocks,
+  dataRange,
+  earliestStart,
+  historicalOption,
+  marketOption,
+  selectedCoverage,
+  type FormState,
+} from "../form";
 import type { Update } from "./types";
-const SOURCE_LABELS: Record<string, string> = {
-  official_tushare_shared: "官方共享行情",
-  tushare_baostock: "联合数据",
-};
 
 export function DataSection({
   form,
@@ -26,147 +30,235 @@ export function DataSection({
   options: ResearchOptions;
   update: Update;
 }) {
-  const snapshot = snapshotOf(options, form.snapshotId);
-  const historical = historicalOption(options, form.warehouseId);
   const historicalChoices = options.historical_indices ?? [];
-  const exports = options.snapshots.filter((item) => !item.is_subset);
-  const subsets = options.snapshots.filter((item) => item.is_subset);
+  const marketChoices = options.market_universes ?? [];
+  const stocks = customStocks(form, options);
+  const coverage = selectedCoverage(form, options);
+  const range = dataRange(form, options);
+  const selected =
+    form.sourceMode === "market_warehouse"
+      ? marketOption(options, form.marketWarehouseId)
+      : form.sourceMode === "index_warehouse"
+        ? historicalOption(options, form.warehouseId)
+        : null;
 
-  function chooseSnapshot(id: string) {
-    const next = snapshotOf(options, id);
-    if (!next) return;
-    update({
-      snapshotId: id,
-      codes: next.codes.map((item) => item.code),
-      topk: Math.min(form.topk, next.codes.length),
+  function changeData(patch: Partial<FormState>) {
+    const next = { ...form, ...patch };
+    const nextRange = dataRange(next, options);
+    const earliest = earliestStart(next, options);
+    if (nextRange) {
+      const lower = earliest ?? nextRange.start;
+      patch.start =
+        next.start < lower || next.start > nextRange.end ? lower : next.start;
+      patch.end =
+        next.end < patch.start || next.end > nextRange.end
+          ? nextRange.end
+          : next.end;
+    }
+    update(patch);
+  }
+
+  function chooseCustom(snapshotId: string) {
+    const available = new Set(
+      customStocks({ ...form, snapshotId }, options).map((item) => item.code),
+    );
+    const codes = form.codes.filter((code) => available.has(code));
+    changeData({
+      snapshotId,
+      codes,
+      ...(codes.length ? { topk: Math.min(form.topk, codes.length) } : {}),
     });
   }
+
+  const countText = (value?: { covered: number; total: number }) =>
+    value ? `${value.covered} / ${value.total} 只` : "未提供覆盖记录";
   return (
-    <Card title="1. 数据与股票池">
+    <Card title="1. 股票池与数据">
       <Form layout="vertical">
         <Form.Item label="研究名称" required>
           <Input
             value={form.name}
             maxLength={80}
             showCount
-            onChange={(e) => update({ name: e.target.value })}
+            onChange={(event) => update({ name: event.target.value })}
           />
         </Form.Item>
-        <Form.Item label="数据类型">
+        <Form.Item label="基础股票池">
           <Segmented
             value={form.sourceMode}
-            onChange={(value) =>
-              update({ sourceMode: value as FormState["sourceMode"] })
-            }
+            onChange={(value) => {
+              const sourceMode = value as FormState["sourceMode"];
+              const patch: Partial<FormState> = { sourceMode };
+              if (
+                sourceMode === "snapshot" &&
+                !form.snapshotId &&
+                marketChoices.length
+              ) {
+                patch.snapshotId = marketChoices[0].id;
+                patch.codes = [];
+              }
+              changeData(patch);
+            }}
             options={[
               {
-                value: "snapshot",
-                label: "固定股票池",
-                disabled: !options.snapshots.length,
+                value: "index_warehouse",
+                label: "沪深300历史成分",
+                disabled: !historicalChoices.length,
               },
               {
-                value: "index_warehouse",
-                label: "沪深300历史成分（动态）",
-                disabled: !historicalChoices.length,
+                value: "market_warehouse",
+                label: "全市场",
+                disabled: !marketChoices.length,
+              },
+              {
+                value: "snapshot",
+                label: "自选股票",
+                disabled: !options.snapshots.length && !marketChoices.length,
               },
             ]}
           />
         </Form.Item>
-        {form.sourceMode === "snapshot" ? (
-          <>
-            <Form.Item
-              label="数据集"
-              extra="数据集来自数据管理中的行情下载；需要其他股票时，请先下载包含它们的行情。"
-            >
-              <Select
-                value={form.snapshotId || undefined}
-                placeholder="选择数据集"
-                onChange={chooseSnapshot}
-                options={[
-                  {
-                    label: "行情下载",
-                    options: exports.map((item) => ({
-                      value: item.id,
-                      label: `${SOURCE_LABELS[item.source] ?? "行情"} · ${item.codes.length} 只 · ${item.start} ~ ${item.end}${item.financial_coverage ? ` · 财报 ${item.financial_coverage.covered}/${item.financial_coverage.total}` : " · 无财报"}`,
-                    })),
-                  },
-                  ...(subsets.length
-                    ? [
-                        {
-                          label: "以往研究的股票子集",
-                          options: subsets.map((item) => ({
-                            value: item.id,
-                            label: `${item.codes.length} 只 · ${item.start} ~ ${item.end}${item.financial_coverage ? ` · 财报 ${item.financial_coverage.covered}/${item.financial_coverage.total}` : " · 无财报"}`,
-                          })),
-                        },
-                      ]
-                    : []),
-                ]}
-              />
-            </Form.Item>
-            {snapshot ? (
-              <Form.Item
-                label={
-                  <Space>
-                    股票池
-                    <Typography.Text type="secondary">
-                      已选 {form.codes.length} / {snapshot.codes.length}
-                    </Typography.Text>
-                  </Space>
+        <Form.Item
+          label={
+            form.sourceMode === "index_warehouse"
+              ? "历史成分版本"
+              : "行情数据集"
+          }
+          extra="仅使用已下载的数据，不会因切换股票池或筛选条件重复下载行情。"
+        >
+          {form.sourceMode === "snapshot" ? (
+            <Select
+              value={form.snapshotId || undefined}
+              onChange={chooseCustom}
+              placeholder="选择包含目标股票的数据集"
+              options={[
+                {
+                  label: "共享行情仓库",
+                  options: marketChoices.map((item) => ({
+                    value: item.id,
+                    label: `${item.label} · ${item.codes_count}只 · ${item.start} ~ ${item.end}`,
+                  })),
+                },
+                {
+                  label: "行情快照",
+                  options: options.snapshots.map((item) => ({
+                    value: item.id,
+                    label: item.label,
+                  })),
+                },
+              ]}
+            />
+          ) : form.sourceMode === "market_warehouse" ? (
+            <Select
+              value={form.marketWarehouseId || undefined}
+              onChange={(marketWarehouseId: string) =>
+                changeData({ marketWarehouseId })
+              }
+              options={marketChoices.map((item) => ({
+                value: item.id,
+                label: `${item.label} · ${item.codes_count}只 · ${item.start} ~ ${item.end}`,
+              }))}
+            />
+          ) : (
+            <Select
+              value={form.warehouseId || undefined}
+              onChange={(warehouseId: string) => changeData({ warehouseId })}
+              options={historicalChoices.map((item) => ({
+                value: item.id,
+                label: `${item.start} ~ ${item.end} · 历史涉及${item.codes_count}只`,
+              }))}
+            />
+          )}
+        </Form.Item>
+        {form.sourceMode === "snapshot" && stocks.length ? (
+          <Form.Item
+            label={`自选股票（已选 ${form.codes.length} / ${stocks.length} 只）`}
+            extra="从数据集中选择股票作为候选范围，再在筛选条件中设置每日准入规则。"
+          >
+            <Select
+              mode="multiple"
+              value={form.codes}
+              onChange={(codes: string[]) => update({ codes })}
+              options={stocks.map((item) => ({
+                value: item.code,
+                label: `${item.name === item.code ? "" : item.name + " "}${item.code}`,
+              }))}
+              optionFilterProp="label"
+              maxTagCount="responsive"
+              allowClear
+              placeholder="搜索股票名称或代码"
+            />
+            <Space style={{ marginTop: 8 }}>
+              <Button
+                size="small"
+                onClick={() =>
+                  update({ codes: stocks.map((item) => item.code) })
                 }
-                extra="至少 2 只；可从数据集中挑选任意子集。"
               >
-                <Select
-                  mode="multiple"
-                  value={form.codes}
-                  onChange={(codes: string[]) => update({ codes })}
-                  options={snapshot.codes.map((item) => ({
-                    value: item.code,
-                    label: `${item.name} ${item.code}`,
-                  }))}
-                  optionFilterProp="label"
-                  maxTagCount="responsive"
-                  allowClear
-                  placeholder="搜索股票名称或代码"
-                />
-                <Space style={{ marginTop: 8 }}>
-                  <Button
-                    size="small"
-                    onClick={() =>
-                      update({ codes: snapshot.codes.map((item) => item.code) })
-                    }
-                  >
-                    全选
-                  </Button>
-                  <Button size="small" onClick={() => update({ codes: [] })}>
-                    清空
-                  </Button>
-                </Space>
-              </Form.Item>
-            ) : null}
-          </>
-        ) : (
+                全选
+              </Button>
+              <Button size="small" onClick={() => update({ codes: [] })}>
+                清空
+              </Button>
+            </Space>
+          </Form.Item>
+        ) : null}
+        {coverage && range ? (
           <>
-            <Form.Item label="历史成分版本">
-              <Select
-                value={form.warehouseId || undefined}
-                onChange={(warehouseId: string) => update({ warehouseId })}
-                options={historicalChoices.map((item) => ({
-                  value: item.id,
-                  label: `${item.start} ~ ${item.end}${item.shared_version ? ` · 共享版本 ${item.shared_version.slice(0, 8)}` : ""}${item.financial_coverage ? ` · 财报覆盖 ${item.financial_coverage.covered}/${item.financial_coverage.total}` : " · 无财报"}`,
-                }))}
-              />
-            </Form.Item>
-            {historical ? (
-              <Alert
-                type="info"
-                showIcon
-                title={`每日按当时的沪深300成分排名（约 ${historical.codes_count} 只股票参与过），含科创板`}
-                description={`研究区间 ${historical.start} ~ ${historical.end}；预热数据自 ${historical.data_start} 起。调出成分的持仓会持续尝试卖出，停牌或跌停时保留并记录原因。${historical.note ?? ""}`}
-              />
-            ) : null}
+            <Typography.Title level={5}>实际数据覆盖</Typography.Title>
+            <Descriptions
+              size="small"
+              column={{ xs: 1, md: 2 }}
+              items={[
+                {
+                  key: "scope",
+                  label: "覆盖范围",
+                  children:
+                    form.sourceMode === "snapshot"
+                      ? `自选 ${form.codes.length} 只，数据集共 ${stocks.length} 只`
+                      : form.sourceMode === "index_warehouse"
+                        ? `沪深300历史成分，历年涉及 ${selected?.codes_count} 只`
+                        : selected?.full_market
+                          ? `沪深A股全市场，历史涉及 ${selected.codes_count} 只`
+                          : `已下载子集 ${selected?.codes_count ?? 0} 只，未覆盖完整全市场`,
+                },
+                {
+                  key: "dates",
+                  label: "研究日期范围",
+                  children: `${range.start} ~ ${range.end}`,
+                },
+                {
+                  key: "warmup",
+                  label: "行情及预热起点",
+                  children: range.dataStart,
+                },
+                {
+                  key: "names",
+                  label: "历史名称记录",
+                  children: countText(coverage.st),
+                },
+                {
+                  key: "listing",
+                  label: "历史上市日期",
+                  children: countText(coverage.listing),
+                },
+                {
+                  key: "financial",
+                  label: "财务记录（数据集）",
+                  children: countText(
+                    coverage.option.financial_coverage ?? undefined,
+                  ),
+                },
+              ]}
+            />
+            <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
+              覆盖数量表示数据集中有记录的股票数，不代表每个历史日期均有可用状态或满足因子要求。
+              {form.sourceMode === "index_warehouse"
+                ? "成分按历史月度快照下一交易日生效，精确公告时点未认证。"
+                : ""}
+            </Typography.Paragraph>
           </>
-        )}
+        ) : null}
       </Form>
     </Card>
   );

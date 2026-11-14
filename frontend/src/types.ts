@@ -158,6 +158,14 @@ export interface BacktestList {
 }
 
 export interface BacktestDetail {
+  universe_kind?: "market" | "index" | "custom";
+  universe_label?: string;
+  st_policy?: string;
+  universe_filters?: import("./api/research").UniverseFilters;
+  pool_coverage_by_date?: Record<
+    string,
+    { available: number; selected: number; excluded: Record<string, number> }
+  >;
   temporal_audit?: TemporalAuditData;
   benchmark_name?: string;
   execution_run_id?: string;
@@ -407,6 +415,7 @@ export interface HistoricalDataset {
 }
 
 export interface DataStatus {
+  market_universes?: HistoricalDataset[];
   snapshots: ResearchDataset[];
   historical_indices?: HistoricalDataset[];
   database: DatabaseStatus | null;

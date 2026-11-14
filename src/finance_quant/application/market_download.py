@@ -27,6 +27,7 @@ from finance_quant.data.market import SnapshotFetcher, load_market
 from finance_quant.data.network_budget import DownloadPaused, NetworkBudget
 from finance_quant.data.providers import TushareProvider, TushareSettings, normalize_calendar, normalize_index_daily
 from finance_quant.data.providers.baostock import BaoStockProvider
+from finance_quant.data.security_history import normalize_names
 from finance_quant.data.suspensions import LeadingHaltError
 
 POLICY = "shared-incremental-v1"
@@ -186,6 +187,8 @@ def _prepare(root, document, *, provider=None):
     stocks["delisted"] = pd.to_datetime(stocks.delist_date.replace("", None), format="%Y%m%d", errors="coerce")
     if (stocks.delist_date.notna() & stocks.delist_date.ne("") & stocks.delisted.isna()).any():
         raise ValueError("退市日期无效")
+    if (stocks.list_status.eq("D") & stocks.delisted.isna()).any():
+        raise ValueError("已退市证券缺少退市日期，不能确认历史生命周期")
     stocks = stocks.loc[stocks.listed.le(end) & (stocks.delisted.isna() | stocks.delisted.gt(start))]
     intervals = pd.DataFrame(columns=["code", "snapshot_date", "effective_from", "effective_until", "weight"])
     if spec["scope"] == "csi300":
@@ -326,6 +329,8 @@ def _prepare(root, document, *, provider=None):
             "point_in_time_certified": False,
             "note": "全市场指沪深A股，含范围内已退市证券；北交所及代码变更映射尚未适配。估算不含重试、停牌补查与BaoStock核验；边界可能额外请求一个已知交易日作连续性核验。",
         }
+        plan["security_history_asof"] = today
+        plan["estimated_name_requests"] = len(tasks)
         identifier = sha256_text(json.dumps(plan, sort_keys=True))[:24]
         directory = root / "plans" / identifier
         directory.mkdir(parents=True, exist_ok=True)
@@ -493,6 +498,18 @@ def run(root, identifier, *, provider=None, secondary=None):
                 progress["current_code"] = task["code"]
                 save()
                 try:
+                    if plan.get("security_history_asof"):
+                        names_path = directory / "name-history" / f"{task['code']}.parquet"
+                        if not names_path.exists():
+                            today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+                            capture_key = plan.get("refresh_id") if plan["spec"].get("deep_refresh") else today
+                            fetch_names = SnapshotFetcher(provider, root / "security-history" / capture_key)
+                            raw_names = fetch_names.get(
+                                "namechange",
+                                ts_code=task["code"],
+                                fields="ts_code,name,start_date,end_date,ann_date,change_reason",
+                            )
+                            _save(names_path, normalize_names(raw_names, task["code"]))
                     expected = sessions[
                         (sessions >= pd.Timestamp(task["start"])) & (sessions <= pd.Timestamp(task["end"]))
                     ]
@@ -614,12 +631,18 @@ def _publish(root, identifier):
         expected = sessions[(sessions >= pd.Timestamp(task["start"])) & (sessions <= pd.Timestamp(task["end"]))]
         _, sources = shared.read_asset(root, task["code"], expected, plan["provider_id"])
         assets[task["code"]] = {"start": task["start"], "end": task["end"], "sources": sources}
+    reference_files = dict(plan["reference_files"])
+    if plan.get("security_history_asof"):
+        histories = [pd.read_parquet(directory / "name-history" / f"{task['code']}.parquet") for task in plan["tasks"]]
+        names_path = directory / "reference/name_history.parquet"
+        _save(names_path, pd.concat(histories, ignore_index=True))
+        reference_files["name_history.parquet"] = shared.digest(names_path)
     content = {
         "schema_version": POLICY,
         "spec": plan["spec"],
         "assets": assets,
         "provider_id": plan["provider_id"],
-        "reference_files": plan["reference_files"],
+        "reference_files": reference_files,
     }
     version_id = sha256_text(json.dumps(content, sort_keys=True))[:24]
     counts = {level: 0 for level in ["single_source_passed", "dual_source_verified", "secondary_fallback_passed"]}
@@ -654,6 +677,7 @@ def _publish(root, identifier):
         version["snapshot_id"] = export_snapshot(root, identifier, version_id)
     if plan["spec"]["scope"] == "csi300" and not plan["restricted"]:
         publish_index_view(root, identifier, version_id)
+    publish_dynamic_view(root, identifier, version_id, kind="market")
     if not (target / "version.json").exists():
         atomic_json(target / "version.json", version)
     scope_key = sha256_text(json.dumps({k: plan["spec"][k] for k in ["scope", "codes"]}, sort_keys=True))[:16]
@@ -662,11 +686,15 @@ def _publish(root, identifier):
 
 
 def publish_index_view(root, identifier, version_id):
+    return publish_dynamic_view(root, identifier, version_id, kind="index")
+
+
+def publish_dynamic_view(root, identifier, version_id, *, kind):
     """Full CSI300 versions keep memberships separate; hardlinks reuse canonical composites."""
 
     root = Path(root)
     directory, plan = load_plan(root, identifier)
-    target = root / "versions" / version_id / "index-view"
+    target = root / "versions" / version_id / f"{kind}-view"
     if (target / "manifest.json").exists():
         return
     calendar = pd.read_parquet(directory / "reference/calendar.parquet")
@@ -706,8 +734,13 @@ def publish_index_view(root, identifier, version_id):
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             os.link(directory / "reference" / name, path)
+    references = dict(plan["reference_files"])
+    if plan.get("security_history_asof"):
+        names = [pd.read_parquet(directory / "name-history" / f"{task['code']}.parquet") for task in plan["tasks"]]
+        _save(target / "reference/name_history.parquet", pd.concat(names, ignore_index=True))
+        references["name_history.parquet"] = shared.digest(target / "reference/name_history.parquet")
     manifest = {
-        "schema_version": "historical-index-warehouse-v1",
+        "schema_version": "historical-index-warehouse-v1" if kind == "index" else "historical-market-warehouse-v1",
         "index": "399300.SZ",
         "start": plan["start"],
         "end": plan["end"],
@@ -717,11 +750,17 @@ def publish_index_view(root, identifier, version_id):
         "membership_policy": "monthly_snapshot_next_session; NOT exact announcement effective dates",
         "point_in_time_certified": False,
         "assets": assets,
-        "reference_files": plan["reference_files"],
+        "reference_files": references,
         "rows": sum(a["rows"] for a in assets.values()),
         "shared_version": version_id,
         "created_at": utc_now(),
     }
+    if kind == "market":
+        manifest.update(
+            scope=plan["spec"]["scope"],
+            restricted=plan["restricted"],
+            membership_policy="signal-date lifecycle and historical filters; next-session open execution",
+        )
     atomic_json(target / "manifest.json", manifest)
 
 
@@ -771,6 +810,20 @@ def export_snapshot(root, identifier, version_id):
     manifest = {
         "schema_version": "market-v4-shared",
         "source": "official_tushare_shared",
+        "security_history": {
+            "instruments": pd.read_parquet(directory / "reference/instruments.parquet")[
+                ["ts_code", "list_date", "delist_date"]
+            ].to_dict("records"),
+            "names": (
+                json.loads(
+                    pd.read_parquet(directory / "reference/name_history.parquet").to_json(
+                        orient="records", date_format="iso"
+                    )
+                )
+                if (directory / "reference/name_history.parquet").exists()
+                else []
+            ),
+        },
         "id": "shared-" + version_id,
         "provider_id": plan["provider_id"],
         "codes": sorted(t["code"] for t in plan["tasks"]),

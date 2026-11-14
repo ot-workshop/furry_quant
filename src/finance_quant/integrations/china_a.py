@@ -88,9 +88,18 @@ class ChinaAExchange(CostAwareExchange):
 
 
 class HistoricalIndexStrategy(TopkDropoutStrategy):
-    def __init__(self, *, membership_by_execution_date, decision_coverage, rebalance_dates=None, **kwargs):
+    def __init__(
+        self,
+        *,
+        membership_by_execution_date,
+        decision_coverage,
+        rebalance_dates=None,
+        exit_reason="index_exit",
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.membership = membership_by_execution_date
+        self.exit_reason = exit_reason
         self.coverage = decision_coverage
         self.pending_exits = {}
         self.events = []
@@ -134,7 +143,7 @@ class HistoricalIndexStrategy(TopkDropoutStrategy):
         self.pending_exits = {code: reason for code, reason in self.pending_exits.items() if code in held}
         for code in held:
             if code not in members:
-                self.pending_exits.setdefault(code, "index_exit")
+                self.pending_exits.setdefault(code, self.exit_reason)
             row = self.trade_exchange.market_states.get((code, start.normalize()))
             if row and row["execution_state"] == "outside_listing_lifecycle":
                 self.pending_exits.setdefault(code, "outside_listing_lifecycle")

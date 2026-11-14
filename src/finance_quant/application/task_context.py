@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from finance_quant.application.research_requests import project_snapshot
+from finance_quant.checksums import file_sha256
 from finance_quant.configuration import DataConfig
 from finance_quant.data.financials import FinancialBinding, financial_root
 from finance_quant.data.market import load_market
@@ -54,6 +55,8 @@ def prepare_snapshot(context: TaskContext, request: dict, execution: dict):
     if not snapshot_dir.resolve().is_relative_to(context.data_root.resolve()):
         raise ValueError("Invalid snapshot location")
     parent = load_market(snapshot_dir)[3]
+    if execution.get("manifest_sha256") and file_sha256(snapshot_dir / "manifest.json") != execution["manifest_sha256"]:
+        raise ValueError("排队期间股票池历史状态发生变化，请刷新数据列表后重新提交")
     if parent["id"] != execution["data_version"] or parent["files"] != execution["files"]:
         raise ValueError("排队期间数据版本发生变化，请刷新数据列表后重新提交")
     root = project_snapshot(snapshot_dir, tuple(request["data"]["codes"]), context.data_root)

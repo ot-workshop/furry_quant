@@ -294,7 +294,9 @@ class MarketRepository:
             "id": identifier,
             "request": json_value(request),
             "manifest": {
-                "kind": "historical_index_warehouse",
+                "kind": "historical_market_warehouse"
+                if manifest["schema_version"] == "historical-market-warehouse-v1"
+                else "historical_index_warehouse",
                 "source_manifest_sha256": digest,
                 "source_id": manifest.get("id"),
                 "schema_version": manifest["schema_version"],
@@ -363,7 +365,10 @@ def _historical_manifest(root):
     path = root / "manifest.json"
     raw = path.read_bytes()
     manifest = json.loads(raw)
-    if manifest.get("schema_version") != "historical-index-warehouse-v1" or not manifest.get("assets"):
+    if manifest.get("schema_version") not in {
+        "historical-index-warehouse-v1",
+        "historical-market-warehouse-v1",
+    } or not manifest.get("assets"):
         raise ValueError("Historical warehouse is not completely published")
     return raw, manifest, sha256_bytes(raw)
 

@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from finance_quant.application import market_download
 from finance_quant.application.research_requests import snapshot_registry
 from finance_quant.data.historical_warehouse import warehouse_option
+from finance_quant.data.market_universe import market_option, market_roots
 
 SYNTHETIC_NOTICE = "合成样本，仅验证系统流程，不代表真实股票表现"
 
@@ -76,6 +77,14 @@ def system_router(store, data_root, *, database_probe=None, market_status=None) 
             return {
                 "snapshots": research_snapshots(data_root),
                 "historical_indices": historical_indices(data_root),
+                "market_universes": [
+                    {
+                        **{key: value for key, value in option.items() if key != "trading_dates"},
+                        "trading_days": len(option["trading_dates"]),
+                    }
+                    for root in market_roots(data_root)
+                    if (option := market_option(root))
+                ],
                 "database": market_status() if market_status is not None else None,
             }
         except (SQLAlchemyError, OSError, ValueError):

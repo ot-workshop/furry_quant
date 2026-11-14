@@ -183,7 +183,22 @@ def market_factors(
         available_dates.append(day)
         if row_sink is not None:
             row_sink("history", history)
+    if dynamic_context is not None and "universe_filters" in dynamic_context:
+        for day, declared in dynamic_context["declared_universe"].items():
+            availability.setdefault(
+                day,
+                {
+                    "universe": declared,
+                    "eligible": 0,
+                    "factors": {key: {"valid": 0, "missing": declared} for key in specs},
+                },
+            )
+            coverage.setdefault(day, {"eligible": 0, "universe": declared})
     if not history_count:
+        if dynamic_context is not None and "universe_filters" in dynamic_context:
+            raise ValueError(
+                "当前区间筛选后没有足够的有效股票：评分至少需要两只。请检查ST历史覆盖、上市天数、市值、成交额、行业和因子预热条件"
+            )
         last = availability[max(availability)]
         counts = "、".join(
             f"{descriptors[key]['label']}({item['valid']}/{universe})" for key, item in last["factors"].items()
@@ -267,5 +282,14 @@ def market_factors(
             "调入前历史仅用于预热，排名仅用信号日已知、下一交易日生效的成分名单；精确公告时点未认证",
             "停牌和历史不足不参与排名，保留覆盖原因；调出持仓由回测持续尝试退出，不能按未持仓处理",
         ]
+        if "universe_filters" in dynamic_context:
+            for key in ("universe_kind", "universe_filters", "pool_coverage_by_date", "st_policy"):
+                result["metadata"][key] = dynamic_context[key]
+            result["metadata"]["universe"] = dynamic_context["universe_label"]
+            result["metadata"].pop("membership_by_execution_date", None)
+            result["metadata"].pop("lifecycle_exclusions", None)
+            result["metadata"]["notes"][-2] = (
+                "按信号日历史生命周期和配置筛选；财务和行业使用已绑定的历史版本，候选不足时保留现金。"
+            )
     result["metadata"]["temporal_audit"] = factor_temporal_audit(result["metadata"])
     return result

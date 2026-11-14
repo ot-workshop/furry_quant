@@ -111,7 +111,8 @@ class NetworkBudget:
 
 
 def reserve_tushare(api):
-    NetworkBudget().reserve("tushare_official", api, daily=90000, rpm=120, interval=0.5)
+    rpm = 50 if api in {"stock_basic", "namechange"} else 120
+    NetworkBudget().reserve("tushare_official", api, daily=90000, rpm=rpm, interval=60 / rpm)
 
 
 def reserve_baostock():

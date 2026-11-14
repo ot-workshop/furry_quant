@@ -1,7 +1,7 @@
 import { request } from "./http";
 
 export type ValidationMode = "off" | "verify" | "fallback";
-export type SourceMode = "snapshot" | "index_warehouse";
+export type SourceMode = "snapshot" | "index_warehouse" | "market_warehouse";
 export type TaskKind = "research" | "experiment";
 export type TaskStatus =
   | "queued"
@@ -37,6 +37,12 @@ export interface Snapshot {
   validation_mode: ValidationMode;
   source: string;
   financial_coverage?: FinancialCoverage | null;
+  st_coverage?: FinancialCoverage;
+  listing_coverage?: FinancialCoverage;
+  security_by_code?: Record<
+    string,
+    { st_coverage: boolean; listing_coverage: boolean }
+  >;
 }
 
 export interface FactorDefinition {
@@ -120,14 +126,44 @@ export interface SnapshotData {
   mode: "snapshot";
   snapshot_id: string | null;
   codes: string[];
+  filters?: UniverseFilters;
 }
 
 export interface HistoricalData {
   mode: "index_warehouse";
   warehouse_id: string;
+  filters?: UniverseFilters;
+}
+
+export interface UniverseFilters {
+  boards: Array<"main" | "chinext" | "star">;
+  exclude_st: boolean;
+  min_listing_days: number;
+  min_market_cap: number | null;
+  max_market_cap: number | null;
+  min_avg_amount: number | null;
+  amount_window: number;
+  industries: string[];
+  industry_level: IndustryLevel;
+  industry_version?: string | null;
+}
+
+export interface MarketUniverseData {
+  mode: "market_warehouse";
+  warehouse_id: string;
+  filters?: UniverseFilters;
+  codes?: string[];
 }
 
 export interface HistoricalIndexOption {
+  listing_coverage?: FinancialCoverage;
+  security_by_code?: Record<
+    string,
+    { st_coverage: boolean; listing_coverage: boolean }
+  >;
+  full_market?: boolean;
+  st_policy?: string;
+  st_coverage?: { covered: number; total: number };
   id: string;
   label: string;
   start: string;
@@ -165,7 +201,7 @@ export interface ResearchRequest {
   };
   neutralization?: Neutralization;
   name: string;
-  data: SnapshotData | HistoricalData;
+  data: SnapshotData | HistoricalData | MarketUniverseData;
   factors: ResearchFactor[];
   backtest: ResearchBacktest;
   evaluation: ResearchEvaluation;
@@ -239,8 +275,14 @@ export interface ResearchOptions {
     point_in_time_certified: boolean;
     data_asof?: string | null;
     levels?: Partial<Record<IndustryLevel, IndustryLevelData>>;
+    sectors?: Array<{
+      level: IndustryLevel;
+      industry_code: string;
+      industry_name: string;
+    }>;
   } | null;
   historical_indices?: HistoricalIndexOption[];
+  market_universes?: HistoricalIndexOption[];
   snapshots: Snapshot[];
   financial_data?: FinancialDataSummary | null;
   factor_definitions: FactorDefinition[];

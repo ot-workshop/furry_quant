@@ -13,6 +13,7 @@ import type {
   ResearchRequest,
   Snapshot,
   SourceMode,
+  UniverseFilters,
 } from "../api/research";
 
 /** Factor families in display order, so the form groups price and fundamental factors. */
@@ -47,6 +48,9 @@ export interface FormState {
   snapshotId: string;
   codes: string[];
   warehouseId: string;
+  marketWarehouseId: string;
+  universeFilters: UniverseFilters;
+  filtersEnabled: boolean;
   factors: FactorRow[];
   neutralization: "off" | "industry";
   industryVersion: string;
@@ -120,6 +124,71 @@ export function snapshotOf(
   return options.snapshots.find((item) => item.id === id);
 }
 
+export function marketOption(
+  options: ResearchOptions,
+  id?: string,
+): HistoricalIndexOption | undefined {
+  return id
+    ? options.market_universes?.find((item) => item.id === id)
+    : options.market_universes?.[0];
+}
+
+export function defaultUniverseFilters(): UniverseFilters {
+  return {
+    boards: ["main", "chinext", "star"],
+    exclude_st: true,
+    min_listing_days: 180,
+    min_market_cap: null,
+    max_market_cap: null,
+    min_avg_amount: null,
+    amount_window: 20,
+    industries: [],
+    industry_level: "L1",
+  };
+}
+
+export function customStocks(form: FormState, options: ResearchOptions) {
+  const snapshot = snapshotOf(options, form.snapshotId);
+  if (snapshot) return snapshot.codes;
+  const market = form.snapshotId
+    ? marketOption(options, form.snapshotId)
+    : undefined;
+  return market?.codes?.map((code) => ({ code, name: code })) ?? [];
+}
+
+export function selectedCoverage(form: FormState, options: ResearchOptions) {
+  const option =
+    form.sourceMode === "market_warehouse"
+      ? marketOption(options, form.marketWarehouseId)
+      : form.sourceMode === "index_warehouse"
+        ? historicalOption(options, form.warehouseId)
+        : (snapshotOf(options, form.snapshotId) ??
+          (form.snapshotId
+            ? marketOption(options, form.snapshotId)
+            : undefined));
+  if (!option) return null;
+  const codes =
+    form.sourceMode === "snapshot"
+      ? form.codes
+      : "codes_count" in option
+        ? (option.codes ?? [])
+        : option.codes.map((item) => item.code);
+  const coverage = (key: "st_coverage" | "listing_coverage") =>
+    option.security_by_code
+      ? {
+          covered: codes.filter(
+            (code) => option.security_by_code?.[code]?.[key],
+          ).length,
+          total: codes.length,
+        }
+      : option[key];
+  return {
+    option,
+    st: coverage("st_coverage"),
+    listing: coverage("listing_coverage"),
+  };
+}
+
 export function factorRows(
   configs: ResearchFactor[],
   definitions: FactorDefinition[],
@@ -153,12 +222,22 @@ export function financialCoverage(
   options: ResearchOptions,
 ): { covered: number; total: number } | null {
   if (!options.financial_data) return null;
+  if (form.sourceMode === "market_warehouse")
+    return (
+      marketOption(options, form.marketWarehouseId)?.financial_coverage ?? null
+    );
   if (form.sourceMode === "index_warehouse") {
     return (
       historicalOption(options, form.warehouseId)?.financial_coverage ?? null
     );
   }
-  return snapshotOf(options, form.snapshotId)?.financial_coverage ?? null;
+  return (
+    snapshotOf(options, form.snapshotId)?.financial_coverage ??
+    (form.snapshotId
+      ? marketOption(options, form.snapshotId)?.financial_coverage
+      : null) ??
+    null
+  );
 }
 
 /** A fundamental factor is selectable only when the dataset carries statements. */
@@ -219,12 +298,26 @@ export function defaultForm(options: ResearchOptions): FormState {
       ? snapshotOf(options, defaults.data.snapshot_id)
       : options.snapshots[0];
   const historical = historicalOption(options);
+  const market = marketOption(options);
   return {
     name: defaults.name ?? "我的研究",
-    sourceMode: snapshot || !historical ? "snapshot" : "index_warehouse",
+    sourceMode: snapshot
+      ? "snapshot"
+      : historical
+        ? "index_warehouse"
+        : market
+          ? "market_warehouse"
+          : "snapshot",
     snapshotId: snapshot?.id ?? "",
     codes: snapshot?.codes.map((item) => item.code) ?? [],
     warehouseId: historical?.id ?? "",
+    marketWarehouseId: market?.id ?? "",
+    universeFilters: defaults.data.filters
+      ? { ...defaultUniverseFilters(), ...defaults.data.filters }
+      : defaultUniverseFilters(),
+    filtersEnabled:
+      Boolean(defaults.data.filters) ||
+      (!snapshot && !historical && Boolean(market)),
     factors: factorRows(defaults.factors, options.factor_definitions),
     neutralization: defaults.neutralization?.mode ?? "off",
     industryVersion:
@@ -251,6 +344,8 @@ export function formFromRequest(
   const warnings: string[] = [];
   let form: FormState = {
     ...base,
+    filtersEnabled: Boolean(request.data.filters),
+    universeFilters: { ...defaultUniverseFilters(), ...request.data.filters },
     name: request.name,
     factors: factorRows(request.factors, options.factor_definitions),
     neutralization: request.neutralization?.mode ?? "off",
@@ -264,7 +359,19 @@ export function formFromRequest(
     groups: request.evaluation.groups,
     minCrossSection: request.evaluation.min_cross_section,
   };
-  if (request.data.mode === "index_warehouse") {
+  if (request.data.mode === "market_warehouse") {
+    const option = marketOption(options, request.data.warehouse_id);
+    if (!option) warnings.push("原股票池行情版本已不可用，请重新选择数据集。");
+    form = {
+      ...form,
+      sourceMode: request.data.codes ? "snapshot" : "market_warehouse",
+      ...(request.data.codes
+        ? { snapshotId: request.data.warehouse_id, codes: request.data.codes }
+        : {}),
+      marketWarehouseId: option?.id ?? request.data.warehouse_id,
+      universeFilters: { ...defaultUniverseFilters(), ...request.data.filters },
+    };
+  } else if (request.data.mode === "index_warehouse") {
     const option = historicalOption(options, request.data.warehouse_id);
     if (!option) warnings.push("原历史成分仓库已不可用，请重新选择数据集。");
     form = {
@@ -295,6 +402,8 @@ export function formFromRequest(
 }
 
 export function poolSize(form: FormState, options: ResearchOptions): number {
+  if (form.sourceMode === "market_warehouse")
+    return marketOption(options, form.marketWarehouseId)?.codes_count ?? 0;
   if (form.sourceMode === "index_warehouse")
     return historicalOption(options, form.warehouseId)?.codes_count ?? 300;
   return form.codes.length;
@@ -304,15 +413,29 @@ export function tradingDates(
   form: FormState,
   options: ResearchOptions,
 ): string[] {
+  if (form.sourceMode === "market_warehouse")
+    return marketOption(options, form.marketWarehouseId)?.trading_dates ?? [];
   if (form.sourceMode === "index_warehouse")
     return historicalOption(options, form.warehouseId)?.trading_dates ?? [];
-  return snapshotOf(options, form.snapshotId)?.trading_dates ?? [];
+  return (
+    snapshotOf(options, form.snapshotId)?.trading_dates ??
+    (form.snapshotId
+      ? marketOption(options, form.snapshotId)?.trading_dates
+      : undefined) ??
+    []
+  );
 }
 
 export function dataRange(
   form: FormState,
   options: ResearchOptions,
 ): { start: string; end: string; dataStart: string } | null {
+  if (form.sourceMode === "market_warehouse") {
+    const option = marketOption(options, form.marketWarehouseId);
+    return option
+      ? { start: option.start, end: option.end, dataStart: option.data_start }
+      : null;
+  }
   if (form.sourceMode === "index_warehouse") {
     const option = historicalOption(options, form.warehouseId);
     return option
@@ -320,6 +443,12 @@ export function dataRange(
       : null;
   }
   const snapshot = snapshotOf(options, form.snapshotId);
+  if (!snapshot && form.snapshotId) {
+    const market = marketOption(options, form.snapshotId);
+    return market
+      ? { start: market.start, end: market.end, dataStart: market.data_start }
+      : null;
+  }
   return snapshot
     ? {
         start: dateOnly(snapshot.start),
@@ -335,6 +464,8 @@ export function requiredHistory(
   definitions: FactorDefinition[],
 ): number | null {
   const spans: number[] = [];
+  if (form.filtersEnabled && form.universeFilters.min_avg_amount !== null)
+    spans.push(form.universeFilters.amount_window - 1);
   for (const row of form.factors.filter((item) => item.enabled)) {
     const definition = definitions.find((item) => item.name === row.name);
     if (!definition || definition.default_window == null) {
@@ -538,11 +669,65 @@ export function buildEvaluation(form: FormState, errors: string[]) {
   };
 }
 
+function filterData(
+  form: FormState,
+  options: ResearchOptions,
+  errors: string[],
+) {
+  if (!form.filtersEnabled) return {};
+  const filters = form.universeFilters;
+  const coverage = selectedCoverage(form, options);
+  if (filters.exclude_st && (coverage?.st?.covered ?? 0) < 2)
+    errors.push("历史名称记录不足两只，请更新该范围的历史状态，或关闭ST筛选。");
+  if (filters.min_listing_days > 0 && (coverage?.listing?.covered ?? 0) < 2)
+    errors.push("历史上市日期不足两只，请更新该数据范围，或将上市天数设为0。");
+  if (!filters.boards.length) errors.push("请至少选择一个板块。");
+  if (
+    !Number.isInteger(filters.min_listing_days) ||
+    filters.min_listing_days < 0 ||
+    filters.min_listing_days > 36500
+  )
+    errors.push("上市天数须为0至36500的整数。");
+  if (
+    !Number.isInteger(filters.amount_window) ||
+    filters.amount_window < 2 ||
+    filters.amount_window > 252
+  )
+    errors.push("成交额窗口须为2至252个交易日。");
+  for (const value of [
+    filters.min_market_cap,
+    filters.max_market_cap,
+    filters.min_avg_amount,
+  ])
+    if (value !== null && (!Number.isFinite(value) || value < 0))
+      errors.push("市值与成交额条件须为非负金额。");
+  if (
+    filters.min_market_cap !== null &&
+    filters.max_market_cap !== null &&
+    filters.min_market_cap > filters.max_market_cap
+  )
+    errors.push("市值下限不能大于上限。");
+  if (filters.industries.length && !options.industry_data)
+    errors.push("行业筛选需要先下载历史行业数据。");
+  return { filters: { ...filters } };
+}
+
 export function buildData(
   form: FormState,
   options: ResearchOptions,
   errors: string[],
 ): ResearchRequest["data"] | null {
+  const filters = filterData(form, options, errors);
+  if (form.sourceMode === "market_warehouse") {
+    const option = marketOption(options, form.marketWarehouseId);
+    if (!option) {
+      errors.push("请选择可用的股票池行情版本。");
+      return null;
+    }
+    if (form.topk > Math.min(300, option.codes_count))
+      errors.push("目标持股不能超过数据覆盖股票数或300只。");
+    return { mode: "market_warehouse", warehouse_id: option.id, ...filters };
+  }
   if (form.sourceMode === "index_warehouse") {
     const option = historicalOption(options, form.warehouseId);
     if (!option || option.id !== form.warehouseId) {
@@ -550,26 +735,42 @@ export function buildData(
       return null;
     }
     if (form.topk > 300) errors.push("历史动态池目标持股数不能超过 300 只。");
-    return { mode: "index_warehouse", warehouse_id: option.id };
+    return { mode: "index_warehouse", warehouse_id: option.id, ...filters };
   }
   const snapshot = snapshotOf(options, form.snapshotId);
-  if (!snapshot) {
+  const market = form.snapshotId
+    ? marketOption(options, form.snapshotId)
+    : undefined;
+  if (!snapshot && !market) {
     errors.push("请选择数据集。没有可用数据集时，请先到“数据管理”下载行情。");
     return null;
   }
-  const available = new Set(snapshot.codes.map((item) => item.code));
-  const codes = [...new Set(form.codes)].filter((code) => available.has(code));
+  const available = new Set(
+    customStocks(form, options).map((item) => item.code),
+  );
+  const codes = [...new Set(form.codes)];
+  if (codes.some((code) => !available.has(code)))
+    errors.push("部分自选股票不在所选数据集的覆盖范围内。");
   if (codes.length < 2) errors.push("股票池至少需要 2 只股票。");
-  if (codes.length > options.limits.max_codes)
+  if (snapshot && codes.length > options.limits.max_codes)
     errors.push(`股票池最多 ${options.limits.max_codes} 只。`);
-  const unsupported = codes.filter((code) => !SUPPORTED_CODE.test(code));
+  const unsupported = codes.filter(
+    (code) =>
+      !(
+        market
+          ? /^(60\d{4}\.SH|688\d{3}\.SH|(00|30)\d{4}\.SZ)$/
+          : SUPPORTED_CODE
+      ).test(code),
+  );
   if (unsupported.length)
     errors.push(
-      `当前仅支持沪深主板与创业板 A 股：${unsupported.slice(0, 5).join("、")}${unsupported.length > 5 ? " 等" : ""}。`,
+      `当前数据集不支持这些股票的成交规则：${unsupported.slice(0, 5).join("、")}。`,
     );
   if (form.topk > codes.length && codes.length)
     errors.push(`目标持股数量不能超过股票池数量（${codes.length}）。`);
-  return { mode: "snapshot", snapshot_id: snapshot.id, codes };
+  return market
+    ? { mode: "market_warehouse", warehouse_id: market.id, codes, ...filters }
+    : { mode: "snapshot", snapshot_id: snapshot!.id, codes, ...filters };
 }
 
 export function checkDates(
@@ -599,6 +800,10 @@ export function checkDates(
       errors.push("回测交易日数需超过最长评估持有期。");
   }
   const earliest = earliestStart(form, options);
+  if (form.sourceMode === "market_warehouse" && dates.length && !earliest)
+    errors.push(
+      "当前行情历史不足以满足窗口，请缩短因子或成交额窗口，或补充预热数据。",
+    );
   if (earliest && start < earliest)
     errors.push(
       `历史预热不足：按当前因子窗口，最早可从 ${earliest} 开始回测。`,
@@ -729,12 +934,25 @@ export function mergeDraft(
   }
   if (Array.isArray(draft.horizons))
     merged.horizons = draft.horizons.filter(Number.isInteger);
-  const snapshot = snapshotOf(options, merged.snapshotId);
-  if (!snapshot) {
+  merged.universeFilters = {
+    ...base.universeFilters,
+    ...(draft.universeFilters ?? {}),
+  };
+  if (
+    draft.filtersEnabled === undefined &&
+    draft.sourceMode === "market_warehouse"
+  )
+    merged.filtersEnabled = true;
+  if (!marketOption(options, merged.marketWarehouseId))
+    merged.marketWarehouseId = base.marketWarehouseId;
+  if (merged.sourceMode === "market_warehouse" && !merged.marketWarehouseId)
+    merged.sourceMode = base.sourceMode;
+  const availableStocks = customStocks(merged, options);
+  if (!availableStocks.length) {
     merged.snapshotId = base.snapshotId;
     merged.codes = base.codes;
   } else {
-    const available = new Set(snapshot.codes.map((item) => item.code));
+    const available = new Set(availableStocks.map((item) => item.code));
     merged.codes = (
       Array.isArray(draft.codes) ? draft.codes : base.codes
     ).filter((code) => available.has(code));

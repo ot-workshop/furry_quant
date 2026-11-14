@@ -23,7 +23,7 @@ export default function Datasets() {
   return (
     <Section
       title="研究数据集"
-      description="自选股票下载完成后生成固定股票池（最多 50 只、覆盖完整）；沪深300下载完成后生成历史成分动态股票池。“新建研究”中可直接选择"
+      description="行情下载完成后可用于固定股票池、沪深300历史成分或全市场条件筛选。不同研究复用共享行情，回测绑定所选数据版本。"
       extra={
         <Button
           icon={<ReloadOutlined />}
@@ -37,7 +37,9 @@ export default function Datasets() {
       <Resource
         state={status}
         empty={(data) =>
-          data.snapshots.length || data.historical_indices?.length ? null : (
+          data.snapshots.length ||
+          data.historical_indices?.length ||
+          data.market_universes?.length ? null : (
             <EmptyState
               title="还没有研究数据集"
               description="在“行情下载”中选择自选股票或沪深300，预览并确认下载后即会生成。"
@@ -55,6 +57,9 @@ export default function Datasets() {
       >
         {(data) => (
           <Flex vertical gap={24}>
+            {data.market_universes?.length ? (
+              <HistoricalDatasets items={data.market_universes} market />
+            ) : null}
             {data.historical_indices?.length ? (
               <HistoricalDatasets items={data.historical_indices} />
             ) : null}
@@ -68,10 +73,18 @@ export default function Datasets() {
   );
 }
 
-function HistoricalDatasets({ items }: { items: HistoricalDataset[] }) {
+function HistoricalDatasets({
+  items,
+  market = false,
+}: {
+  items: HistoricalDataset[];
+  market?: boolean;
+}) {
   return (
     <Flex vertical gap={8}>
-      <Typography.Text strong>沪深300历史成分（动态股票池）</Typography.Text>
+      <Typography.Text strong>
+        {market ? "共享行情仓库" : "沪深300历史成分（动态股票池）"}
+      </Typography.Text>
       <Table<HistoricalDataset>
         rowKey="id"
         dataSource={items}
@@ -82,7 +95,8 @@ function HistoricalDatasets({ items }: { items: HistoricalDataset[] }) {
             render: (_, row) => (
               <Flex vertical>
                 <Typography.Text strong>
-                  沪深300历史成分 · 累计 {row.codes_count} 只
+                  {market ? row.label : "沪深300历史成分"} · 覆盖{" "}
+                  {row.codes_count} 只
                 </Typography.Text>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   {row.shared_version ?? row.id}
@@ -110,11 +124,17 @@ function HistoricalDatasets({ items }: { items: HistoricalDataset[] }) {
           {
             title: "",
             align: "right",
-            render: () => (
+            render: (_, row) => (
               <Button
                 size="small"
                 type="link"
-                onClick={() => navigate(paths.newResearch())}
+                onClick={() =>
+                  navigate(
+                    market
+                      ? `${paths.newResearch()}?market=${encodeURIComponent(row.id)}`
+                      : paths.newResearch(),
+                  )
+                }
               >
                 用于研究
               </Button>

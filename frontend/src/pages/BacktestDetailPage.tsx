@@ -13,6 +13,7 @@ import { DownloadOutlined } from "@ant-design/icons";
 import { api } from "../api/client";
 import { navigate, paths } from "../app/routes";
 import { TemporalAuditPanel } from "../components/audit";
+import { UniversePanel } from "../components/UniversePanel";
 import {
   CostsPanel,
   EventsPanel,
@@ -78,7 +79,10 @@ export default function BacktestDetailPage({
 
   const data = detail.data;
   const dates = equity.data?.items.map((row) => row.date) ?? [];
-  const dynamic = data.strategy === "HistoricalIndexTopkStrategy";
+  const dynamic = [
+    "HistoricalIndexTopkStrategy",
+    "DynamicUniverseTopkStrategy",
+  ].includes(data.strategy);
   const go = (next: string) =>
     navigate(paths.backtest(id, next === "overview" ? undefined : next), {
       replace: true,
@@ -133,6 +137,15 @@ export default function BacktestDetailPage({
         />
       ),
     },
+    ...(data.universe_filters
+      ? [
+          {
+            key: "universe",
+            label: "股票池筛选",
+            children: <UniversePanel detail={data} />,
+          },
+        ]
+      : []),
     { key: "trades", label: "成交", children: <TradesPanel runId={id} /> },
     {
       key: "costs",
@@ -172,7 +185,13 @@ export default function BacktestDetailPage({
         tags={
           <>
             <StatusTag status={data.status} />
-            <Tag>{dynamic ? "历史成分动态池" : "固定股票池"}</Tag>
+            <Tag>
+              {data.universe_filters
+                ? "动态条件股票池"
+                : dynamic
+                  ? "历史成分动态池"
+                  : "固定股票池"}
+            </Tag>
             {data.is_synthetic ? <Tag color="warning">合成样本</Tag> : null}
           </>
         }

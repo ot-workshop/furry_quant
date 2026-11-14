@@ -7,9 +7,9 @@
 | 路由 | 页面 | 说明 |
 | --- | --- | --- |
 | `/` | 工作台 | 数据集、进行中任务、最近回测 |
-| `/research/new?from=<task>` | 新建研究 | 分区表单 + 右侧实时摘要与校验；`from` 载入历史任务配置 |
+| `/research/new?from=<task>&market=<dataset>` | 新建研究 | 固定池、沪深300历史成分及动态条件池；右侧摘要与校验；`from`载入历史任务，`market`选择对应覆盖版本 |
 | `/tasks?focus=<task>` | 任务中心 | 研究与方案比较任务，3 秒自动刷新 |
-| `/backtests`、`/backtests/<id>/<tab>` | 回测 | 列表 → 详情（概览、持仓、成交、费用与调仓、行业暴露、执行记录、参数与口径） |
+| `/backtests`、`/backtests/<id>/<tab>` | 回测 | 列表 → 详情（概览、股票池筛选、持仓、成交、费用与调仓、行业暴露、执行记录、参数与口径） |
 | `/factors?run=&date=&instrument=&tab=` | 因子评分 | 横截面排名、个股详情、行业、批次信息；选择状态都在 URL 中 |
 | `/evaluations`、`/evaluations/<id>` | 因子评估 | IC 汇总、分组收益、相关性、覆盖、方法 |
 | `/experiments`、`/experiments/new`、`/experiments/<id>` | 方案比较 | 列表、新建、详情 |

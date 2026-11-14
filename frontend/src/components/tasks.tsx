@@ -156,9 +156,20 @@ function RequestSummary({ task }: { task: ResearchTask }) {
           key: "data",
           label: "数据",
           children:
-            request.data.mode === "index_warehouse"
-              ? "沪深300历史成分（动态股票池）"
-              : `快照 ${request.data.snapshot_id ?? "—"} · ${request.data.codes.length} 只`,
+            request.data.mode === "market_warehouse"
+              ? request.data.codes
+                ? `自选股票 · ${request.data.codes.length} 只`
+                : "全市场（使用所选数据集覆盖范围）"
+              : request.data.mode === "index_warehouse"
+                ? "沪深300历史成分（动态股票池）"
+                : `快照 ${request.data.snapshot_id ?? "—"} · ${request.data.codes.length} 只`,
+        },
+        {
+          key: "filters",
+          label: "条件筛选",
+          children: request.data.filters
+            ? `开启 · 排除ST${request.data.filters.exclude_st ? "开启" : "关闭"} · 上市满${request.data.filters.min_listing_days}天`
+            : "关闭",
         },
         {
           key: "range",

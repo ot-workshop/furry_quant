@@ -12,6 +12,7 @@ import pyarrow.parquet as pq
 
 from finance_quant.checksums import file_sha256, sha256_bytes
 from finance_quant.data.index_universe import historical_codes, members_on
+from finance_quant.data.pool_inputs import security_coverage
 from finance_quant.data.symbols import to_qlib
 from finance_quant.data.temporal_audit import restore_valuation_dates
 
@@ -51,6 +52,7 @@ def warehouse_option(root):
         "trading_dates": dates.dt.strftime("%Y-%m-%d").tolist(),
         "codes_count": len(manifest["assets"]),
         "codes": sorted(manifest["assets"]),
+        **security_coverage(root, manifest, sorted(manifest["assets"])),
         "membership_policy": manifest["membership_policy"],
         "point_in_time_certified": False,
         "note": "月度快照从下一交易日起使用，可能滞后真实调仓；不是精确公告生效日认证",

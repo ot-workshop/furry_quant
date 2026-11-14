@@ -23,6 +23,7 @@ export interface MarketPlan {
   missing_rows: number;
   revision_rows?: number;
   estimated_quote_requests: number;
+  estimated_name_requests?: number;
   excluded_unsupported?: number;
   restricted: boolean;
   note: string;

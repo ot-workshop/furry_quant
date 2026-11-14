@@ -276,6 +276,7 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
             options={{
               ...options,
               historical_indices: [],
+              market_universes: [],
             }}
             update={update}
           />

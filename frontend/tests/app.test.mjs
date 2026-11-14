@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { JSDOM } from "jsdom";
 import { load } from "./helpers/load.mjs";
-import { options } from "./fixtures.mjs";
+import { options, tradingDates } from "./fixtures.mjs";
 
 const dom = new JSDOM('<div id="root"></div>', { url: "http://127.0.0.1:8000/", pretendToBeVisual: true });
 for (const name of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "Event", "MouseEvent", "KeyboardEvent", "getComputedStyle", "SVGElement", "ShadowRoot"])
@@ -25,6 +25,16 @@ const { createRoot } = await import("react-dom/client");
 const { app, theme } = await load({ app: "./src/App", theme: "./src/app/theme" });
 
 const posted = [];
+let marketEnabled = false;
+let indexEnabled = false;
+const marketDataset = {
+  id: "market-browser", label: "沪深A股全市场", full_market: true,
+  start: "2025-01-02", end: "2025-06-30", data_start: "2025-01-02",
+  codes_count: 5500, trading_days: 128, trading_dates: tradingDates("2025-01-02", "2025-06-30"),
+  financial_coverage: { covered: 300, total: 5500 }, note: "按历史生命周期与每日条件筛选",
+  listing_coverage: { covered: 5500, total: 5500 }, st_coverage: { covered: 5500, total: 5500 },
+  codes: ["600000.SH", "000001.SZ", "688001.SH"],
+};
 let tasks = [];
 const downloadPosts = [];
 let failFinancialPreview = false;
@@ -34,6 +44,12 @@ globalThis.fetch = async (url, init = {}) => {
   const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
   if (path === "/research/options") {
     const value = options();
+    if (marketEnabled) value.market_universes = [marketDataset];
+    if (indexEnabled) {
+      value.historical_indices = [{ ...marketDataset, id: "csi300-browser", label: "沪深300历史成分", codes_count: 3 }];
+      value.snapshots[0].st_coverage = { covered: 3, total: 3 };
+      value.snapshots[0].listing_coverage = { covered: 3, total: 3 };
+    }
     value.defaults.backtest.start = "2025-01-10"; // too early for a 20-day momentum window
     return json(value);
   }
@@ -59,7 +75,7 @@ globalThis.fetch = async (url, init = {}) => {
     downloadPosts.push({ path, body: JSON.parse(init.body) });
     return json({ status: "queued" });
   }
-  if (path === "/data-status") return json({ snapshots: [], database: null });
+  if (path === "/data-status") return json({ snapshots: [], database: null, market_universes: marketEnabled ? [marketDataset] : [] });
   if (path === "/research/industry-download") return json(industryStatus);
   if (path === "/research/financial-download") return json({ worker_running: false, version: null, versions: [], jobs: [], market_versions: [{ id: "market-a", scope: "custom", start: "2024-01-01", end: "2025-12-31", codes_count: 3, restricted: false }] });
   if (path === "/research/financial-download/preview") {
@@ -249,6 +265,70 @@ test("experiment form no longer offers a financial time mode", async () => {
   await waitFor(() => assert.ok(button(container, "提交方案比较")));
   assert.doesNotMatch(container.textContent, /财务数据时间口径|首次观测/);
   await act(async () => root.unmount());
+});
+
+test("market dataset action selects its version, edits conditions and submits the displayed configuration", async () => {
+  marketEnabled = true;
+  posted.length = 0;
+  const { container, root } = await mount("/data?tab=datasets");
+  try {
+    await waitFor(() => assert.ok(button(container, "用于研究")));
+    await act(async () => button(container, "用于研究").click());
+    await waitFor(() => assert.match(container.textContent, /实际数据覆盖/));
+    assert.match(window.location.search, /market=market-browser/);
+    assert.match(container.textContent, /沪深A股全市场/);
+    assert.doesNotMatch(container.textContent, /新功能|NEW/);
+    const label = [...container.querySelectorAll(".ant-checkbox-wrapper")].find(node => node.textContent.includes("排除 ST"));
+    assert.ok(label);
+    assert.equal(label.querySelector("input").checked, true);
+    await act(async () => label.querySelector("input").click());
+    await waitFor(() => assert.equal(button(container, "提交研究").disabled, false));
+    await act(async () => button(container, "提交研究").click());
+    await waitFor(() => assert.equal(posted.length, 1));
+    assert.equal(posted[0].body.data.mode, "market_warehouse");
+    assert.equal(posted[0].body.data.warehouse_id, "market-browser");
+    assert.equal(posted[0].body.data.filters.exclude_st, false);
+    assert.equal(posted[0].body.data.filters.min_listing_days, 180);
+    await waitFor(() => assert.match(container.textContent, /全市场/));
+  } finally {
+    marketEnabled = false;
+    await act(async () => root.unmount());
+  }
+});
+
+test("pool selection has its own section and the same filters survive switching all three pools", async () => {
+  marketEnabled = true;
+  indexEnabled = true;
+  posted.length = 0;
+  window.localStorage.clear();
+  const { container, root } = await mount("/research/new?market=market-browser");
+  try {
+    await waitFor(() => assert.match(container.textContent, /实际数据覆盖/));
+    assert.doesNotMatch(container.textContent, /全市场与条件筛选|新功能|NEW/);
+    const filterCard = [...container.querySelectorAll(".ant-card")].find(node => node.querySelector(".ant-card-head-title")?.textContent === "筛选条件");
+    const dataCard = [...container.querySelectorAll(".ant-card")].find(node => node.textContent.includes("基础股票池"));
+    assert.ok(filterCard && dataCard && !dataCard.contains(filterCard));
+    const stInput = () => [...filterCard.querySelectorAll(".ant-checkbox-wrapper")].find(node => node.textContent.includes("排除 ST")).querySelector("input");
+    await act(async () => stInput().click());
+    assert.equal(stInput().checked, false);
+    for (const label of ["沪深300历史成分", "自选股票", "全市场", "沪深300历史成分"]) {
+      const choice = [...container.querySelectorAll(".ant-segmented-item")].find(node => node.textContent === label);
+      assert.ok(choice, label);
+      await act(async () => choice.click());
+      assert.equal(stInput().checked, false);
+      assert.match(container.textContent, /历史名称记录|历史上市日期/);
+    }
+    await waitFor(() => assert.equal(button(container, "提交研究").disabled, false));
+    await act(async () => button(container, "提交研究").click());
+    await waitFor(() => assert.equal(posted.length, 1));
+    assert.equal(posted[0].body.data.mode, "index_warehouse");
+    assert.equal(posted[0].body.data.filters.exclude_st, false);
+    assert.equal(posted[0].body.data.filters.min_listing_days, 180);
+  } finally {
+    marketEnabled = false;
+    indexEnabled = false;
+    await act(async () => root.unmount());
+  }
 });
 
 after(() => {

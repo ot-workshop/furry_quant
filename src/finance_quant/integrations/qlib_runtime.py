@@ -137,6 +137,7 @@ def build_strategy(
         {
             "membership_by_execution_date": historical["membership_by_execution_date"],
             "decision_coverage": factors["metadata"]["availability_by_date"],
+            "exit_reason": historical.get("exit_reason", "index_exit"),
         }
         if historical is not None
         else {}

@@ -12,7 +12,9 @@ def _value(value, *, percent=False):
 def evaluation_markdown(result: dict) -> str:
     meta, params = result["metadata"], result["metadata"]["evaluation"]
     universe = (
-        f"历史动态成分池，区间相关股票并集 {meta['sample_size']} 只（不是每天全部参与排名）"
+        f"动态条件股票池，区间行情覆盖 {meta['sample_size']} 只（每日按历史条件筛选）"
+        if "universe_filters" in meta
+        else f"历史动态成分池，区间相关股票并集 {meta['sample_size']} 只（不是每天全部参与排名）"
         if meta.get("membership_policy")
         else f"固定池 {meta['sample_size']} 只股票"
     )
