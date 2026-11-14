@@ -191,6 +191,59 @@ def test_foreign_or_form_submissions_cannot_start_tasks(workspace, headers, stat
     assert response.status_code == status and not runs.exists()
 
 
+@pytest.mark.parametrize("with_origin", [True, False])
+def test_configured_lan_address_can_submit_research(workspace, monkeypatch, with_origin):
+    data, runs, request = workspace
+    address = "http://10.88.0.61:8000"
+    monkeypatch.setenv("ALLOWED_ORIGINS", address + ",http://localhost:8000")
+    client, service = make_client(data, runs)
+    headers = {"Host": "10.88.0.61:8000", "Idempotency-Key": "lan-research-request"}
+    if with_origin:
+        headers["Origin"] = address
+        headers["Sec-Fetch-Site"] = "same-origin"
+    response = client.post("/api/v1/research/tasks", json=request, headers=headers)
+    assert response.status_code == 202, response.text
+    assert service.store.list()["total"] == 1
+    assert response.json()["request"]["name"] == request["name"]
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Host": "10.88.0.62:8000", "Origin": "http://10.88.0.61:8000"},
+        {"Host": "10.88.0.61:8001", "Origin": "http://10.88.0.61:8000"},
+        {"Host": "10.88.0.61:8000", "Origin": "https://attacker.example"},
+        {"Host": "10.88.0.61:8000", "Origin": "http://10.88.0.61:8000", "Sec-Fetch-Site": "cross-site"},
+    ],
+)
+def test_lan_access_still_rejects_unconfigured_hosts_and_foreign_origins(workspace, monkeypatch, headers):
+    data, runs, request = workspace
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://10.88.0.61:8000")
+    client, service = make_client(data, runs)
+    response = client.post(
+        "/api/v1/research/tasks", json=request, headers={"Idempotency-Key": "blocked-lan-request", **headers}
+    )
+    assert response.status_code == 403
+    assert service.store.list()["total"] == 0
+
+
+def test_remote_access_requires_explicit_configuration(workspace, monkeypatch):
+    data, runs, request = workspace
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+    client, service = make_client(data, runs)
+    response = client.post(
+        "/api/v1/research/tasks",
+        json=request,
+        headers={
+            "Host": "10.88.0.61:8000",
+            "Origin": "http://10.88.0.61:8000",
+            "Idempotency-Key": "unconfigured-lan-request",
+        },
+    )
+    assert response.status_code == 403
+    assert service.store.list()["total"] == 0
+
+
 def test_duplicate_json_fields_and_missing_idempotency_are_rejected(workspace):
     data, runs, request = workspace
     client, _ = make_client(data, runs)

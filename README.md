@@ -208,6 +208,7 @@ RESTORE_ROOT=./restores
 | `STORAGE_ROOT` | 行情、财务、行业、下载缓存和回测结果的主机目录，默认 `./storage` |
 | `BACKUP_ROOT` / `RESTORE_ROOT` | 备份归档和独立恢复环境的主机目录，默认 `./backups` / `./restores` |
 | `HTTP_PORT` | API 的主机端口，默认 `8000`，绑定至 `127.0.0.1` |
+| `HTTP_BIND_HOST` | 主机监听地址，默认 `127.0.0.1`；跨电脑访问时可填写服务器局域网地址 |
 
 三个数据目录支持相对路径和绝对路径。Compose 创建挂载目录后，`storage-init` 准备挂载根目录的写权限；API 和 worker 以非 root 用户运行。
 
@@ -248,6 +249,16 @@ ssh -N -L 8000:127.0.0.1:8000 USER@SERVER
 ```
 
 随后在本机浏览器打开 <http://127.0.0.1:8000>。通过域名或反向代理访问时，将实际网页来源加入 `.env` 的 `ALLOWED_ORIGINS`。
+
+需要从局域网其他电脑直接访问时，在服务器 `.env` 中设置监听地址和网页来源，例如：
+
+```dotenv
+HTTP_BIND_HOST=0.0.0.0
+HTTP_PORT=8000
+ALLOWED_ORIGINS=http://10.88.0.61:8000,http://127.0.0.1:8000,http://localhost:8000
+```
+
+执行 `docker compose up -d` 应用配置后，从其他电脑打开 `http://10.88.0.61:8000`。`0.0.0.0` 表示监听所有网卡，浏览器使用服务器实际 IP 或域名。网页与 API 共用该端口，配置的来源同时用于研究、下载和数据管理操作的提交校验。
 
 验证数据库结构与存储连接：
 

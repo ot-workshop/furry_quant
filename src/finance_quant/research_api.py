@@ -36,12 +36,15 @@ def research_router(service):
 
     async def body(request: Request):
         host = request.headers.get("host", "")
+        configured = {item.strip() for item in os.environ.get("ALLOWED_ORIGINS", "").split(",") if item.strip()}
         try:
             local_host = urlsplit("http://" + host).hostname in {"localhost", "127.0.0.1", "::1"}
+            configured_host = f"{request.url.scheme}://{host}" in configured
         except ValueError:
             local_host = False
-        if not local_host:
-            raise HTTPException(403, "研究任务仅支持本机访问")
+            configured_host = False
+        if not (local_host or configured_host):
+            raise HTTPException(403, "当前访问地址未配置，请设置 ALLOWED_ORIGINS")
         origin = request.headers.get("origin")
         if origin:
             try:
@@ -50,13 +53,12 @@ def research_router(service):
                 development = (
                     parsed.hostname in {"localhost", "127.0.0.1"} and parsed.scheme == "http" and parsed.port == 5173
                 )
-                configured = {item.strip() for item in os.environ.get("ALLOWED_ORIGINS", "").split(",") if item.strip()}
             except ValueError:
                 raise HTTPException(403, "请求来源无效") from None
             if not (origin in configured if configured else same_origin or development):
-                raise HTTPException(403, "请从本机研究工作台提交任务")
+                raise HTTPException(403, "请从已配置的研究工作台提交任务")
         if request.headers.get("sec-fetch-site") == "cross-site":
-            raise HTTPException(403, "请从本机研究工作台提交任务")
+            raise HTTPException(403, "请从已配置的研究工作台提交任务")
         if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
             raise HTTPException(415, "请使用 JSON 提交研究配置")
         encoded = await request.body()
