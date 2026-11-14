@@ -3,7 +3,7 @@ name: ${COMPOSE_PROJECT_NAME:-finance-quant}
 x-app: &app
   image: ${APP_IMAGE:?Set APP_IMAGE in .env}
   init: true
-  environment: &app-env
+  environment:
     POSTGRES_HOST: db
     POSTGRES_PORT: "5432"
     POSTGRES_DB: ${POSTGRES_DB:-finance_quant}
@@ -24,13 +24,20 @@ x-app: &app
     HTTP_PORT: "8000"
     ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://127.0.0.1:8000,http://localhost:8000}
     TZ: Asia/Shanghai
-  volumes:
+  volumes: &app-volumes
     - ${STORAGE_ROOT:-./storage}:/app/storage
     - ${BACKUP_ROOT:-./backups}:/backups
     - ${RESTORE_ROOT:-./restores}:/restores
   stop_grace_period: 90s
 
 services:
+  storage-init:
+    image: ${APP_IMAGE:?Set APP_IMAGE in .env}
+    user: "0:0"
+    command: [chown, "quant:quant", /app/storage, /backups, /restores]
+    volumes: *app-volumes
+    restart: "no"
+
   db:
     image: ${POSTGRES_IMAGE:-postgres:18.6-bookworm}
     restart: unless-stopped
@@ -42,7 +49,7 @@ services:
     volumes:
       - postgres:/var/lib/postgresql
     healthcheck:
-      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      test: [CMD-SHELL, 'PGPASSWORD="$${POSTGRES_PASSWORD}" psql -X -w -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Atqc "SELECT 1" >/dev/null']
       interval: 5s
       timeout: 5s
       retries: 20
@@ -51,10 +58,13 @@ services:
 
   migrate:
     <<: *app
-    command: [alembic, upgrade, head]
+    command: [python, -m, finance_quant.server, migrate]
+    restart: "no"
     depends_on:
       db:
         condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
 
   api:
     <<: *app
@@ -65,6 +75,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4).read()"]
       interval: 15s
@@ -76,25 +88,21 @@ services:
     <<: *app
     command: [python, -m, finance_quant.server, worker]
     restart: unless-stopped
-    environment:
-      <<: *app-env
-      TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
-      TUSHARE_HTTP_URL: https://api.tushare.pro
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   maintenance:
     <<: *app
     profiles: [tools]
     command: [python, -m, finance_quant.backup, --help]
-    volumes:
-      - ${STORAGE_ROOT:-./storage}:/app/storage
-      - ${BACKUP_ROOT:-./backups}:/backups
-      - ${RESTORE_ROOT:-./restores}:/restores
     depends_on:
       db:
         condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
 
 volumes:
   postgres:

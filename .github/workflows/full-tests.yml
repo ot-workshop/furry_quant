@@ -17,6 +17,10 @@ jobs:
       - name: Remove test services
         if: always()
         run: docker compose -f docker-compose.test.yaml down --volumes
+      - name: Build application image for Compose checks
+        run: docker build --target application -t finance-quant:startup-check .
+      - name: Verify automatic initialization and migrations in isolated projects
+        run: python3 scripts/check_compose_startup.py --image finance-quant:startup-check
   test:
     runs-on: ubuntu-latest
     services:

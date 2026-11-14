@@ -41,7 +41,7 @@ class SchemaNotReady(RuntimeError):
 
 MIGRATE_HINT = (
     "Run the migration first: `uv run python -m finance_quant.server migrate --env-file .env.development` "
-    "(Docker: `docker compose run --rm migrate`)."
+    "(Docker Compose migrates automatically: check `docker compose logs migrate`, then `docker compose up -d`)."
 )
 
 

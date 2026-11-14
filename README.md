@@ -162,85 +162,115 @@ npm.cmd --prefix frontend run build
 
 ## Linux 部署（Docker Compose）
 
-服务器只需要 Docker Engine、Docker Compose v2、`docker-compose.yaml`、`.env` 和 `scripts/`；镜像由 GitHub Actions 构建并推送到私有 GHCR。
+生产环境使用 GitHub Actions 构建的应用镜像，服务器通过 Docker Compose 运行数据库、API 和 worker。数据库初始化、目录权限准备和表结构迁移均由启动流程完成。
 
-### 1. 准备目录
+### 部署要求
+
+- Linux x86_64，已安装 Docker Engine 和 Docker Compose v2.26 或更新版本。
+- 部署用户具有 Docker 操作权限。
+- 能够访问应用镜像仓库；私有 GHCR 镜像需要具备 `read:packages` 权限的 GitHub Token。
+
+服务器无需安装 Python、Node.js 或构建工具，也无需克隆完整源码。部署文件为同一版本的 [docker-compose.yaml](docker-compose.yaml) 和 [.env.example](.env.example)。
+
+### 配置部署环境
+
+将两个部署文件放入服务器上的独立目录，然后创建环境配置：
 
 ```sh
-mkdir -p ~/finance-quant && cd ~/finance-quant
-# 从本地复制：docker-compose.yaml、.env.example
-cp .env.example .env && chmod 600 .env
-mkdir -p storage backups restores
+mkdir -p ~/finance-quant
+cd ~/finance-quant
+cp .env.example .env
+chmod 600 .env
 ```
 
-`.env` 填写：
+在 `.env` 中填写应用镜像、数据库密码和数据源 Token：
 
 ```dotenv
 APP_IMAGE=ghcr.io/quqionfree/my_quant_project:sha-实际提交号
-TUSHARE_TOKEN=官方Token
-POSTGRES_PASSWORD=独立强密码
-STORAGE_ROOT=/home/用户名/finance-quant-data/storage
-BACKUP_ROOT=/home/用户名/finance-quant-data/backups
+POSTGRES_USER=quant
+POSTGRES_DB=finance_quant
+POSTGRES_PASSWORD='替换为数据库密码'
+TUSHARE_TOKEN=替换为官方TushareToken
+
+STORAGE_ROOT=./storage
+BACKUP_ROOT=./backups
+RESTORE_ROOT=./restores
 ```
 
-### 2. 登录私有镜像仓库
+| 配置项 | 说明 |
+| --- | --- |
+| `APP_IMAGE` | 应用镜像的 `sha-*` 标签或 digest，来自 GitHub Actions 构建结果 |
+| `POSTGRES_USER` / `POSTGRES_DB` | 首次初始化时创建的用户和数据库，默认 `quant` / `finance_quant` |
+| `POSTGRES_PASSWORD` | 数据库密码；包含 `$`、`#` 等字符时使用单引号包裹 |
+| `TUSHARE_TOKEN` | 行情和财务数据下载所需的官方 Tushare Token；未配置时仍可启动服务 |
+| `STORAGE_ROOT` | 行情、财务、行业、下载缓存和回测结果的主机目录，默认 `./storage` |
+| `BACKUP_ROOT` / `RESTORE_ROOT` | 备份归档和独立恢复环境的主机目录，默认 `./backups` / `./restores` |
+| `HTTP_PORT` | API 的主机端口，默认 `8000`，绑定至 `127.0.0.1` |
 
-使用只授予 `read:packages` 的 classic personal access token（不要写入 `.env`）：
+三个数据目录支持相对路径和绝对路径。Compose 创建挂载目录后，`storage-init` 准备挂载根目录的写权限；API 和 worker 以非 root 用户运行。
+
+### 登录镜像仓库并启动
+
+登录私有 GHCR 镜像仓库，在密码提示中输入具有镜像读取权限的 Token：
 
 ```sh
-read -s GHCR_TOKEN
-echo "$GHCR_TOKEN" | docker login ghcr.io -u GitHub用户名 --password-stdin
-unset GHCR_TOKEN
+docker login ghcr.io -u YOUR_GITHUB_USERNAME
 ```
 
-### 3. 首次启动
+在部署目录执行：
 
 ```sh
-docker compose --env-file .env config            # 检查配置
-docker compose --env-file .env pull
-docker compose --env-file .env up -d db
-docker compose --env-file .env run --rm migrate  # 初始化数据库结构
-docker compose --env-file .env up -d api worker
-docker compose --env-file .env ps
-wget -qO- http://127.0.0.1:8000/api/v1/health
+docker compose pull
+docker compose up -d
+docker compose ps -a
 ```
 
-API 只监听服务器的 `127.0.0.1:8000`，PostgreSQL 不暴露端口。从 Windows 通过 SSH 隧道访问：
+首次启动时，PostgreSQL 官方镜像按 `.env` 创建用户和数据库。`migrate` 等待数据库通过真实密码登录检查、目录准备完成后执行 Alembic 迁移；API 和 worker 在迁移成功后启动。
 
-```powershell
-ssh -N -L 8000:127.0.0.1:8000 用户名@服务器地址
-```
+| 服务 | 正常状态 | 职责 |
+| --- | --- | --- |
+| `db` | `healthy` | PostgreSQL 数据库 |
+| `storage-init` | `Exited (0)` | 一次性准备主机挂载目录权限 |
+| `migrate` | `Exited (0)` | 应用尚未执行的数据库迁移 |
+| `api` | `healthy` | 网页与 HTTP API |
+| `worker` | `running` | 串行执行数据和研究任务 |
 
-然后打开 <http://127.0.0.1:8000>。
+重复执行 `docker compose up -d` 会复用现有数据库和主机目录。准备或迁移失败时，相关依赖服务不会启动；使用 `docker compose logs db storage-init migrate` 查看失败阶段。
 
-### 4. 升级
+### 访问工作台
 
-先确认网页“任务中心”没有排队或运行中的任务，修改 `.env` 的 `APP_IMAGE` 后：
+默认地址为服务器本机的 <http://127.0.0.1:8000>，PostgreSQL 不发布主机端口。远程访问可建立 SSH 隧道：
 
 ```sh
-docker compose --env-file .env pull
-docker compose --env-file .env stop -t 90 worker api
-docker compose --env-file .env run --rm migrate
-docker compose --env-file .env up -d api worker
-docker compose --env-file .env logs --tail=100 api worker
+ssh -N -L 8000:127.0.0.1:8000 USER@SERVER
 ```
 
-不要执行 `docker compose down -v`（会删除数据库 volume）。回滚：把 `APP_IMAGE` 改回之前的 tag 后重新 `pull` 与 `up -d api worker`；破坏性迁移前务必先备份。
+随后在本机浏览器打开 <http://127.0.0.1:8000>。通过域名或反向代理访问时，将实际网页来源加入 `.env` 的 `ALLOWED_ORIGINS`。
 
-### 5. 备份与恢复
-
-日常使用网页“数据管理 → 备份与恢复”：创建完整备份、查看任务、校验归档，并恢复到新的 `fq_restore_*` 数据库和独立目录。恢复前显示目标位置并确认；原环境保持使用，恢复完成后不会自动切换。
-
-使用下面的命令行方式时，先停止 API 和 worker，数据库继续运行；网页备份由 worker 自行协调。备份覆盖数据库与整个存储目录，包括行情、财务、行业、版本、下载检查点、结果和报告：
+验证数据库结构与存储连接：
 
 ```sh
-docker compose stop -t 90 api worker
-docker compose run --rm maintenance python -m finance_quant.backup create /backups/my-backup
-docker compose run --rm maintenance python -m finance_quant.backup verify /backups/my-backup
-docker compose up -d api worker
+docker compose exec api python -m finance_quant.server check
 ```
 
-恢复必须使用另一个空数据库和空存储目录，且不要先执行迁移。原有环境不会被覆盖。原生开发环境可使用 `uv run python -m finance_quant.backup create <目录> --env-file <明确的配置文件>`；PostgreSQL客户端需在 PATH 中，或通过 `POSTGRES_BIN` 指定。完整恢复教程见 [docs/operations.md](docs/operations.md)。
+### 更新应用
+
+确认任务中心没有运行中的任务，将 `.env` 的 `APP_IMAGE` 更新为目标版本，然后执行：
+
+```sh
+docker compose pull
+docker compose stop -t 90 worker api
+docker compose up -d
+docker compose ps -a
+```
+
+新镜像对应的迁移会自动执行，数据库卷和主机数据目录继续复用。Compose 文件有变化时，应同步使用目标版本的文件。应用镜像回滚不会回滚数据库结构。
+
+### 数据管理与运维
+
+数据库存放在本 Compose 项目的 `postgres` 持久化卷中；业务文件保存在 `.env` 指定的三个主机目录中。日常备份和恢复可通过“数据管理 → 备份与恢复”操作。
+
+目录布局、日志排查、完整备份、独立环境恢复和试运行环境重建见 [Linux 运维文档](docs/operations.md)。
 
 ## 使用流程
 
@@ -280,7 +310,10 @@ docker compose up -d api worker
 ## 常见问题
 
 **启动报 `Database has no schema yet` / `关系 "alembic_version" 不存在`**
-数据库还没迁移。执行 `uv run python -m finance_quant.server migrate --env-file .env.development`（Docker：`docker compose run --rm migrate`）。
+原生开发环境执行 `uv run python -m finance_quant.server migrate --env-file .env.development`。Docker Compose 自动迁移，先查看 `docker compose logs migrate`，处理失败原因后重新 `docker compose up -d`。
+
+**Docker 报 `password authentication failed`**
+检查 `.env` 是否与该数据卷首次初始化时的账号密码一致。修改 `.env` 不会改写已有数据库的密码。确认试运行数据库可丢弃时，可在该项目目录执行 `docker compose down --volumes`，再 `docker compose up -d` 重新初始化；主机挂载目录不会被删除。正式数据应保留原凭据或进行明确的密码变更。
 
 **报 `POSTGRES_HOST is required`**
 没有加 `--env-file .env.development`，或该文件缺少 `POSTGRES_HOST`。

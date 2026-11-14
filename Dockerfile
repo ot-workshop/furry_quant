@@ -33,7 +33,7 @@ COPY --from=pgclients /usr/lib/postgresql/18/bin/pg_dump /usr/local/bin/pg_dump
 COPY --from=pgclients /usr/lib/postgresql/18/bin/pg_restore /usr/local/bin/pg_restore
 COPY --from=pgclients /usr/lib/*-linux-gnu/libpq.so.5* /usr/local/lib/
 RUN ldconfig && pg_dump --version && pg_restore --version
-RUN mkdir -p /app/storage && chown quant:quant /app/storage
+RUN mkdir -p /app/storage /backups /restores && chown quant:quant /app/storage /backups /restores
 COPY --from=frontend /build/dist ./frontend/dist/
 USER quant
 EXPOSE 8000

@@ -10,9 +10,9 @@
 finance-quant/
 ├── docker-compose.yaml
 ├── .env
-├── storage/          # 可以指向目录外的绝对路径
-├── backups/          # 可以指向目录外的绝对路径
-└── restores/         # 网页恢复使用的独立目录
+├── storage/          # 自动创建；支持相对路径或绝对路径
+├── backups/          # 自动创建；支持相对路径或绝对路径
+└── restores/         # 自动创建；独立恢复环境
 ```
 
 `.env` 至少配置：
@@ -22,10 +22,10 @@ APP_IMAGE=ghcr.io/quqionfree/my_quant_project:sha-实际提交号
 TUSHARE_TOKEN=官方TushareToken
 POSTGRES_DB=finance_quant
 POSTGRES_USER=quant
-POSTGRES_PASSWORD=独立强密码
-STORAGE_ROOT=/home/用户名/finance-quant-data/storage
-BACKUP_ROOT=/home/用户名/finance-quant-data/backups
-RESTORE_ROOT=/home/用户名/finance-quant-data/restores
+POSTGRES_PASSWORD='独立强密码'
+STORAGE_ROOT=./storage
+BACKUP_ROOT=./backups
+RESTORE_ROOT=./restores
 HTTP_PORT=8000
 ```
 
@@ -45,57 +45,42 @@ unset GHCR_TOKEN
 
 ## 首次启动
 
-校验插值后的配置：
+在部署目录检查配置并启动服务：
 
 ```sh
-docker compose --env-file .env -f docker-compose.yaml config
+docker compose config --quiet
+docker compose pull
+docker compose up -d
+docker compose ps -a
 ```
 
-拉取 PostgreSQL 和应用镜像：
+首次启动由 PostgreSQL 官方镜像创建用户和数据库；账号、库名和密码来自 `.env`。数据库健康检查通过 TCP 使用实际账号密码执行查询，只有最终数据库进程可以通过检查。
+
+`storage-init` 准备三个主机挂载根目录的属主，不递归修改业务文件。`migrate` 等待数据库健康与目录准备成功后执行迁移；API、worker 在迁移成功后启动。API、worker 和迁移均以非 root 用户运行。
+
+正常状态为：`db`、`api` 健康，`worker` 运行，`storage-init`、`migrate` 以状态码0退出。一次性服务正常退出后无需保持运行。
+
+验证应用及查看启动日志：
 
 ```sh
-docker compose --env-file .env -f docker-compose.yaml pull
+docker compose exec api python -m finance_quant.server check
+docker compose logs --tail=100 db storage-init migrate api worker
 ```
 
-启动数据库并等待健康：
-
-```sh
-docker compose --env-file .env -f docker-compose.yaml up -d db
-docker compose --env-file .env -f docker-compose.yaml ps
-```
-
-显式执行数据库迁移，再启动 API 和 worker：
-
-```sh
-docker compose --env-file .env -f docker-compose.yaml run --rm migrate
-docker compose --env-file .env -f docker-compose.yaml up -d api worker
-```
-
-检查服务：
-
-```sh
-docker compose --env-file .env -f docker-compose.yaml ps
-docker compose --env-file .env -f docker-compose.yaml logs --tail=100 api worker
-docker compose --env-file .env -f docker-compose.yaml exec -T api python -m finance_quant.server check
-wget -qO- http://127.0.0.1:8000/api/v1/health
-```
-
-`db` 和 `api` 应为 healthy，`worker` 应保持运行。`migrate` 是一次性命令，不是常驻服务。
+准备或迁移失败会阻止依赖它们的应用服务启动。处理失败原因后，重新执行 `docker compose up -d`。重复启动会复用现有数据库和主机目录，迁移只应用尚未执行的版本。
 
 ## 更新镜像
 
-从 GitHub Actions 复制新的 `sha-*` 标签或镜像 digest，修改 `.env` 的 `APP_IMAGE`。确认没有排队或运行中的任务后执行：
+从 GitHub Actions 获取目标镜像标签或 digest，更新 `.env` 中的 `APP_IMAGE`。确认没有运行中的任务后执行：
 
 ```sh
-docker compose --env-file .env -f docker-compose.yaml pull
-docker compose --env-file .env -f docker-compose.yaml stop -t 90 worker api
-docker compose --env-file .env -f docker-compose.yaml run --rm migrate
-docker compose --env-file .env -f docker-compose.yaml up -d api worker
-docker compose --env-file .env -f docker-compose.yaml ps
-docker compose --env-file .env -f docker-compose.yaml logs --tail=100 api worker
+docker compose pull
+docker compose stop -t 90 worker api
+docker compose up -d
+docker compose ps -a
 ```
 
-数据库在应用更新期间保持运行。worker 收到停止信号后停止领取新任务，并给当前子进程保留宽限时间。
+数据库保持运行。worker 收到停止信号后停止领取新任务，并给当前子进程保留退出时间。新镜像的迁移自动执行，数据库卷与主机文件继续保留。
 
 ## 更新 Compose
 
@@ -108,7 +93,7 @@ scp docker-compose.yaml 用户名@服务器:~/finance-quant/docker-compose.yaml.
 服务器先校验新文件，再替换：
 
 ```sh
-docker compose --env-file .env -f docker-compose.yaml.new config
+docker compose --env-file .env -f docker-compose.yaml.new config --quiet
 mv docker-compose.yaml.new docker-compose.yaml
 ```
 
@@ -121,7 +106,7 @@ mv docker-compose.yaml.new docker-compose.yaml
 ```sh
 docker compose --env-file .env -f docker-compose.yaml pull
 docker compose --env-file .env -f docker-compose.yaml stop -t 90 worker api
-docker compose --env-file .env -f docker-compose.yaml up -d api worker
+docker compose --env-file .env -f docker-compose.yaml up -d
 ```
 
 镜像回滚不会自动回滚数据库。迁移应采用向前兼容的扩展/收缩方式；删除列、修改字段类型等破坏性操作拆分到后续版本。无法兼容时恢复部署前备份。
@@ -188,14 +173,14 @@ uv run python -m finance_quant.backup verify D:/quant-backups/backup-20261112
 
 网页恢复填写新环境名称，数据库强制使用 `fq_restore_` 前缀，文件存入 `RESTORE_ROOT/<数据库名>`；确认窗口展示目标位置。后台先校验归档，再创建不存在的目标库，仅在空库和空目录上恢复。已有数据的目标会被拒绝，当前应用连接不会切换。
 
-若当前数据库账号没有 CREATEDB 权限，可由管理员预建同名空库，或在环境配置 `RESTORE_POSTGRES_USER` 与 `RESTORE_POSTGRES_PASSWORD`，然后重启应用。凭据只在服务器使用，不发送到网页。恢复路径、备份路径需由部署用户提前建立并赋予应用容器用户写权限。
+若当前数据库账号没有 CREATEDB 权限，可由管理员预建同名空库，或在环境配置 `RESTORE_POSTGRES_USER` 与 `RESTORE_POSTGRES_PASSWORD`，然后重启应用。凭据只在服务器使用，不发送到网页。使用 Compose 时，备份与恢复目录由 storage-init 自动准备写权限。
 
 为恢复环境单独创建目录，复制 Compose 与 `.env`，修改以下配置。不要使用现有部署目录：
 
 ```dotenv
 COMPOSE_PROJECT_NAME=finance-quant-restore-check
 STORAGE_ROOT=/home/用户名/finance-quant-restore-check/storage
-BACKUP_ROOT=/home/用户名/finance-quant-data/backups
+BACKUP_ROOT=./backups
 HTTP_PORT=8001
 ```
 
@@ -240,3 +225,27 @@ du -sh storage backups
 ```
 
 不得手动删除 `datasets/` 或 `runs/` 中仍被 PostgreSQL 登记的文件。Docker 构建缓存可清理，但数据库 volume、正式镜像和备份必须先确认引用关系。
+
+## 试运行环境重建
+
+官方镜像的初始化参数只对空数据库卷生效。修改 `.env` 中的密码不会改变已有数据库密码，修改库名也不会迁移原库内容。已有业务数据的环境应保留原凭据，或执行明确的账号变更与数据迁移。
+
+确认本项目试运行数据库可丢弃时，可在对应部署目录执行：
+
+```sh
+docker compose down --volumes
+docker compose up -d
+```
+
+第一条命令删除当前项目的 PostgreSQL volume，数据库内容全部清空，主机的 storage、backups 和 restores 目录保留。第二条命令按当前 `.env` 重新初始化。保留的业务文件不会自动注册为新实例的研究结果。
+
+## 启动流程验证
+
+在 Linux 上使用本地应用镜像验证首次启动、主机目录写权限、重复启动、升级迁移、迁移失败阻断以及旧卷密码不匹配：
+
+```sh
+docker build --target application -t finance-quant:startup-check .
+python3 scripts/check_compose_startup.py --image finance-quant:startup-check
+```
+
+每个场景使用随机 Compose 项目，只挂载脚本创建的临时目录和独立数据库卷，结束后清理测试资源。GitHub Actions 在发布应用镜像前执行同一组验证。
