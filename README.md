@@ -192,6 +192,7 @@ POSTGRES_DB=finance_quant
 POSTGRES_PASSWORD='替换为数据库密码'
 TUSHARE_TOKEN=替换为官方TushareToken
 
+POSTGRES_DATA_ROOT=./postgres
 STORAGE_ROOT=./storage
 BACKUP_ROOT=./backups
 RESTORE_ROOT=./restores
@@ -203,6 +204,7 @@ RESTORE_ROOT=./restores
 | `POSTGRES_USER` / `POSTGRES_DB` | 首次初始化时创建的用户和数据库，默认 `quant` / `finance_quant` |
 | `POSTGRES_PASSWORD` | 数据库密码；包含 `$`、`#` 等字符时使用单引号包裹 |
 | `TUSHARE_TOKEN` | 行情和财务数据下载所需的官方 Tushare Token；未配置时仍可启动服务 |
+| `POSTGRES_DATA_ROOT` | PostgreSQL 数据文件的主机目录，默认 `./postgres`，由官方镜像初始化 |
 | `STORAGE_ROOT` | 行情、财务、行业、下载缓存和回测结果的主机目录，默认 `./storage` |
 | `BACKUP_ROOT` / `RESTORE_ROOT` | 备份归档和独立恢复环境的主机目录，默认 `./backups` / `./restores` |
 | `HTTP_PORT` | API 的主机端口，默认 `8000`，绑定至 `127.0.0.1` |
@@ -268,7 +270,7 @@ docker compose ps -a
 
 ### 数据管理与运维
 
-数据库存放在本 Compose 项目的 `postgres` 持久化卷中；业务文件保存在 `.env` 指定的三个主机目录中。日常备份和恢复可通过“数据管理 → 备份与恢复”操作。
+数据库和业务文件分别保存在部署目录下的 `postgres/`、`storage/`、`backups/` 和 `restores/`，也可通过 `.env` 配置独立路径。Compose 项目名默认取部署文件夹名；同一主机部署多套服务时，使用不同的文件夹名和 `HTTP_PORT`。需要自定义项目名或文件夹同名时，可设置 `COMPOSE_PROJECT_NAME`。日常备份和恢复可通过“数据管理 → 备份与恢复”操作。
 
 目录布局、日志排查、完整备份、独立环境恢复和试运行环境重建见 [Linux 运维文档](docs/operations.md)。
 
@@ -313,7 +315,7 @@ docker compose ps -a
 原生开发环境执行 `uv run python -m finance_quant.server migrate --env-file .env.development`。Docker Compose 自动迁移，先查看 `docker compose logs migrate`，处理失败原因后重新 `docker compose up -d`。
 
 **Docker 报 `password authentication failed`**
-检查 `.env` 是否与该数据卷首次初始化时的账号密码一致。修改 `.env` 不会改写已有数据库的密码。确认试运行数据库可丢弃时，可在该项目目录执行 `docker compose down --volumes`，再 `docker compose up -d` 重新初始化；主机挂载目录不会被删除。正式数据应保留原凭据或进行明确的密码变更。
+检查 `.env` 是否与 `POSTGRES_DATA_ROOT` 首次初始化时的账号密码一致。修改 `.env` 不会改写已有数据库的密码。试运行数据库重建方法见[Linux运维](docs/operations.md#试运行环境重建)；停止容器不会删除主机挂载目录。正式数据应保留原凭据或进行明确的密码变更。
 
 **报 `POSTGRES_HOST is required`**
 没有加 `--env-file .env.development`，或该文件缺少 `POSTGRES_HOST`。

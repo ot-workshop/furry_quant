@@ -1,5 +1,3 @@
-name: ${COMPOSE_PROJECT_NAME:-finance-quant}
-
 x-app: &app
   image: ${APP_IMAGE:?Set APP_IMAGE in .env}
   init: true
@@ -47,9 +45,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       TZ: Asia/Shanghai
     volumes:
-      - postgres:/var/lib/postgresql
+      - ${POSTGRES_DATA_ROOT:-./postgres}:/var/lib/postgresql
     healthcheck:
-      test: [CMD-SHELL, 'PGPASSWORD="$${POSTGRES_PASSWORD}" psql -X -w -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Atqc "SELECT 1" >/dev/null']
+      test: [CMD-SHELL, 'PGPASSWORD="$${POSTGRES_PASSWORD}" psql -X -w -h db -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Atqc "SELECT 1" >/dev/null']
       interval: 5s
       timeout: 5s
       retries: 20
@@ -103,6 +101,3 @@ services:
         condition: service_healthy
       storage-init:
         condition: service_completed_successfully
-
-volumes:
-  postgres:

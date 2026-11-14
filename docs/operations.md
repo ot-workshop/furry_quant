@@ -10,6 +10,7 @@
 finance-quant/
 ├── docker-compose.yaml
 ├── .env
+├── postgres/         # PostgreSQL 数据目录，由官方镜像管理
 ├── storage/          # 自动创建；支持相对路径或绝对路径
 ├── backups/          # 自动创建；支持相对路径或绝对路径
 └── restores/         # 自动创建；独立恢复环境
@@ -23,6 +24,7 @@ TUSHARE_TOKEN=官方TushareToken
 POSTGRES_DB=finance_quant
 POSTGRES_USER=quant
 POSTGRES_PASSWORD='独立强密码'
+POSTGRES_DATA_ROOT=./postgres
 STORAGE_ROOT=./storage
 BACKUP_ROOT=./backups
 RESTORE_ROOT=./restores
@@ -30,6 +32,8 @@ HTTP_PORT=8000
 ```
 
 `.env` 权限设为 `600`。GHCR Token 不写入 `.env`，只用于 `docker login`。
+
+PostgreSQL 使用 `POSTGRES_DATA_ROOT` 主机目录，默认 `./postgres`，目录权限由官方镜像管理。其余三个目录继续使用 `./storage`、`./backups`、`./restores`。Compose 默认以部署文件夹名作为项目名；同一主机运行多套实例时，使用不同文件夹名、端口和数据库目录。文件夹同名或需要自定义时，可设置 `COMPOSE_PROJECT_NAME`；不同项目名不会隔离指向同一路径的挂载。
 
 ## 私有镜像认证
 
@@ -54,7 +58,7 @@ docker compose up -d
 docker compose ps -a
 ```
 
-首次启动由 PostgreSQL 官方镜像创建用户和数据库；账号、库名和密码来自 `.env`。数据库健康检查通过 TCP 使用实际账号密码执行查询，只有最终数据库进程可以通过检查。
+首次启动由 PostgreSQL 官方镜像创建用户和数据库；账号、库名和密码来自 `.env`。数据库健康检查使用与应用相同的 `db` 网络地址进行密码认证并执行查询，只有最终数据库进程可以通过检查。不能使用 `127.0.0.1` 代替：官方镜像的回环认证规则可能为 `trust`，这会跳过密码校验。
 
 `storage-init` 准备三个主机挂载根目录的属主，不递归修改业务文件。`migrate` 等待数据库健康与目录准备成功后执行迁移；API、worker 在迁移成功后启动。API、worker 和迁移均以非 root 用户运行。
 
@@ -127,7 +131,7 @@ docker compose --env-file .env -f docker-compose.yaml logs --tail=100 db
 docker compose --env-file .env -f docker-compose.yaml restart api worker
 ```
 
-不要执行 `docker compose down -v`。`-v` 会删除 PostgreSQL volume。
+`docker compose down` 停止并删除本项目容器和网络，主机上的数据库、业务、备份和恢复目录继续保留。重建试运行数据库见下文。
 
 ## Windows 访问
 
@@ -179,12 +183,13 @@ uv run python -m finance_quant.backup verify D:/quant-backups/backup-20261112
 
 ```dotenv
 COMPOSE_PROJECT_NAME=finance-quant-restore-check
+POSTGRES_DATA_ROOT=./postgres
 STORAGE_ROOT=/home/用户名/finance-quant-restore-check/storage
-BACKUP_ROOT=./backups
+BACKUP_ROOT=/home/用户名/finance-quant/backups
 HTTP_PORT=8001
 ```
 
-不同 Compose 项目名会创建独立数据库 volume。恢复目标必须是全新空数据库和空存储目录；不要先运行 migrate。恢复命令会在任何数据库写入前检查实际数据库身份、空库、空目录及完整归档校验：
+恢复环境使用独立的部署目录、项目名、数据库目录和业务目录；备份目录可以指向原归档位置。恢复目标必须是全新空数据库和空存储目录；不要先运行 migrate。恢复命令会在任何数据库写入前检查实际数据库身份、空库、空目录及完整归档校验：
 
 ```sh
 docker compose up -d db
@@ -228,16 +233,19 @@ du -sh storage backups
 
 ## 试运行环境重建
 
-官方镜像的初始化参数只对空数据库卷生效。修改 `.env` 中的密码不会改变已有数据库密码，修改库名也不会迁移原库内容。已有业务数据的环境应保留原凭据，或执行明确的账号变更与数据迁移。
+官方镜像的初始化参数只对空数据库目录生效。修改 `.env` 中的密码不会改变已有数据库密码，修改库名也不会迁移原库内容。已有业务数据的环境应保留原凭据，或执行明确的账号变更与数据迁移。
 
 确认本项目试运行数据库可丢弃时，可在对应部署目录执行：
 
 ```sh
-docker compose down --volumes
+docker compose down
+mv postgres "postgres.previous-$(date +%Y%m%d-%H%M%S)"
 docker compose up -d
 ```
 
-第一条命令删除当前项目的 PostgreSQL volume，数据库内容全部清空，主机的 storage、backups 和 restores 目录保留。第二条命令按当前 `.env` 重新初始化。保留的业务文件不会自动注册为新实例的研究结果。
+以上示例使用默认 `./postgres` 路径：先停止服务，将旧数据库目录移开，再按当前 `.env` 初始化新的空目录。自定义 `POSTGRES_DATA_ROOT` 时，应操作实际配置的目录。storage、backups 和 restores 保留；保留的业务文件不会自动注册为新实例的研究结果。
+
+旧版曾使用的 `finance-quant_postgres` 命名卷不会自动转为主机目录。需要保留旧库时应先备份，再恢复至独立环境；可丢弃的试运行库可直接切换到新的空目录，确认启动成功后再清理旧命名卷。
 
 ## 启动流程验证
 
@@ -248,4 +256,4 @@ docker build --target application -t finance-quant:startup-check .
 python3 scripts/check_compose_startup.py --image finance-quant:startup-check
 ```
 
-每个场景使用随机 Compose 项目，只挂载脚本创建的临时目录和独立数据库卷，结束后清理测试资源。GitHub Actions 在发布应用镜像前执行同一组验证。
+每个场景使用随机 Compose 项目，只挂载脚本创建的临时数据库和业务目录，结束后清理测试资源。GitHub Actions 在发布应用镜像前执行同一组验证。

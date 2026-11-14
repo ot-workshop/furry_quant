@@ -11,6 +11,7 @@ storage-dev/
 !.env.example
 !.env.development.example
 /data/
+/postgres/
 .review-tmp/
 runs/
 frontend/node_modules/

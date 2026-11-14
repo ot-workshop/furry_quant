@@ -6,6 +6,7 @@
 /.uv-cache
 /.agent-work
 /data
+/postgres
 !/src/finance_quant/data
 !/src/finance_quant/data/**
 /runs

@@ -60,7 +60,22 @@ class Stack:
         config = json.loads(self.run("config", "--format", "json").stdout)
         if config["name"] != self.project:
             raise ValueError("Refusing to use a non-isolated Compose project")
-        for definition in config["volumes"].values():
+        default_command = [
+            "docker",
+            "compose",
+            "--project-directory",
+            str(self.root),
+            "--env-file",
+            str(self.root / ".env"),
+            "-f",
+            str(COMPOSE),
+            "config",
+            "--format",
+            "json",
+        ]
+        default_config = json.loads(execute(default_command).stdout)
+        assert default_config["name"] == self.root.name, "Compose project name does not follow its deployment folder"
+        for definition in config.get("volumes", {}).values():
             if definition.get("external") or not definition["name"].startswith(self.project + "_"):
                 raise ValueError("Refusing to use a non-isolated volume")
         for service in config["services"].values():
@@ -74,6 +89,7 @@ class Stack:
             "POSTGRES_USER": "fq_startup",
             "POSTGRES_DB": "fq_startup_test",
             "POSTGRES_PASSWORD": self.password,
+            "POSTGRES_DATA_ROOT": str(self.root / "postgres"),
             "TUSHARE_TOKEN": "",
             "HTTP_PORT": "0",
             "STORAGE_ROOT": str(self.root / "storage"),
@@ -94,6 +110,8 @@ class Stack:
             "compose",
             "--project-name",
             self.project,
+            "--project-directory",
+            str(self.root),
             "--env-file",
             str(self.root / ".env"),
             "-f",
@@ -143,9 +161,9 @@ class Stack:
 
     def close(self):
         self.run("down", "--volumes", "--remove-orphans", check=False)
-        # Bind-mounted files belong to the image UID, which may differ from the CI
-        # runner. Remove only this case's three validated temporary directories.
-        cleanup = "from pathlib import Path; import shutil; [shutil.rmtree(p) for p in Path('/cleanup').iterdir() if p.name in {'storage', 'backups', 'restores'}]"
+        # Database and app files have different image UIDs. Remove only this
+        # case's four validated temporary directories after stopping containers.
+        cleanup = "from pathlib import Path; import shutil; [shutil.rmtree(p) for p in Path('/cleanup').iterdir() if p.name in {'postgres', 'storage', 'backups', 'restores'}]"
         execute(
             [
                 "docker",
@@ -257,6 +275,10 @@ def changed_password(stack):
     stack.configure()
     stack.set_override({"db": {"healthcheck": {"interval": "1s", "retries": 3, "start_period": "0s"}}})
     assert stack.run("up", "-d", check=False).returncode != 0
+    assert stack.states()["db"]["Health"] == "unhealthy", "Invalid credentials passed the database health check"
+    assert stack.states().get("migrate", {}).get("State") in {None, "created"}, (
+        "Migration started before database authentication passed"
+    )
     stack.stopped_apps()
     stack.close()
     stack.set_override(None)
