@@ -125,7 +125,9 @@ def fundamental_events(versions: pd.DataFrame) -> pd.DataFrame:
     """One feature row per stock and moment a new statement version became visible."""
     columns = ["instrument", "financial_available_at", "financial_report_period", *FEATURES]
     if versions.empty:
-        return pd.DataFrame(columns=columns).astype({"financial_available_at": "datetime64[ns, UTC]"})
+        return pd.DataFrame(columns=columns).astype(
+            {"financial_available_at": "datetime64[ns, UTC]", "financial_report_period": "datetime64[ns]"}
+        )
     ordered = versions.sort_values(["instrument", "available_at", "priority", "revision"])
     fields = {statement: statement_fields(statement) for statement in ("income", "balance", "cashflow")}
     rows = []

@@ -13,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from finance_quant.application import backup_jobs, data_updates, financial_download, industry_download
 from finance_quant.application import market_download as downloads
+from finance_quant.application.factor_coverage import factor_coverage
 from finance_quant.application.market_download import shared_root, status
 from finance_quant.application.research_requests import research_options
 from finance_quant.data.financials import financial_root
@@ -82,6 +83,18 @@ def research_router(service, *, result_store=None):
     @router.get("/options")
     def options():
         return research_options(service.data_root, service.runs_root)
+
+    @router.post("/factor-coverage")
+    async def preview_factor_coverage(request: Request):
+        document = await body(request)
+        try:
+            return await run_in_threadpool(factor_coverage, document, service.data_root)
+        except (ValueError, TypeError) as error:
+            raise HTTPException(
+                422, str(error) if isinstance(error, ValueError) else "因子覆盖参数类型不正确"
+            ) from None
+        except (OSError, KeyError):
+            raise HTTPException(503, "当前数据版本暂不可读，请更新数据列表后重试") from None
 
     @router.get("/tasks")
     def tasks():

@@ -287,3 +287,25 @@ body {
   border: 1px solid var(--ant-color-border);
   border-radius: var(--ant-border-radius);
 }
+
+.factor-data-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--ant-color-text-tertiary);
+  font: inherit;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+}
+.factor-data-hint:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 50%;
+}
+.factor-data-hint-warning {
+  color: var(--ant-color-warning);
+}

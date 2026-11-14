@@ -15,7 +15,7 @@ import {
 } from "antd";
 import { CopyOutlined, DeleteOutlined } from "@ant-design/icons";
 import type { ResearchOptions } from "../../api/research";
-import { Hint } from "../../components/ui";
+import { FactorDataHint } from "../../components/FactorDataHint";
 import {
   addFactorInstance,
   equalWeights,
@@ -98,29 +98,11 @@ export function FactorSection({
                 {definition.label}
                 {extra ? ` · ${row.key}` : ""}
               </Typography.Text>
-              <Hint
-                text={
-                  <div>
-                    <div>{definition.description}</div>
-                    {definition.formula ? (
-                      <div>公式：{definition.formula}</div>
-                    ) : null}
-                    <div>
-                      {definition.direction === "lower"
-                        ? "原始值越低越好"
-                        : "原始值越高越好"}
-                    </div>
-                    {definition.data_note ? (
-                      <div>{definition.data_note}</div>
-                    ) : null}
-                    {!available ? (
-                      <div>
-                        当前数据集没有该股票池的财务数据，先在“数据管理 →
-                        财务数据”下载后才能使用。
-                      </div>
-                    ) : null}
-                  </div>
-                }
+              <FactorDataHint
+                definition={definition}
+                form={form}
+                options={options}
+                row={row}
               />
               {definition.family_label ? (
                 <Tag>{definition.family_label}</Tag>

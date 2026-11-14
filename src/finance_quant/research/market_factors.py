@@ -89,6 +89,14 @@ def _prepare_frame(market, config, dynamic_context, exchange_calendar, financial
     return frame, actual_calendar, fundamental
 
 
+def calculate_factor_values(market, config, *, dynamic_context=None, exchange_calendar=None, financials=None):
+    """Calculate causal raw values; callers decide which cross-section to score or inspect."""
+    frame, calendar, fundamental = _prepare_frame(market, config, dynamic_context, exchange_calendar, financials)
+    for spec in config.specs:
+        frame["factor_" + spec.key] = FACTOR_LIBRARY[spec.name].calculator(frame, spec)
+    return frame, calendar, fundamental
+
+
 def market_factors(
     market: pd.DataFrame,
     data_version: str,
@@ -115,11 +123,11 @@ def market_factors(
     if neutralization.mode == "industry":
         industry_history.validate_range(market.date.max())
     industry_days = {}
-    frame, actual_calendar, fundamental = _prepare_frame(market, config, dynamic_context, exchange_calendar, financials)
+    frame, actual_calendar, fundamental = calculate_factor_values(
+        market, config, dynamic_context=dynamic_context, exchange_calendar=exchange_calendar, financials=financials
+    )
     specs = {spec.key: spec for spec in config.specs}
     descriptors = {key: describe_spec(spec) for key, spec in specs.items()}
-    for key, spec in specs.items():
-        frame["factor_" + key] = FACTOR_LIBRARY[spec.name].calculator(frame, spec)
     history: list[dict]
     diagnostics: list[dict]
     history, diagnostics, coverage, availability = [], [], {}, {}

@@ -1,3 +1,4 @@
+import { FactorDataHint } from "../components/FactorDataHint";
 import {
   selectionApi,
   parseSelectionReference,
@@ -339,6 +340,8 @@ function ExperimentForm({
                   <CandidateEditor
                     value={item}
                     definitions={definitions}
+                    form={form}
+                    options={options}
                     coverage={coverage}
                     removable={
                       candidates.length > 2 && !(seed && item.id === "milp")
@@ -420,6 +423,8 @@ function ExperimentForm({
 function CandidateEditor({
   value,
   definitions,
+  form,
+  options,
   coverage,
   removable,
   onChange,
@@ -427,6 +432,8 @@ function CandidateEditor({
 }: {
   value: Candidate;
   definitions: FactorDefinition[];
+  form: FormState;
+  options: ResearchOptions;
   coverage: FinancialCoverage | null;
   removable: boolean;
   onChange: (value: Candidate) => void;
@@ -500,6 +507,27 @@ function CandidateEditor({
           })
         }
         options={groups}
+        optionFilterProp="label"
+        optionRender={(option) => {
+          const definition = definitions.find(
+            (item) => item.name === option.value,
+          );
+          return (
+            <Space>
+              {option.label}
+              {definition ? (
+                <FactorDataHint
+                  definition={definition}
+                  form={form}
+                  options={options}
+                  row={value.factors.find(
+                    (row) => row.name === definition.name,
+                  )}
+                />
+              ) : null}
+            </Space>
+          );
+        }}
         style={{ width: "100%" }}
         placeholder="选择因子"
       />
@@ -513,9 +541,17 @@ function CandidateEditor({
             style={{ marginTop: 8 }}
             wrap
           >
-            <Typography.Text style={{ width: 120 }}>
-              {definition?.label ?? row.name}
-            </Typography.Text>
+            <Space style={{ width: 145 }}>
+              <Typography.Text>{definition?.label ?? row.name}</Typography.Text>
+              {definition ? (
+                <FactorDataHint
+                  definition={definition}
+                  form={form}
+                  options={options}
+                  row={row}
+                />
+              ) : null}
+            </Space>
             <InputNumber
               size="small"
               min={0}
