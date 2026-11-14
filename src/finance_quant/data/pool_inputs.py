@@ -6,6 +6,7 @@ import pandas as pd
 
 from finance_quant.checksums import sha256_bytes
 from finance_quant.data.market import load_market
+from finance_quant.data.symbols import to_qlib
 from finance_quant.research.universe import select_universe
 
 NAME_COLUMNS = ["instrument", "name", "start_date", "end_date", "ann_date"]
@@ -80,8 +81,13 @@ def filter_input(inputs, root, manifest, filters, start, end, *, industry=None, 
     )
 
 
-def load_snapshot_input(root, start, end, lookback, *, filters, industry=None):
+def load_snapshot_input(root, start, end, lookback, *, filters, industry=None, codes=None):
     market, benchmark, calendar, manifest = load_market(Path(root))
+    if codes is not None:
+        if not set(codes).issubset(manifest["codes"]):
+            raise ValueError("所选股票不在快照中")
+        market = market.loc[market.instrument.isin({to_qlib(code) for code in codes})].copy()
+        manifest = {**manifest, "codes": sorted(codes)}
     market["eligible_history"] = market.groupby("instrument").cumcount().ge(lookback)
     sessions = pd.DatetimeIndex(calendar.loc[calendar.is_open, "date"])
     required = max(lookback, filters.amount_window - 1 if filters.min_avg_amount is not None else 0) + 1

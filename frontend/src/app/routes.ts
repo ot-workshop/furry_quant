@@ -111,7 +111,8 @@ export const paths = {
   evaluations: () => "/evaluations",
   evaluation: (id: string) => `/evaluations/${encode(id)}`,
   experiments: () => "/experiments",
-  newExperiment: () => "/experiments/new",
+  newExperiment: (selection?: string) =>
+    `/experiments/new${selection ? `?selection=${encode(selection)}` : ""}`,
   experiment: (id: string) => `/experiments/${encode(id)}`,
   data: (tab?: string) => `/data${tab ? `?tab=${encode(tab)}` : ""}`,
 };

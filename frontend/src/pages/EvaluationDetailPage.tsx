@@ -1,3 +1,5 @@
+import { RollingAnalysis } from "../evaluation/RollingAnalysis";
+import { CorrelationAnalysis } from "../evaluation/CorrelationAnalysis";
 import { useState } from "react";
 import {
   Button,
@@ -175,43 +177,14 @@ function EvaluationView({ result }: { result: EvaluationResult }) {
             ),
           },
           {
+            key: "rolling",
+            label: "时序分析",
+            children: <RollingAnalysis result={result} horizon={horizon} />,
+          },
+          {
             key: "correlation",
             label: "因子相关性",
-            children: (
-              <Section
-                title="平均秩相关"
-                description="方向对齐后，每日横截面 Spearman 相关取平均"
-              >
-                {result.correlations.pairs.length ? (
-                  <Table
-                    size="small"
-                    rowKey={(row) => `${row.first}-${row.second}`}
-                    pagination={false}
-                    dataSource={result.correlations.pairs}
-                    columns={[
-                      {
-                        title: "因子对",
-                        render: (_, row) =>
-                          `${factorLabel(row.first, definitions)} / ${factorLabel(row.second, definitions)}`,
-                      },
-                      {
-                        title: "平均秩相关",
-                        align: "right",
-                        render: (_, row) =>
-                          formatNumber(row.mean_rank_correlation, 4),
-                      },
-                      {
-                        title: "有效日期",
-                        align: "right",
-                        dataIndex: "valid_dates",
-                      },
-                    ]}
-                  />
-                ) : (
-                  <EmptyState title="只有一个因子，没有相关性" />
-                )}
-              </Section>
-            ),
+            children: <CorrelationAnalysis result={result} horizon={horizon} />,
           },
           {
             key: "coverage",

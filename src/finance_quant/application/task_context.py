@@ -2,11 +2,13 @@
 
 from pathlib import Path
 
+from finance_quant.application import market_download
 from finance_quant.application.research_requests import project_snapshot
 from finance_quant.checksums import file_sha256
 from finance_quant.configuration import DataConfig
 from finance_quant.data.financials import FinancialBinding, financial_root
 from finance_quant.data.market import load_market
+from finance_quant.data.market_universe import market_roots
 from finance_quant.data.validation_config import CrosscheckConfig
 
 
@@ -71,3 +73,22 @@ def prepare_snapshot(context: TaskContext, request: dict, execution: dict):
     )
     dataset_record = register_snapshot_dataset(root, request, context.repository, context.storage_root)
     return market, calendar, manifest, data, dataset_record
+
+
+def prepare_warehouse(context: TaskContext, request: dict, execution: dict):
+    """Freeze a queued dynamic pool once so every split shares the same physical files."""
+    root = Path(execution["warehouse_dir"]).resolve()
+    allowed = (
+        market_roots(context.data_root)
+        if execution["mode"] == "market_warehouse"
+        else market_download.warehouse_roots(context.data_root)
+    )
+    if root not in allowed:
+        raise ValueError("历史数据仓路径不合法")
+    dataset_record = None
+    if context.repository is not None:
+        dataset_record = context.repository.freeze_historical_warehouse(
+            root, context.storage_root, expected_sha=execution["manifest_sha256"], request=request.get("data", {})
+        )
+        root = Path(dataset_record["path"])
+    return root, dataset_record

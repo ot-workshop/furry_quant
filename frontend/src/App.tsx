@@ -43,7 +43,8 @@ function Page({ route }: { route: Route }) {
         <EvaluationListPage />
       );
     case "experiments":
-      if (first === "new") return <ExperimentNewPage />;
+      if (first === "new")
+        return <ExperimentNewPage selection={route.search.get("selection")} />;
       return first ? (
         <ExperimentDetailPage id={first} />
       ) : (

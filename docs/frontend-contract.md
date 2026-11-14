@@ -11,7 +11,7 @@
 | `/tasks?focus=<task>` | 任务中心 | 研究与方案比较任务，3 秒自动刷新 |
 | `/backtests`、`/backtests/<id>/<tab>` | 回测 | 列表 → 详情（概览、股票池筛选、持仓、成交、费用与调仓、行业暴露、执行记录、参数与口径） |
 | `/factors?run=&date=&instrument=&tab=` | 因子评分 | 横截面排名、个股详情、行业、批次信息；选择状态都在 URL 中 |
-| `/evaluations`、`/evaluations/<id>` | 因子评估 | IC 汇总、分组收益、相关性、覆盖、方法 |
+| `/evaluations`、`/evaluations/<id>` | 因子评估 | IC 汇总、滚动时序、相关性热图、分组收益、覆盖、方法 |
 | `/experiments`、`/experiments/new`、`/experiments/<id>` | 方案比较 | 列表、新建、详情 |
 | `/data?tab=` | 数据管理 | 统一更新、备份与恢复、研究数据集、行情下载（含沪深300历史成分）、财务数据、行业数据、数据库 |
 
@@ -51,3 +51,27 @@
 ## 测试
 
 `npm test` 运行 `frontend/tests/`：表单规则的纯函数测试，以及在 jsdom 中挂载应用、模拟接口的交互测试。
+
+
+## 滚动诊断接口
+
+`GET /api/v1/evaluations/{id}/analysis` 从已保存的评估记录计算，只读且兼容已有结果。
+
+| 参数 | 说明 |
+| --- | --- |
+| `horizon` | 已保存的收益持有期，必填 |
+| `factor` | 因子实例键，默认 `composite` |
+| `window` | 回看信号交易日数，2–2520，默认 60 |
+| `min_periods` | 最少有效日期，2 至 window，默认等于 window |
+| `start` / `end` | 展示与相关性汇总的信号日期范围；滚动计算保留范围之前的记录 |
+| `first` / `second` | 查看历史相关性的因子对 |
+
+`series` 提供每日 IC/Rank IC、滚动均值、未年化 IR、有效数与 `available_on`。后者为窗口内已使用收益标签的最晚退出日，不能把这些统计作为信号日已知信息。缺失交易日保留在窗口内，标准差为零和样本不足返回 null。相关性 `cells` 提供平均相关、平均绝对相关及有效日期数；不对缺失单元格填零。
+
+
+### 因子组合筛选
+
+- `GET /api/v1/evaluations/{id}/selection`：参数为 `horizon`、`cutoff`、`factor_count`、`min_ic`、`min_ir`、`max_correlation`、`min_dates` 与可选 `start`。返回预筛阶段统计、候选原因、组合、不可行时的最大数量和不可变来源引用。
+- `GET /api/v1/evaluations/{id}/selection/draft`：上述参数加 `selection_id`，返回可编辑的分段比较草稿和来源版本。没有足够后续行情返回 422。
+- 实验请求可携带 `factor_selection`，仅接受 `evaluation_id`、`selection_id` 和筛选参数。服务端重新核验来源、窗口、等权权重、股票池、行业设置和所有比较日期；不信任客户端传来的推荐结果。
+- 这两个 GET 不发布结果、不下载数据。任务执行前再次核对来源摘要，完成后在实验元数据和报告中保存筛选证据。

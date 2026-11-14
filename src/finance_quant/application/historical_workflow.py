@@ -33,27 +33,8 @@ from finance_quant.storage import ResultStore
 from finance_quant.storage_tables import StreamingTables, factor_frame, factor_predictions
 
 
-def run_historical_research(
-    request,
-    warehouse_root,
-    runs_root,
-    *,
-    expected_sha=None,
-    stage=None,
-    result_store=None,
-    financials=None,
-):
-    stage = stage or (lambda *args: None)
-    runs_root = Path(runs_root)
-    config = FactorConfig(tuple(FactorSpec(**s) for s in request["factors"]))
-    backtest = BacktestConfig(**request["backtest"])
-    evaluation = EvaluationConfig(**request["evaluation"])
-
-    neutralization = parse_neutralization(request.get("neutralization"))
-    industry = industry_context(neutralization)
-    if neutralization.mode == "industry":
-        industry.validate_range(backtest.end)
-    stage("prepare", "校验历史数据仓、每日成分及股票生命周期", 0)
+def load_research_input(request, warehouse_root, config, backtest, *, expected_sha=None):
+    """Load one immutable pool version with causal membership and factor prehistory."""
     market_mode = request.get("data", {}).get("mode") == "market_warehouse"
     data = request.get("data", {})
     filtered = market_mode or "filters" in data
@@ -84,6 +65,7 @@ def run_historical_research(
             lookback,
             filters=filters,
             industry=filter_industry,
+            codes=data.get("codes"),
         )
     else:
         market, benchmark, sessions, meta = load_historical_input(
@@ -103,6 +85,36 @@ def run_historical_research(
                 backtest.end,
                 industry=filter_industry,
             )
+    return market, benchmark, sessions, meta
+
+
+def run_historical_research(
+    request,
+    warehouse_root,
+    runs_root,
+    *,
+    expected_sha=None,
+    stage=None,
+    result_store=None,
+    financials=None,
+):
+    stage = stage or (lambda *args: None)
+    runs_root = Path(runs_root)
+    config = FactorConfig(tuple(FactorSpec(**s) for s in request["factors"]))
+    backtest = BacktestConfig(**request["backtest"])
+    evaluation = EvaluationConfig(**request["evaluation"])
+
+    neutralization = parse_neutralization(request.get("neutralization"))
+    industry = industry_context(neutralization)
+    if neutralization.mode == "industry":
+        industry.validate_range(backtest.end)
+    stage("prepare", "校验历史数据仓、每日成分及股票生命周期", 0)
+    data = request.get("data", {})
+    market_mode = data.get("mode") == "market_warehouse"
+    filtered = market_mode or "filters" in data
+    market, benchmark, sessions, meta = load_research_input(
+        request, warehouse_root, config, backtest, expected_sha=expected_sha
+    )
     provenance = {
         **source_provenance(),
         "data_version": meta["id"],

@@ -24,10 +24,15 @@ from finance_quant.application.experiment_tasks import run_experiment_task
 from finance_quant.application.factor_workflow import publish_factor_run
 from finance_quant.application.real_workflow import run_configured
 from finance_quant.application.research_requests import request_config, validate_research_data
-from finance_quant.application.task_context import TaskContext, attach_outputs, financial_binding, prepare_snapshot
+from finance_quant.application.task_context import (
+    TaskContext,
+    attach_outputs,
+    financial_binding,
+    prepare_snapshot,
+    prepare_warehouse,
+)
 from finance_quant.application.task_context import register_snapshot_dataset as register_snapshot_dataset
 from finance_quant.data.managed import DatasetDownloadError
-from finance_quant.data.market_universe import market_roots
 from finance_quant.data.network_budget import DownloadPaused
 from finance_quant.data.postgres_market import PostgresMarketStore
 from finance_quant.data.shared_market import configure_store
@@ -137,21 +142,8 @@ def run_task(
 
 def _run_historical(context: TaskContext, request: dict, execution: dict) -> dict:
 
-    root = Path(execution["warehouse_dir"]).resolve()
-    allowed = (
-        market_roots(context.data_root)
-        if execution["mode"] == "market_warehouse"
-        else market_download.warehouse_roots(context.data_root)
-    )
-    if root not in allowed:
-        raise ValueError("历史数据仓路径不合法")
+    root, dataset_record = prepare_warehouse(context, request, execution)
     binding = financial_binding(execution, context.data_root)
-    dataset_record = None
-    if context.repository is not None:
-        dataset_record = context.repository.freeze_historical_warehouse(
-            root, context.storage_root, expected_sha=execution["manifest_sha256"], request=request.get("data", {})
-        )
-        root = dataset_record["path"]
     result_store = context.result_store_factory(dataset_record["id"] if dataset_record else None)
     result = historical_workflow.run_historical_research(
         request,

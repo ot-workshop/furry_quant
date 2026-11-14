@@ -622,3 +622,49 @@ export interface EvaluationResult {
   factors: Record<string, { horizons: Record<string, FactorDiagnostic> }>;
   correlations: EvaluationCorrelations;
 }
+
+export interface RollingICPoint {
+  date: string;
+  observations: number;
+  ic: number | null;
+  rank_ic: number | null;
+  ic_mean: number | null;
+  rank_ic_mean: number | null;
+  ic_ir: number | null;
+  rank_ic_ir: number | null;
+  cumulative_ic: number | null;
+  cumulative_rank_ic: number | null;
+  ic_count: number;
+  rank_ic_count: number;
+  available_on: string | null;
+}
+
+export interface CorrelationCell {
+  first: string;
+  second: string;
+  value: number | null;
+  mean_absolute: number | null;
+  valid_dates: number;
+}
+
+export interface EvaluationAnalysis {
+  factor: string;
+  horizon: number;
+  window: number;
+  min_periods: number;
+  start: string | null;
+  end: string | null;
+  series: RollingICPoint[];
+  summary: { ic: ICStats; rank_ic: ICStats };
+  correlations: {
+    names: string[];
+    cells: CorrelationCell[];
+    pair: {
+      first: string | null;
+      second: string | null;
+      daily: CorrelationDailyPoint[];
+    };
+    method: string;
+  };
+  methodology: Record<string, string>;
+}

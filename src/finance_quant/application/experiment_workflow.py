@@ -8,15 +8,16 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pandas as pd
 from filelock import FileLock, Timeout
 
 from finance_quant.application.evaluation_workflow import evaluate_configured
+from finance_quant.application.experiment_inputs import dynamic_preflight
+from finance_quant.application.experiment_inputs import preflight as _preflight
 from finance_quant.application.factor_workflow import fingerprint, load_configured_snapshot, source_provenance
+from finance_quant.application.historical_workflow import run_historical_research
 from finance_quant.application.real_workflow import run_configured
 from finance_quant.research.experiments import ExperimentPlan, experiment_markdown, select_candidate
-from finance_quant.research.fundamentals import financial_provenance, fundamentals_for
-from finance_quant.research.market_factors import market_factors
+from finance_quant.research.fundamentals import financial_provenance
 from finance_quant.storage import ResultStore
 
 PERIOD_LABELS = {"development": "开发", "validation": "验证", "test": "测试"}
@@ -33,58 +34,30 @@ LIMITATIONS = [
 ]
 
 
-def _preflight(config, plan: ExperimentPlan, market, calendar) -> dict[str, int]:
-    sessions = pd.DatetimeIndex(calendar.loc[calendar["is_open"], "date"])
-    counts = {}
-    previous_index = None
-    all_decisions = set()
-    for period in plan.periods:
-        if period.start < config.backtest.start or period.end > config.backtest.end:
-            raise ValueError("实验区间须位于回测区间之内")
-        start, end = pd.Timestamp(period.start), pd.Timestamp(period.end)
-        if start not in sessions or end not in sessions:
-            raise ValueError("实验区间起止日期须为实际交易日")
-        left, right = sessions.get_loc(start), sessions.get_loc(end)
-        if left == 0:
-            raise ValueError("开发区间开始前至少需要一个交易日用于生成首个信号")
-        if previous_index is not None and left != previous_index + 1:
-            raise ValueError("开发、验证、测试区间须首尾相接，中间不能留出交易日")
-        previous_index = right
-        counts[period.name] = right - left + 1
-        if counts[period.name] <= max(config.evaluation.horizons):
-            raise ValueError("每个区间的交易日数须超过最长评估持有期")
-        all_decisions.update(sessions[left - 1 : right].strftime("%Y-%m-%d"))
-    # Fair comparison: every scheme must score the entire declared universe on
-    # every decision day. Reject silent filtering or insufficient warm-up early.
-    universe = set(market["instrument"].unique())
-    for candidate in plan.candidates:
-        try:
-            factors = market_factors(
-                market,
-                "preflight",
-                candidate.factors,
-                financials=fundamentals_for(config.financials, candidate.factors, market),
-            )
-        except ValueError as exc:
-            raise ValueError(f"候选方案 {candidate.id} 无法计算评分：{exc}") from None
-        coverage = {}
-        for row in factors["history"]:
-            if row["date"] in all_decisions:
-                coverage.setdefault(row["date"], set()).add(row["instrument"])
-        if any(coverage.get(day) != universe for day in all_decisions):
-            raise ValueError(f"候选方案 {candidate.id} 在部分决策日缺少共同股票池评分；请检查历史预热与缺失值")
-    return counts
-
-
-def run_experiment(config, plan: ExperimentPlan, *, result_store=None, progress=None) -> dict:
+def run_experiment(
+    config,
+    plan: ExperimentPlan,
+    *,
+    result_store=None,
+    progress=None,
+    dynamic_request=None,
+    expected_sha=None,
+    factor_selection=None,
+) -> dict:
     """Run development/validation for every candidate, lock the choice, then test it once.
 
     ``progress(completed, total, message)`` is called after each backtest-and-evaluation pair.
     """
     # Round-trip even for in-process callers; dataclass construction cannot bypass validation.
     plan = ExperimentPlan.from_dict(plan.as_dict())
-    market, _, calendar, manifest = load_configured_snapshot(config)
-    counts = _preflight(config, plan, market, calendar)
+    candidate_coverage = None
+    if dynamic_request is None:
+        market, _, calendar, manifest = load_configured_snapshot(config)
+        counts = _preflight(config, plan, market, calendar)
+    else:
+        manifest, counts, candidate_coverage = dynamic_preflight(
+            config, plan, dynamic_request, expected_sha=expected_sha
+        )
     # Pin the physical immutable directory once: another download may advance
     # the managed root's latest pointer while this multi-run experiment executes.
     frozen_config = replace(config, data=replace(config.data, root=Path(manifest["snapshot_dir"])))
@@ -94,14 +67,21 @@ def run_experiment(config, plan: ExperimentPlan, *, result_store=None, progress=
         "benchmark": config.backtest.benchmark or config.data.benchmark,
         "evaluation": config.evaluation.as_dict(),
     }
+    shared["neutralization"] = config.neutralization.as_dict()
+    if dynamic_request is not None:
+        shared["universe_label"] = manifest.get("universe_label", "沪深300历史成分（动态股票池）")
+        shared["universe"] = dynamic_request["data"]
+        shared["membership_policy"] = manifest["membership_policy"]
     provenance = {
         **source_provenance(),
         "data_version": manifest["id"],
-        "data_checksums": manifest["files"],
+        "data_checksums": manifest.get("files", {"manifest_sha256": manifest.get("manifest_sha256")}),
         "plan": plan.as_dict(),
         "shared_parameters": shared,
         **({"financial_version": config.financials.version} if config.financials else {}),
     }
+    if factor_selection is not None:
+        provenance["factor_selection"] = factor_selection
     for candidate in plan.candidates:
         provenance.setdefault("candidate_financials", {})[candidate.id] = financial_provenance(
             config.financials, candidate.factors
@@ -138,8 +118,28 @@ def run_experiment(config, plan: ExperimentPlan, *, result_store=None, progress=
                         factors=candidate.factors,
                         backtest=replace(config.backtest, start=period.start, end=period.end),
                     )
-                    backtest = run_configured(research, result_store=store)
-                    diagnostic = evaluate_configured(research, result_store=store)
+                    if dynamic_request is None:
+                        backtest = run_configured(research, result_store=store)
+                        diagnostic = evaluate_configured(research, result_store=store)
+                    else:
+                        document = {
+                            **dynamic_request,
+                            "factors": candidate.factors.as_list(),
+                            "backtest": asdict(research.backtest),
+                        }
+                        completed = run_historical_research(
+                            document,
+                            frozen_config.data.root,
+                            config.runs_dir,
+                            expected_sha=expected_sha,
+                            result_store=store,
+                            financials=config.financials,
+                        )
+                        backtest = {"run_id": completed["backtest_run_id"], "factor_run_id": completed["factor_run_id"]}
+                        diagnostic = {
+                            "run_id": completed["evaluation_run_id"],
+                            "factor_run_id": completed["factor_run_id"],
+                        }
                     saved = store.get("backtests", backtest["run_id"])
                     metrics = {
                         key: saved["summary"]["metrics"][key]
@@ -168,6 +168,8 @@ def run_experiment(config, plan: ExperimentPlan, *, result_store=None, progress=
                         "evaluation_run_id": diagnostic["run_id"],
                         "metrics": metrics,
                     }
+                    if candidate_coverage is not None:
+                        row["coverage"] = candidate_coverage[candidate.id][period.name]
                     row["artifact_sha256"] = {
                         category: store.digest(category, row[field])
                         for category, field in (
@@ -209,6 +211,12 @@ def run_experiment(config, plan: ExperimentPlan, *, result_store=None, progress=
                         "is_synthetic": False,
                         "selected_candidate": chosen.id,
                         "validation_kind": "retrospective_split",
+                        **({"factor_selection": factor_selection} if factor_selection is not None else {}),
+                        **(
+                            {"point_in_time_certified": False, "membership_policy": manifest["membership_policy"]}
+                            if dynamic_request is not None
+                            else {}
+                        ),
                         "provenance": provenance,
                     },
                     "plan": plan.as_dict(),
@@ -219,10 +227,20 @@ def run_experiment(config, plan: ExperimentPlan, *, result_store=None, progress=
                         "策略为复权等效持股，全收益基准计入分红再投资；仍未逐笔模拟现金红利与红利税。"
                         if config.backtest.benchmark == "H00300.CSI"
                         and text.startswith("策略按复权收益口径计算，基准是价格指数")
+                        else "股票池逐日使用当时可见的成分与条件；预热和停牌会造成候选有效覆盖差异，见各段覆盖明细。"
+                        if dynamic_request is not None and text.startswith("固定股票池由用户事后选择")
+                        else "推荐组合按截止日前已实现标签的 Rank IC/IR 预筛并由 MILP 选取，使用等权；其他候选可手工配置。只按验证段选方案，测试结果不参与选择。"
+                        if factor_selection is not None and text.startswith("当前使用手工设定")
                         else text
                         for text in LIMITATIONS
                     ],
                 }
+                if dynamic_request is not None:
+                    result["limitations"].append(
+                        "历史指数成分按月度快照的下一交易日生效，真实公告与调仓时点未认证。"
+                        if dynamic_request["data"]["mode"] == "index_warehouse"
+                        else manifest.get("st_policy", "历史上市和ST状态来自所选覆盖范围，供应商历史修订时点未认证。")
+                    )
                 store.publish("experiments", run_id, result)
             report = store.publish_report(run_id, experiment_markdown(result), category="experiments")
             return {

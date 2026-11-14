@@ -99,7 +99,7 @@ def snapshot_registry(data_root: Path) -> dict:
     return found
 
 
-def research_options(data_root: Path, runs_root: Path) -> dict:
+def research_options(data_root: Path, runs_root: Path, *, industry_version=None, financial_version=None) -> dict:
     registry = snapshot_registry(data_root)
     snapshots = []
     for identifier, (market, _, calendar, manifest) in registry.items():
@@ -178,8 +178,8 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
     factors, evaluation = FactorConfig(), EvaluationConfig()
     neutralization = parse_neutralization()
 
-    industry = optional_industries()
-    financial = financial_summary(data_root)
+    industry = optional_industries(industry_version)
+    financial = financial_summary(data_root, version=financial_version)
     return {
         "snapshots": [
             {**row, "financial_coverage": coverage_row(financial, [code["code"] for code in row["codes"]], data_root)}
@@ -224,12 +224,12 @@ def research_options(data_root: Path, runs_root: Path) -> dict:
     }
 
 
-def financial_summary(data_root: Path) -> dict | None:
+def financial_summary(data_root: Path, *, version=None) -> dict | None:
     """Current financial version, described for the research form and the data page."""
 
     store = FinancialStore(financial_root(data_root))
     try:
-        manifest = store.current()
+        manifest = store.version(version) if version else store.current()
     except (OSError, ValueError):
         return None
     if manifest is None:
@@ -263,7 +263,7 @@ def coverage_row(financial: dict | None, codes, data_root: Path) -> dict | None:
     return {"covered": len(covered_codes(manifest, codes)), "total": len(set(codes))}
 
 
-def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[dict, dict]:
+def validate_request(document: dict, data_root: Path, runs_root: Path, *, financials=None) -> tuple[dict, dict]:
     _fields(
         document,
         ("name", "data", "backtest", "factors", "evaluation"),
@@ -299,7 +299,7 @@ def validate_request(document: dict, data_root: Path, runs_root: Path) -> tuple[
             for item in factor_list
         )
     )
-    binding = pin_financials(factors, data_root)
+    binding = financials if financials is not None else pin_financials(factors, data_root)
     financial_extra = {"financials": binding.as_dict()} if binding else {}
     obj = document["data"]
     if not isinstance(obj, dict) or obj.get("mode") not in {"snapshot", "index_warehouse", "market_warehouse"}:

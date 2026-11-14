@@ -3,6 +3,7 @@ import type {
   BacktestList,
   DataStatus,
   EquityResponse,
+  EvaluationAnalysis,
   EvaluationList,
   EvaluationResult,
   ExecutionEventPage,
@@ -115,6 +116,24 @@ export const api = {
     request<EvaluationList>("/evaluations", { signal }),
   evaluation: (runId: string, signal?: AbortSignal) =>
     request<EvaluationResult>(`/evaluations/${id(runId)}`, { signal }),
+  evaluationAnalysis: (
+    runId: string,
+    params: {
+      horizon: number;
+      factor?: string;
+      window?: number;
+      min_periods?: number;
+      start?: string;
+      end?: string;
+      first?: string;
+      second?: string;
+    },
+    signal?: AbortSignal,
+  ) =>
+    request<EvaluationAnalysis>(
+      `/evaluations/${id(runId)}/analysis${query({ ...params })}`,
+      { signal },
+    ),
   evaluationDownloadUrl: (runId: string) =>
     `${API_BASE}/evaluations/${id(runId)}/download`,
   evaluationReportUrl: (runId: string) =>

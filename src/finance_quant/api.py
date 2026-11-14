@@ -43,7 +43,7 @@ def create_app(
 
     app = FastAPI(title="量化研究工作台", version="0.3.0", lifespan=lifespan)
     app.state.research_tasks = service
-    app.include_router(research_router(service))
+    app.include_router(research_router(service, result_store=store))
     app.include_router(
         system_router(
             store,
@@ -54,7 +54,7 @@ def create_app(
     )
     app.include_router(factor_router(store))
     app.include_router(backtest_router(store))
-    app.include_router(evaluation_router(store))
+    app.include_router(evaluation_router(store, data_root=service.data_root, runs_root=service.runs_root))
     app.include_router(experiment_router(store))
 
     @app.exception_handler(ResultTableError)

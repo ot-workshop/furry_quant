@@ -30,7 +30,9 @@ class TaskService:
         request, execution = validate_request(document, self.data_root, self.runs_root)
         return self.store.create(request, execution, key)
 
-    def submit_experiment(self, document: dict, key: str) -> dict[str, Any]:
+    def submit_experiment(self, document: dict, key: str, *, result_store=None) -> dict[str, Any]:
 
-        request, execution = validate_experiment_request(document, self.data_root, self.runs_root)
+        request, execution = validate_experiment_request(
+            document, self.data_root, self.runs_root, result_store=result_store
+        )
         return self.store.create_experiment(request, execution, key, total=experiment_total(request))

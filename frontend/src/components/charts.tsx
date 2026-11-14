@@ -37,6 +37,7 @@ interface ChartProps {
   ariaLabel: string;
   group?: string;
   onDateClick?: (date: string) => void;
+  onDataClick?: (data: unknown) => void;
 }
 
 /** ECharts host. Options are rebuilt from the theme palette, never patched afterwards. */
@@ -47,12 +48,15 @@ export function Chart({
   ariaLabel,
   group,
   onDateClick,
+  onDataClick,
 }: ChartProps) {
   const palette = useChartPalette();
   const element = useRef<HTMLDivElement | null>(null);
   const chart = useRef<ReturnType<typeof echarts.init> | null>(null);
   const click = useRef(onDateClick);
   click.current = onDateClick;
+  const dataClick = useRef(onDataClick);
+  dataClick.current = onDataClick;
   const option = useMemo(() => build(palette), [palette, ...deps]);
 
   useEffect(() => {
@@ -66,6 +70,7 @@ export function Chart({
       echarts.connect(group);
     }
     instance.on("click", (params) => {
+      dataClick.current?.(params.data);
       if (
         typeof params.name === "string" &&
         /^\d{4}-\d{2}-\d{2}$/.test(params.name)
@@ -159,6 +164,7 @@ export function EquityChart({
   items: EquityPoint[];
   group?: string;
   onDateClick?: (date: string) => void;
+  onDataClick?: (data: unknown) => void;
 }) {
   return (
     <Chart

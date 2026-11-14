@@ -1,3 +1,4 @@
+import { poolLabel } from "../utils/format";
 import {
   Alert,
   Button,
@@ -115,6 +116,55 @@ function ExperimentView({ result }: { result: ExperimentResult }) {
           </>
         }
       />
+      {metadata.factor_selection ? (
+        <Card title="因子组合筛选来源">
+          <Descriptions
+            column={{ xs: 1, md: 3 }}
+            items={[
+              {
+                key: "source",
+                label: "来源评估",
+                children: (
+                  <AppLink
+                    to={paths.evaluation(
+                      metadata.factor_selection.evaluation_id,
+                    )}
+                  >
+                    {metadata.factor_selection.evaluation_id}
+                  </AppLink>
+                ),
+              },
+              {
+                key: "cutoff",
+                label: "推荐截止日",
+                children: metadata.factor_selection.parameters.cutoff,
+              },
+              {
+                key: "quality",
+                label: "质量门槛",
+                children: `Rank IC ≥ ${metadata.factor_selection.parameters.min_ic}；IR ≥ ${metadata.factor_selection.parameters.min_ir}`,
+              },
+              {
+                key: "counts",
+                label: "候选数量",
+                children: `${metadata.factor_selection.stages.input} → 质量通过 ${metadata.factor_selection.stages.quality_passed} → MILP ${metadata.factor_selection.stages.milp_candidates}`,
+              },
+              {
+                key: "corr",
+                label: "相关性上限",
+                children: metadata.factor_selection.parameters.max_correlation,
+              },
+              {
+                key: "combo",
+                label: "推荐组合",
+                children: metadata.factor_selection.selected_keys
+                  .map((key) => factorLabel(key))
+                  .join("、"),
+              },
+            ]}
+          />
+        </Card>
+      ) : null}
       <Card>
         <Steps
           current={3}
@@ -224,6 +274,70 @@ function ExperimentView({ result }: { result: ExperimentResult }) {
           ]}
         />
       </Section>
+      <Section
+        title="分段结果明细"
+        description="各分段独立从空仓开始。股票池按当时资格变化；有效评分差异单独列出，测试段只运行已锁定方案。"
+      >
+        <Table<ExperimentRow>
+          size="small"
+          rowKey={(item) => `${item.candidate_id}-${item.period}`}
+          dataSource={rows}
+          pagination={false}
+          scroll={{ x: 950 }}
+          columns={[
+            {
+              title: "方案",
+              render: (_, item) =>
+                plan.candidates.find(
+                  (candidate) => candidate.id === item.candidate_id,
+                )?.name ?? item.candidate_id,
+            },
+            {
+              title: "分段",
+              render: (_, item) =>
+                PERIODS.find((period) => period.key === item.period)?.label,
+            },
+            { title: "交易日", dataIndex: "trading_days" },
+            {
+              title: "逐日股票池范围",
+              render: (_, item) =>
+                item.coverage
+                  ? `${item.coverage.min_pool}–${item.coverage.max_pool} 只`
+                  : `${shared.codes.length} 只`,
+            },
+            {
+              title: "逐日有效评分范围",
+              render: (_, item) =>
+                item.coverage
+                  ? `${item.coverage.min_scored}–${item.coverage.max_scored} 只`
+                  : "—",
+            },
+            {
+              title: "有评分的决策日",
+              render: (_, item) =>
+                item.coverage
+                  ? `${item.coverage.scored_days}/${item.coverage.signal_days}`
+                  : "—",
+            },
+            {
+              title: "结果",
+              render: (_, item) => (
+                <Flex gap={10} wrap>
+                  <AppLink to={paths.backtest(item.backtest_run_id)}>
+                    回测
+                  </AppLink>
+                  <AppLink to={paths.factors({ run: item.factor_run_id })}>
+                    评分
+                  </AppLink>
+                  <AppLink to={paths.evaluation(item.evaluation_run_id)}>
+                    评估
+                  </AppLink>
+                </Flex>
+              ),
+            },
+          ]}
+        />
+      </Section>
       {test ? (
         <Section
           title="测试段（选定方案）"
@@ -308,7 +422,11 @@ function ExperimentView({ result }: { result: ExperimentResult }) {
             {
               key: "codes",
               label: "股票池",
-              children: `${shared.codes.length} 只`,
+              children:
+                shared.universe_label ??
+                (shared.universe
+                  ? poolLabel(shared.universe)
+                  : `${shared.codes.length} 只`),
             },
             { key: "benchmark", label: "基准", children: shared.benchmark },
             {

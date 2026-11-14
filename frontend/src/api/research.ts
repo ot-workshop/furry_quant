@@ -1,3 +1,4 @@
+import type { SelectionReference } from "./factorSelection";
 import { request } from "./http";
 
 export type ValidationMode = "off" | "verify" | "fallback";
@@ -214,8 +215,9 @@ export interface ExperimentCandidateInput {
 }
 
 export interface ExperimentRequest {
+  factor_selection?: SelectionReference;
   name: string;
-  data: SnapshotData;
+  data: ResearchRequest["data"];
   backtest: Omit<ResearchBacktest, "start" | "end">;
   plan: {
     periods: Record<

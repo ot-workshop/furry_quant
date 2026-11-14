@@ -4,15 +4,35 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
+from finance_quant.application.selection_context import selection_result
+from finance_quant.application.selection_experiments import selection_draft
+from finance_quant.research.evaluation_analysis import evaluation_analysis
+from finance_quant.research.factor_selection import SelectionParameters
 from finance_quant.research.report import evaluation_markdown
 from finance_quant.storage_tables import read_rows, table_path
 from finance_quant.web.artifacts import ArtifactReader
 
 
-def evaluation_router(store) -> APIRouter:
+def selection_parameters(
+    horizon: Annotated[int, Query(ge=1, le=252)],
+    cutoff: str,
+    factor_count: Annotated[int, Query(ge=1, le=20)] = 3,
+    min_ic: Annotated[float, Query(ge=0, le=1)] = 0,
+    min_ir: Annotated[float, Query(ge=0, le=1e6)] = 0,
+    max_correlation: Annotated[float, Query(ge=0, le=1)] = 0.6,
+    min_dates: Annotated[int, Query(ge=2, le=25200)] = 20,
+    start: str | None = None,
+):
+    try:
+        return SelectionParameters(horizon, cutoff, factor_count, min_ic, min_ir, max_correlation, min_dates, start)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+
+
+def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
     artifacts = ArtifactReader(store)
 
@@ -30,6 +50,55 @@ def evaluation_router(store) -> APIRouter:
     @router.get("/evaluations/{run_id}")
     def evaluation(run_id: str):
         return artifacts.get("evaluations", run_id)
+
+    @router.get("/evaluations/{run_id}/analysis")
+    def analysis(
+        run_id: str,
+        horizon: Annotated[int, Query(ge=1, le=252)],
+        factor: str = "composite",
+        window: Annotated[int, Query(ge=2, le=2520)] = 60,
+        min_periods: Annotated[int | None, Query(ge=2, le=2520)] = None,
+        start: str | None = None,
+        end: str | None = None,
+        first: str | None = None,
+        second: str | None = None,
+    ):
+        result = artifacts.get("evaluations", run_id)
+        try:
+            return evaluation_analysis(
+                result,
+                horizon=horizon,
+                factor=factor,
+                window=window,
+                min_periods=min_periods,
+                start=start,
+                end=end,
+                first=first,
+                second=second,
+            )
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
+
+    @router.get("/evaluations/{run_id}/selection")
+    def select_combination(run_id: str, parameters: Annotated[SelectionParameters, Depends(selection_parameters)]):
+        artifacts.get("evaluations", run_id)
+        try:
+            return selection_result(store, run_id, parameters)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
+
+    @router.get("/evaluations/{run_id}/selection/draft")
+    def combination_draft(
+        run_id: str, parameters: Annotated[SelectionParameters, Depends(selection_parameters)], selection_id: str
+    ):
+        artifacts.get("evaluations", run_id)
+        try:
+            reference = selection_result(store, run_id, parameters)["reference"]
+            if reference["selection_id"] != selection_id:
+                raise ValueError("来源评估或筛选算法已变化，请重新筛选组合")
+            return selection_draft(store, reference, data_root, runs_root)
+        except (FileNotFoundError, ValueError) as error:
+            raise HTTPException(422, str(error)) from None
 
     @router.get("/evaluations/{run_id}/labels/{horizon}")
     def label_rows(

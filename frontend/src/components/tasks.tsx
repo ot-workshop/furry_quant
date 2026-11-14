@@ -1,3 +1,4 @@
+import { poolLabel } from "../utils/format";
 import {
   App,
   Button,
@@ -120,7 +121,7 @@ function RequestSummary({ task }: { task: ResearchTask }) {
           {
             key: "codes",
             label: "股票池",
-            children: `${request.data.codes.length} 只`,
+            children: poolLabel(request.data),
           },
           {
             key: "periods",

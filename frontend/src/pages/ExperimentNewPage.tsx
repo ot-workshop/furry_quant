@@ -1,9 +1,18 @@
+import {
+  selectionApi,
+  parseSelectionReference,
+  type SelectionDraft,
+} from "../api/factorSelection";
+import { selectionOptions } from "../research/selection-draft";
+import { buildExperiment } from "../research/experiments";
+import { NeutralizationControls } from "../research/sections/NeutralizationControls";
 import { useMemo, useRef, useState } from "react";
 import {
   Alert,
   App,
   Button,
   Card,
+  ConfigProvider,
   DatePicker,
   Flex,
   Form,
@@ -23,7 +32,6 @@ import dayjs, { type Dayjs } from "dayjs";
 import { describeError, newIdempotencyKey } from "../api/http";
 import {
   researchApi,
-  type ExperimentRequest,
   type FactorDefinition,
   type FinancialCoverage,
   type ResearchOptions,
@@ -32,11 +40,8 @@ import { navigate, paths } from "../app/routes";
 import { EmptyState, ErrorState, Loading, PageHeader } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import {
-  buildBacktest,
-  buildData,
-  buildEvaluation,
-  buildFactors,
   defaultForm,
+  formFromRequest,
   FAMILY_ORDER,
   factorAvailable,
   factorRows,
@@ -50,6 +55,7 @@ import {
   CostSection,
   DataSection,
   EvaluationSection,
+  UniverseFilters,
 } from "../research/sections";
 
 interface Candidate {
@@ -83,15 +89,39 @@ function candidate(
   };
 }
 
-export default function ExperimentNewPage() {
-  const options = useApiResource((signal) => researchApi.options(signal), []);
+export default function ExperimentNewPage({
+  selection = null,
+}: {
+  selection?: string | null;
+}) {
+  const resource = useApiResource(
+    async (signal) => {
+      const reference = selection ? parseSelectionReference(selection) : null;
+      const [options, seed] = await Promise.all([
+        researchApi.options(signal),
+        reference
+          ? selectionApi.draft(reference, signal)
+          : Promise.resolve(null),
+      ]);
+      return {
+        options: seed ? selectionOptions(options, seed) : options,
+        seed,
+      };
+    },
+    [selection],
+  );
+  const options = { ...resource, data: resource.data?.options ?? null };
   if (options.data === null)
     return options.error ? (
       <ErrorState message={options.error} onRetry={options.reload} />
     ) : (
       <Loading rows={10} />
     );
-  if (!options.data.snapshots.length)
+  if (
+    !options.data.snapshots.length &&
+    !options.data.historical_indices?.length &&
+    !options.data.market_universes?.length
+  )
     return (
       <>
         <PageHeader
@@ -100,12 +130,8 @@ export default function ExperimentNewPage() {
         />
         <Card>
           <EmptyState
-            title="方案比较需要固定股票池数据集"
-            description={
-              options.data.historical_indices?.length
-                ? "方案比较目前只支持固定股票池（自选股票，最多 50 只），暂不支持沪深300历史成分动态股票池。沪深300数据可以在“新建研究”中直接使用。"
-                : "请先在数据管理中下载自选股票行情（最多 50 只），完成后即可比较方案。"
-            }
+            title="还没有可用于比较的数据集"
+            description="请先在数据管理中下载自选股票、沪深300或全市场行情。"
             action={
               <Space>
                 <Button
@@ -125,25 +151,47 @@ export default function ExperimentNewPage() {
         </Card>
       </>
     );
-  return <ExperimentForm options={options.data} />;
+  return (
+    <ExperimentForm
+      key={selection ?? "manual"}
+      options={options.data}
+      seed={resource.data?.seed ?? null}
+    />
+  );
 }
 
-function ExperimentForm({ options }: { options: ResearchOptions }) {
+function ExperimentForm({
+  options,
+  seed,
+}: {
+  options: ResearchOptions;
+  seed: SelectionDraft | null;
+}) {
   const { message } = App.useApp();
   const definitions = options.factor_definitions;
-  const [form, setForm] = useState<FormState>(() => ({
-    ...defaultForm(options),
-    sourceMode: "snapshot",
-    name: "方案比较",
-  }));
+  const [form, setForm] = useState<FormState>(() =>
+    seed
+      ? formFromRequest(seed.research, options).form
+      : {
+          ...defaultForm(options),
+          name: "方案比较",
+        },
+  );
   const coverage = financialCoverage(form, options);
-  const [candidates, setCandidates] = useState<Candidate[]>(() => [
-    candidate(0, ["momentum"], definitions, coverage),
-    candidate(1, ["value"], definitions, coverage),
-  ]);
+  const [candidates, setCandidates] = useState<Candidate[]>(() =>
+    seed
+      ? seed.candidates.map((item) => ({
+          ...item,
+          factors: factorRows(item.factors, definitions),
+        }))
+      : [
+          candidate(0, ["momentum"], definitions, coverage),
+          candidate(1, ["value"], definitions, coverage),
+        ],
+  );
   const [splits, setSplits] = useState<{ validation: string; test: string }>({
-    validation: "",
-    test: "",
+    validation: seed?.periods.validation.start ?? "",
+    test: seed?.periods.test.start ?? "",
   });
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -152,84 +200,11 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
     setForm((current) => ({ ...current, ...patch }));
 
   const dates = tradingDates(form, options);
-  const periods = useMemo(() => {
-    const previous = (day: string) => dates.filter((d) => d < day).at(-1) ?? "";
-    if (!form.start || !form.end || !splits.validation || !splits.test)
-      return null;
-    return {
-      development: { start: form.start, end: previous(splits.validation) },
-      validation: { start: splits.validation, end: previous(splits.test) },
-      test: { start: splits.test, end: form.end },
-    };
-  }, [dates, form.start, form.end, splits]);
-
-  const built = useMemo(() => {
-    const errors: string[] = [];
-    if (!form.name.trim()) errors.push("请填写名称。");
-    const data = buildData(
-      { ...form, sourceMode: "snapshot" },
-      options,
-      errors,
-    );
-    const backtest = buildBacktest(form, errors);
-    const evaluation = buildEvaluation(form, errors);
-    if (!periods) errors.push("请设置总区间以及验证段、测试段的开始日期。");
-    else if (
-      !(
-        periods.development.start <= periods.development.end &&
-        periods.validation.start <= periods.validation.end &&
-        periods.test.start <= periods.test.end
-      )
-    )
-      errors.push("三个分段需按时间先后排列，且每段至少包含一个交易日。");
-    if (candidates.length < 2 || candidates.length > 8)
-      errors.push("候选方案需为 2–8 个。");
-    const planCandidates = candidates.map((item, index) => {
-      const factorErrors: string[] = [];
-      const factors = buildFactors(
-        { ...form, factors: item.factors },
-        definitions,
-        factorErrors,
-      );
-      errors.push(
-        ...factorErrors.map(
-          (text) => `${item.name || `方案 ${index + 1}`}：${text}`,
-        ),
-      );
-      return { id: item.id, name: item.name.trim(), factors };
-    });
-    if (
-      new Set(planCandidates.map((c) => JSON.stringify(c.factors))).size !==
-      planCandidates.length
-    )
-      errors.push("候选方案的因子配置不能完全相同。");
-    const blocked = planCandidates
-      .flatMap((item) =>
-        item.factors.filter((factor) => {
-          const definition = definitions.find((d) => d.name === factor.name);
-          return (
-            Boolean(definition?.requires_financials) &&
-            !factorAvailable(definition as FactorDefinition, coverage)
-          );
-        }),
-      )
-      .map((factor) => factor.name);
-    if (blocked.length)
-      errors.push(
-        "当前数据集没有财务数据，不能使用基本面因子；请先在“数据管理 → 财务数据”下载。",
-      );
-    const request: ExperimentRequest | null =
-      errors.length || !data || data.mode !== "snapshot" || !periods
-        ? null
-        : {
-            name: form.name.trim(),
-            data,
-            backtest,
-            plan: { periods, candidates: planCandidates },
-            evaluation,
-          };
-    return { request, errors };
-  }, [form, options, periods, candidates, definitions, coverage]);
+  const built = useMemo(
+    () => buildExperiment(form, options, candidates, splits, seed?.reference),
+    [form, options, candidates, splits, seed],
+  );
+  const periods = built.periods;
 
   async function submit() {
     if (!built.request) return;
@@ -271,20 +246,23 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
       />
       <div className="with-aside">
         <Flex vertical gap={16}>
-          <DataSection
-            form={{ ...form, sourceMode: "snapshot" }}
-            options={{
-              ...options,
-              historical_indices: [],
-              market_universes: [],
-            }}
-            update={update}
-          />
+          {seed ? (
+            <Alert
+              type="info"
+              showIcon
+              title={`组合筛选截止日：${seed.reference.parameters.cutoff}`}
+              description={seed.warnings.join(" ")}
+            />
+          ) : null}
+          <ConfigProvider componentDisabled={Boolean(seed)}>
+            <DataSection form={form} options={options} update={update} />
+            <UniverseFilters form={form} options={options} update={update} />
+          </ConfigProvider>
           <BacktestSection
             form={form}
             options={options}
             update={update}
-            earliest={null}
+            earliest={built.earliest}
           />
           <Card title="分段">
             <Typography.Paragraph type="secondary">
@@ -354,25 +332,40 @@ function ExperimentForm({ options }: { options: ResearchOptions }) {
           >
             <Flex vertical gap={16}>
               {candidates.map((item, index) => (
-                <CandidateEditor
+                <ConfigProvider
                   key={item.id}
-                  value={item}
-                  definitions={definitions}
-                  coverage={coverage}
-                  removable={candidates.length > 2}
-                  onChange={(next) =>
-                    setCandidates((current) =>
-                      current.map((c, i) => (i === index ? next : c)),
-                    )
-                  }
-                  onRemove={() =>
-                    setCandidates((current) =>
-                      current.filter((_, i) => i !== index),
-                    )
-                  }
-                />
+                  componentDisabled={Boolean(seed && item.id === "milp")}
+                >
+                  <CandidateEditor
+                    value={item}
+                    definitions={definitions}
+                    coverage={coverage}
+                    removable={
+                      candidates.length > 2 && !(seed && item.id === "milp")
+                    }
+                    onChange={(next) =>
+                      setCandidates((current) =>
+                        current.map((c, i) => (i === index ? next : c)),
+                      )
+                    }
+                    onRemove={() =>
+                      setCandidates((current) =>
+                        current.filter((_, i) => i !== index),
+                      )
+                    }
+                  />
+                </ConfigProvider>
               ))}
             </Flex>
+          </Card>
+          <Card title="行业处理">
+            <ConfigProvider componentDisabled={Boolean(seed)}>
+              <NeutralizationControls
+                form={form}
+                options={options}
+                update={update}
+              />
+            </ConfigProvider>
           </Card>
           <CostSection form={form} update={update} />
           <EvaluationSection form={form} update={update} />

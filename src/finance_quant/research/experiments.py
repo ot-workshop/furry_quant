@@ -170,6 +170,20 @@ def experiment_markdown(result: dict) -> str:
     ]
     for key, period in result["plan"]["periods"].items():
         lines.append(f"- {periods[key]}：{period['start']} 至 {period['end']}")
+    screened = result["metadata"].get("factor_selection")
+    if screened:
+        lines += [
+            "",
+            "## 因子组合筛选来源",
+            "",
+            f"来源评估：`{screened['evaluation_id']}`；摘要：`{screened['source_sha256']}`。",
+            f"算法：`{screened['algorithm']}`；推荐截止日：{screened['parameters']['cutoff']}。",
+            "比较区间全部晚于推荐截止日；推荐组合等权，实际组合 IC 在各段重新计算。",
+            "```json",
+            json.dumps(screened, ensure_ascii=False, indent=2),
+            "```",
+            "",
+        ]
     selection = result["selection"]
     lines += [
         "",

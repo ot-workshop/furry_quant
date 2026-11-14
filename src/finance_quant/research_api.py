@@ -4,6 +4,7 @@ import json
 import os
 import uuid
 from contextlib import nullcontext
+from functools import partial
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,7 +23,7 @@ from finance_quant.task_contracts import TaskConflict
 RESULT_TASK_KINDS = {"research", "experiment"}
 
 
-def research_router(service):
+def research_router(service, *, result_store=None):
     def write_guard(request: Request):
 
         engine = getattr(service.store, "engine", None)
@@ -263,7 +264,7 @@ def research_router(service):
 
     @router.post("/experiments", status_code=202)
     async def submit_experiment(request: Request):
-        return await queue(request, service.submit_experiment)
+        return await queue(request, partial(service.submit_experiment, result_store=result_store))
 
     @router.post("/tasks/{identifier}/cancel")
     async def cancel(identifier: str, request: Request):

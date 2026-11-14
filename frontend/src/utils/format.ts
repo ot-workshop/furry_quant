@@ -1,3 +1,4 @@
+import type { ResearchRequest } from "../api/research";
 const FACTOR_LABELS: Record<string, string> = {
   momentum: "动量",
   value: "盈利收益率",
@@ -194,4 +195,13 @@ export function toTextList(value: unknown): string[] {
         typeof item === "string" && Boolean(item.trim()),
     );
   return [];
+}
+
+export function poolLabel(data: ResearchRequest["data"]): string {
+  if (data.mode === "index_warehouse") return "沪深300历史成分（动态股票池）";
+  if (data.mode === "market_warehouse")
+    return data.codes
+      ? `自选股票 · ${data.codes.length} 只`
+      : "全市场（使用所选数据集覆盖范围）";
+  return `自选快照 · ${data.codes.length} 只`;
 }

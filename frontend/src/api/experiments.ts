@@ -1,8 +1,11 @@
+import type { FactorSelection } from "./factorSelection";
+import type { ResearchRequest, Neutralization } from "./research";
 import { API_BASE, request } from "./http";
 
 export type ExperimentPeriodName = "development" | "validation" | "test";
 
 export interface ExperimentMetadata {
+  factor_selection?: FactorSelection;
   id: string;
   name: string;
   created_at: string;
@@ -37,6 +40,10 @@ export interface ExperimentPlan {
 }
 
 export interface ExperimentSharedParameters {
+  universe?: ResearchRequest["data"];
+  universe_label?: string;
+  membership_policy?: string;
+  neutralization?: Neutralization;
   backtest: {
     initial_cash: number;
     topk: number;
@@ -68,6 +75,14 @@ export interface ExperimentSelection {
 }
 
 export interface ExperimentRow {
+  coverage?: {
+    signal_days: number;
+    scored_days: number;
+    min_pool: number;
+    max_pool: number;
+    min_scored: number;
+    max_scored: number;
+  };
   candidate_id: string;
   period: ExperimentPeriodName;
   backtest_run_id: string;

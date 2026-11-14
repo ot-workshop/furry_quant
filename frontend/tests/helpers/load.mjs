@@ -24,9 +24,9 @@ export async function load(entries) {
       {
         name: "stub-charts",
         setup(builder) {
-          builder.onResolve({ filter: /components\/charts$/ }, () => ({ path: "charts", namespace: "stub" }));
+          builder.onResolve({ filter: /(?:components\/(?:research-)?charts|\.\/charts)$/ }, () => ({ path: "charts", namespace: "stub" }));
           builder.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
-            contents: ["EquityChart", "DrawdownChart", "AnnualReturnsChart", "FactorHistoryChart", "GroupReturnsChart", "Chart"]
+            contents: ["EquityChart", "DrawdownChart", "AnnualReturnsChart", "FactorHistoryChart", "GroupReturnsChart", "Chart", "ICSeriesChart", "CorrelationHeatmap", "CorrelationHistoryChart"]
               .map((name) => `export function ${name}(){ return null; }`)
               .join("\n"),
             loader: "js",
