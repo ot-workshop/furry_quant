@@ -8,7 +8,9 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from finance_quant.research.financial_features import FEATURE_VERSION
+from finance_quant.research.financial_features import GROSS_MARGIN_VERSION, STANDARD_FACTOR_VERSION
+
+FILLABLE_FACTORS = {"value", "gross_margin_ttm"}
 
 FUNDAMENTAL = "fundamental"
 FAMILY_LABELS = {
@@ -100,12 +102,14 @@ class FactorDefinition:
 
     @property
     def fundamental(self) -> bool:
-        return self.family == FUNDAMENTAL
+        return self.family == FUNDAMENTAL or self.name == "value"
 
     def public(self):
         if self.fundamental:
             availability = "按公告日后下一交易日09:30可见；信号取当日15:00已可用的最新报告期"
             note = "来自三张财务报表自算（TTM口径），历史更正链按调整前/调整数重建，仍非严格PIT认证；需先下载财务数据"
+            if self.name == "value":
+                note = "归母净利润按报告可用时间换算TTM，总市值使用当日估值；财报及市值的历史修订与发布时间未完全认证。缺失填补仅作用于评分。"
         else:
             availability = "T日18:00假设可用，仅供下一交易日开盘"
             note = (
@@ -125,8 +129,14 @@ class FactorDefinition:
             "default_window": self.default_window,
             "default_skip": self.default_skip,
             "default_baseline_window": self.default_baseline_window,
-            "version": FEATURE_VERSION if self.fundamental else "causal-daily-v1",
-            "missing_policy": "strict_selected_factor_intersection",
+            "version": GROSS_MARGIN_VERSION
+            if self.name == "gross_margin_ttm"
+            else STANDARD_FACTOR_VERSION
+            if self.fundamental
+            else "causal-daily-v1",
+            "missing_policy": "zero" if self.name in FILLABLE_FACTORS else "exclude",
+            "missing_policies": ["zero", "neutral", "exclude"] if self.name in FILLABLE_FACTORS else ["exclude"],
+            **({"not_applicable_score": 50} if self.name == "gross_margin_ttm" else {}),
             "availability": availability,
             "data_note": note,
             "requires_financials": self.fundamental,
@@ -150,9 +160,10 @@ _DEFINITIONS = (
         "盈利收益率",
         "value",
         "higher",
-        ("pe_ttm",),
-        "1 / 正PE_TTM；缺失或非正值不参与",
-        lambda f, s: 1 / _positive(f.pe_ttm),
+        ("ttm_net_profit", "total_mv"),
+        "信号日已可得的TTM归母净利润 / 当日总市值；保留零利润和亏损",
+        lambda f, s: f.ttm_net_profit / _positive(f.total_mv),
+        description="以当时可得的滚动十二个月归母净利润衡量市值对应的盈利，负数表示亏损。",
     ),
     FactorDefinition(
         "volatility",
@@ -262,7 +273,7 @@ _DEFINITIONS = (
         FUNDAMENTAL,
         "higher",
         ("gross_margin_ttm",),
-        "(TTM营业总收入 − TTM营业成本) / TTM营业总收入；银行、保险等无营业成本的公司不参与",
+        "(TTM营业收入 − TTM营业成本) / TTM营业收入；专门金融报表不适用",
         _reported("gross_margin_ttm"),
         description="定价能力与产品竞争力；行业差异大，建议配合行业中性化",
     ),
@@ -325,12 +336,20 @@ def uses_financials(config) -> bool:
     return any(FACTOR_LIBRARY[spec.name].fundamental for spec in config.specs)
 
 
+def requires_financials(config) -> bool:
+    """Gross margin can resolve applicability from pinned historical industries without reports."""
+    return any(
+        FACTOR_LIBRARY[spec.name].fundamental
+        and spec.name != "gross_margin_ttm"
+        and (spec.name != "value" or spec.missing_policy == "exclude")
+        for spec in config.specs
+    )
+
+
 def describe_spec(spec):
     definition = FACTOR_LIBRARY[spec.name]
     if spec.name == "momentum" and spec.skip == 0:
         formula = f"历史{spec.window}个交易日复权收盘收益率"
-    elif spec.name == "value":
-        formula = "当日pe_ttm的倒数；非正或缺失估值不参与"
     elif spec.name == "volatility":
         formula = f"过去{spec.window}日复权收益率的年化标准差（越低越好）"
     else:
@@ -341,4 +360,5 @@ def describe_spec(spec):
         "params": spec.parameters,
         "lookback": spec.lookback,
         "formula": formula,
+        "missing_policy": spec.missing_policy,
     }

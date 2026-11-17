@@ -13,10 +13,13 @@ from test_pool_workflow_matrix import codes_for, request_for, run_request
 from finance_quant.application.factor_workflow import publish_factor_run
 from finance_quant.application.research_requests import validate_research_data
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
+from finance_quant.data.financials import FinancialBinding
 from finance_quant.research.factor_library import FACTOR_LIBRARY
+from finance_quant.research.fundamentals import load_fundamentals
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.registry import FactorConfig, FactorSpec
 from finance_quant.storage import ResultStore
+from support.financial import income, publish
 
 
 def settings():
@@ -65,7 +68,7 @@ def scalar(section, spec):
     if spec.name in {"momentum", "reversal", "medium_momentum"}:
         return (p[-1 - spec.skip] / p[-1 - w] - 1) * (-1 if spec.name == "reversal" else 1)
     if spec.name == "value":
-        return 1 / section.pe_ttm.iloc[-1]
+        return (section.total_mv.iloc[0] / section.pe_ttm.iloc[0]) / section.total_mv.iloc[-1]
     if spec.name == "book_to_price":
         return 1 / section.pb.iloc[-1]
     if spec.name == "size":
@@ -83,9 +86,23 @@ def scalar(section, spec):
 
 
 @pytest.mark.parametrize("size", [2, 7, 17, 50])
-def test_ten_raw_values_scores_and_contributions_match_scalar_formulas(size):
+def test_ten_raw_values_scores_and_contributions_match_scalar_formulas(size, tmp_path):
     market, config = frame(size), settings()
-    output = market_factors(market, "generated", config)
+    reports = [
+        income(
+            code[2:] + "." + code[:2],
+            period="20231231",
+            announce="20240102",
+            n_income_attr_p=part.total_mv.iloc[0] / part.pe_ttm.iloc[0],
+        )
+        for code, part in market.groupby("instrument")
+    ]
+    root = tmp_path / "financials"
+    manifest = publish(root, reports, seen_on="2024-01-02")
+    financials = load_fundamentals(
+        FinancialBinding(root, manifest["id"]), [code[2:] + "." + code[:2] for code in market.instrument.unique()]
+    )
+    output = market_factors(market, "generated", config, financials=financials)
     for date in sorted(market.date.unique())[40::45]:
         expected = {
             code: {s.key: scalar(section.loc[section.date <= date], s) for s in config.specs}

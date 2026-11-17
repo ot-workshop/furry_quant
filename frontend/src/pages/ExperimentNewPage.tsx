@@ -1,4 +1,5 @@
 import { FactorDataHint } from "../components/FactorDataHint";
+import { FactorMissingPolicy } from "../components/FactorMissingPolicy";
 import {
   selectionApi,
   parseSelectionReference,
@@ -561,6 +562,13 @@ function CandidateEditor({
               style={{ width: 110 }}
               onChange={(v) => setRow(row.key, { weight: Number(v ?? 0) })}
             />
+            {["value", "gross_margin_ttm"].includes(row.name) ? (
+              <FactorMissingPolicy
+                label={definition?.label ?? row.name}
+                value={row.missingPolicy}
+                onChange={(missingPolicy) => setRow(row.key, { missingPolicy })}
+              />
+            ) : null}
             {definition?.default_window != null ? (
               <InputNumber
                 size="small"

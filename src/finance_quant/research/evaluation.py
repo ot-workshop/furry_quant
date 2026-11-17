@@ -223,10 +223,11 @@ def evaluate_factors(
             if raw_predictions is not None
             else history["processed" if neutralized else "raw"].map(itemgetter(name))
         )
+        values = pd.to_numeric(values, errors="raise")
         predictions[name] = values if neutralized else values * (-1 if directions[name] == "lower" else 1)
     predictions["composite"] = history["composite"]
-    if not np.isfinite(predictions[names + ["composite"]].to_numpy(dtype=float)).all():
-        raise ValueError("Factor predictions must be finite")
+    if np.isinf(predictions[names].to_numpy(dtype=float)).any() or not np.isfinite(predictions.composite).all():
+        raise ValueError("Factor predictions cannot contain infinity and composite scores must be finite")
     next_session = {d.strftime("%Y-%m-%d"): n.strftime("%Y-%m-%d") for d, n in pairwise(sessions)}
     predictions["entry_date"] = predictions["date"].map(next_session)
     predictions = predictions.loc[predictions["entry_date"].between(start, end)].copy()
@@ -290,13 +291,16 @@ def evaluate_factors(
         if len(section) < config.min_cross_section:
             continue
         usable = [name for name in names if section[name].nunique() >= 2]
-        # Spearman is Pearson correlation of average ranks. The finite common
-        # cross-section is identical for every pair; no full-history copies.
-        correlations = section[usable].rank(method="average").corr()
+        correlations = section[usable].corr(method="spearman", min_periods=config.min_cross_section)
+        observed = section[usable].notna().astype(int)
+        pair_counts = observed.T.dot(observed)
         for first, second in pair_daily:
             if first in usable and second in usable:
+                count = int(pair_counts.loc[first, second])
+                if count < config.min_cross_section:
+                    continue
                 pair_daily[first, second].append(
-                    {"date": day, "rank_correlation": _number(correlations.loc[first, second])}
+                    {"date": day, "rank_correlation": _number(correlations.loc[first, second]), "observations": count}
                 )
     pairs = []
     for i, first in enumerate(names):
@@ -330,6 +334,7 @@ def evaluate_factors(
         else "direction-aligned raw values",
         "groups": "Q1 low to QG high; floor(((average_rank-1)/(N-1))*G)+1 capped at G; ties never split by ticker",
         "statistics": "Daily cross-sections have equal weight; IR = mean / sample std without annualization; undefined values are null",
+        "missing_values": "Single-factor IC, groups and pairwise correlations exclude missing raw values; composite diagnostics include the configured missing-score policy. No imputed score is treated as an observed factor value.",
         "limitations": [
             "仅为因子诊断，未考虑涨跌停、停牌、费用和成交约束，分组收益不是可交易净值",
             "持有期标签可能重叠，不将分组收益连乘，不提供独立样本显著性或年化ICIR",

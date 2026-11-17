@@ -75,7 +75,9 @@ def residualize(values, groups):
 
 
 def _mean_factor(members, field, key):
-    return float(np.mean([row.get(field, {}).get(key, 0.0) for row in members]))
+    values = [row.get(field, {}).get(key) for row in members]
+    observed = [value for value in values if value is not None and np.isfinite(value)]
+    return float(np.mean(observed)) if observed else None
 
 
 def factor_industry_diagnostics(rows, metadata):

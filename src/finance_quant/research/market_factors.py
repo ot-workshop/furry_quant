@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from finance_quant.data.temporal_audit import factor_temporal_audit, validate_valuation_times
-from finance_quant.research.factor_library import FACTOR_LIBRARY, describe_spec
+from finance_quant.research.factor_library import FACTOR_LIBRARY, describe_spec, requires_financials
 from finance_quant.research.factor_sections import exclusion_rows, rank_section, section_eligibility
-from finance_quant.research.fundamentals import attach_fundamentals
+from finance_quant.research.fundamentals import attach_fundamentals, fundamental_events
+from finance_quant.research.gross_margin import classify_frame
 from finance_quant.research.neutralization import (
     NeutralizationConfig,
 )
@@ -76,9 +78,14 @@ def _prepare_frame(market, config, dynamic_context, exchange_calendar, financial
         raise ValueError("因子输入股票池存在交易日缺口，拒绝缩短滚动窗口")
     fundamental = any(FACTOR_LIBRARY[spec.name].fundamental for spec in config.specs)
     if fundamental:
-        if financials is None:
+        if financials is None and requires_financials(config):
             raise ValueError("所选基本面因子需要财务数据：请先在“数据管理 → 财务数据”下载后重新提交")
-        frame = attach_fundamentals(frame, financials.events)
+        frame = attach_fundamentals(frame, financials.events if financials else fundamental_events(pd.DataFrame()))
+    if (
+        any(spec.name == "value" and spec.missing_policy != "exclude" for spec in config.specs)
+        and "total_mv" not in frame
+    ):
+        frame["total_mv"] = np.nan
     required = {field for spec in config.specs for field in FACTOR_LIBRARY[spec.name].required_fields}
     if missing := required - set(frame):
         raise ValueError("所选因子缺少数据字段：" + "、".join(sorted(missing)))
@@ -89,9 +96,13 @@ def _prepare_frame(market, config, dynamic_context, exchange_calendar, financial
     return frame, actual_calendar, fundamental
 
 
-def calculate_factor_values(market, config, *, dynamic_context=None, exchange_calendar=None, financials=None):
+def calculate_factor_values(
+    market, config, *, dynamic_context=None, exchange_calendar=None, financials=None, industry_history=None
+):
     """Calculate causal raw values; callers decide which cross-section to score or inspect."""
     frame, calendar, fundamental = _prepare_frame(market, config, dynamic_context, exchange_calendar, financials)
+    if any(spec.name == "gross_margin_ttm" for spec in config.specs):
+        frame = classify_frame(frame, industry_history, calendar)
     for spec in config.specs:
         frame["factor_" + spec.key] = FACTOR_LIBRARY[spec.name].calculator(frame, spec)
     return frame, calendar, fundamental
@@ -112,8 +123,8 @@ def market_factors(
     """Score a market frame.
 
     ``financials`` is the :class:`~finance_quant.research.fundamentals.FundamentalData`
-    of the pinned financial version; it is required exactly when a fundamental factor
-    is selected.
+    of the pinned financial version. Earnings yield and gross margin can keep
+    genuinely missing values when their configured score policies allow it.
     """
     config = FactorConfig() if config is None else config
     if not isinstance(config, FactorConfig):
@@ -124,7 +135,12 @@ def market_factors(
         industry_history.validate_range(market.date.max())
     industry_days = {}
     frame, actual_calendar, fundamental = calculate_factor_values(
-        market, config, dynamic_context=dynamic_context, exchange_calendar=exchange_calendar, financials=financials
+        market,
+        config,
+        dynamic_context=dynamic_context,
+        exchange_calendar=exchange_calendar,
+        financials=financials,
+        industry_history=industry_history if neutralization.industry_version else None,
     )
     specs = {spec.key: spec for spec in config.specs}
     descriptors = {key: describe_spec(spec) for key, spec in specs.items()}
@@ -172,6 +188,11 @@ def market_factors(
             row_sink("diagnostics", diagnostics)
         section = section.loc[eligible]
         if len(section) < 2:
+            for status in daily_availability["factors"].values():
+                if "imputed" in status:
+                    status["imputed"] = 0
+                if "not_applicable_scored" in status:
+                    status["not_applicable_scored"] = 0
             continue
         ranked = rank_section(section, date, specs, assigned=assigned, neutralization=neutralization)
         if neutralization.mode == "industry":
@@ -179,6 +200,11 @@ def market_factors(
         if ranked.excluded:
             coverage[day] = {"eligible": 0, "universe": universe}
             availability[day]["eligible"] = 0
+            for status in daily_availability["factors"].values():
+                if "imputed" in status:
+                    status["imputed"] = 0
+                if "not_applicable_scored" in status:
+                    status["not_applicable_scored"] = 0
             if row_sink is None:
                 diagnostics.extend(ranked.excluded)
             else:
@@ -239,7 +265,7 @@ def market_factors(
             "definitions": {key: desc["formula"] for key, desc in descriptors.items()},
             "availability_policy": "假设日线与每日估值在当日18:00可用，仅用于下一交易日开盘；供应商历史发布时间未审计",
             "notes": [
-                "各因子使用当日及以前数据，不补未来值；按所有入选因子均有效的交集排名，不按缺失项偷偷重分权重",
+                "各因子使用当日及以前数据；盈利收益率和毛利率对真实缺失按配置处理，毛利率行业不适用项固定记50分；不重分权重",
                 "缺失和预热不足的股票保留逐因子原因与覆盖率；PB/市值/PE历史修订及发布时间未独立认证",
                 "行业仅作展示；当前没有动态权重",
             ],
@@ -247,12 +273,16 @@ def market_factors(
         "history": history if row_sink is None else [],
         "diagnostics": diagnostics if row_sink is None else [],
     }
-    if fundamental:
+    if fundamental and financials is not None:
         result["metadata"]["financial_data"] = financials.metadata(frame.instrument.unique())
         result["metadata"]["notes"].append(
             "基本面因子由三张财务报表自算（TTM口径）；"
             + financials.metadata(frame.instrument.unique())["policy"]
-            + "；仍非严格PIT认证；财务数据缺失或过期的股票不参与排名",
+            + "；仍非严格PIT认证；盈利收益率及毛利率的真实缺失按配置处理，其他财务因子缺失或过期时不参与排名",
+        )
+    elif fundamental:
+        result["metadata"]["notes"].append(
+            "未绑定财务版本：财务原始值为空，真实缺失按配置填补评分；毛利率仅在已固定历史行业确认金融时记不适用50分；填补值不进入单因子IC或相关性。"
         )
     result["metadata"]["neutralization"] = neutralization.as_dict()
     if industry_history:

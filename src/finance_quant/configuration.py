@@ -15,7 +15,7 @@ from finance_quant.data.benchmarks import normalize_benchmark
 from finance_quant.data.financials import FinancialBinding
 from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.execution_policy import EXECUTION_FIELDS, ExecutionCosts, validate_frequency
-from finance_quant.research.factor_library import uses_financials
+from finance_quant.research.factor_library import requires_financials
 from finance_quant.research.neutralization import NeutralizationConfig, parse_neutralization
 from finance_quant.research.registry import (
     EvaluationConfig,
@@ -44,7 +44,7 @@ _DATE_PATTERNS = (
 _BENCHMARKS = frozenset({"000300.SH", "000905.SH", "000852.SH", "000001.SH", "399001.SZ", "399006.SZ"})
 _TOP_LEVEL_FIELDS = frozenset({"data", "backtest", "runs_dir", "factors", "evaluation", "neutralization", "financials"})
 _DATA_FIELDS = frozenset({"root", "start", "end", "codes", "benchmark", "validation"})
-_FACTOR_FIELDS = frozenset({"name", "weight", "window", "skip", "baseline_window", "id"})
+_FACTOR_FIELDS = frozenset({"name", "weight", "window", "skip", "baseline_window", "id", "missing_policy"})
 _EVALUATION_FIELDS = frozenset({"horizons", "groups", "min_cross_section"})
 _BACKTEST_FIELDS = frozenset(
     {
@@ -261,7 +261,7 @@ class ResearchConfig:
             raise ValueError("data must be a DataConfig")
         if self.financials is not None and not isinstance(self.financials, FinancialBinding):
             raise ValueError("financials must be a FinancialBinding")
-        if self.financials is None and isinstance(self.factors, FactorConfig) and uses_financials(self.factors):
+        if self.financials is None and isinstance(self.factors, FactorConfig) and requires_financials(self.factors):
             raise ValueError("基本面因子需要绑定财务数据版本")
         if not isinstance(self.backtest, BacktestConfig):
             raise ValueError("backtest must be a BacktestConfig")

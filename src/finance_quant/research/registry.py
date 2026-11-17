@@ -10,7 +10,7 @@ from numbers import Integral, Real
 from typing import Any
 
 from finance_quant.checksums import sha256_text
-from finance_quant.research.factor_library import FACTOR_LIBRARY
+from finance_quant.research.factor_library import FACTOR_LIBRARY, FILLABLE_FACTORS
 
 __all__ = [
     "FactorSpec",
@@ -54,11 +54,24 @@ class FactorSpec:
     skip: int | None = None
     baseline_window: int | None = None
     id: str | None = None
+    missing_policy: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or self.name not in FACTOR_NAMES:
             raise ValueError("unsupported factor name; choose a registered daily factor")
         definition = FACTOR_LIBRARY[self.name]
+        policy = (
+            self.missing_policy
+            if self.missing_policy is not None
+            else ("zero" if self.name in FILLABLE_FACTORS else "exclude")
+        )
+        if not isinstance(policy, str) or policy not in (
+            {"zero", "neutral", "exclude"} if self.name in FILLABLE_FACTORS else {"exclude"}
+        ):
+            raise ValueError(
+                "missing_policy must be zero, neutral or exclude for earnings yield/gross margin; other factors require exclude"
+            )
+        object.__setattr__(self, "missing_policy", policy)
         weight = _weight(self.weight)
         if definition.default_window is None:
             if self.window is not None:
@@ -133,6 +146,8 @@ class FactorSpec:
 
     def as_dict(self):
         result = {"name": self.name, "weight": self.weight, "window": self.window}
+        if self.name in FILLABLE_FACTORS:
+            result["missing_policy"] = self.missing_policy
         if self.skip is not None and (self.name != "momentum" or self.skip != 0):
             result["skip"] = self.skip
         if self.baseline_window is not None:

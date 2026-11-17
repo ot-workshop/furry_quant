@@ -33,8 +33,9 @@ from finance_quant.data.financials import (
 )
 from finance_quant.data.point_in_time import EXCHANGE_TZ
 from finance_quant.data.symbols import from_qlib
-from finance_quant.research.factor_library import uses_financials
+from finance_quant.research.factor_library import requires_financials, uses_financials
 from finance_quant.research.financial_features import FEATURE_VERSION, FEATURES
+from finance_quant.research.gross_margin import CONTEXT, report_context
 
 MAX_REPORT_AGE_DAYS = 400
 DECISION_TIME = pd.Timedelta(hours=15)
@@ -94,7 +95,7 @@ class _State:
         profit_before = self.ttm("income", previous, "n_income_attr_p")
         revenue = self.revenue_ttm(period)
         revenue_before = self.revenue_ttm(previous)
-        cost = self.ttm("income", period, "oper_cost")
+        gross = report_context(self.values["income"], period)
         cash = self.ttm("cashflow", period, "n_cashflow_act")
         equity = self.average(period, "total_hldr_eqy_exc_min_int")
         assets = self.average(period, "total_assets")
@@ -110,9 +111,11 @@ class _State:
 
         return {
             "financial_report_period": period,
+            "ttm_net_profit": profit,
             "roe_ttm": ratio(profit, equity),
             "roa_ttm": ratio(profit, assets),
-            "gross_margin_ttm": ratio(revenue - cost, revenue),
+            "gross_margin_ttm": gross["raw"],
+            CONTEXT: gross,
             "asset_turnover_ttm": ratio(revenue, assets),
             "debt_to_assets": ratio(liabilities, latest_assets),
             "accruals_ttm": ratio(profit - cash, assets),
@@ -123,7 +126,7 @@ class _State:
 
 def fundamental_events(versions: pd.DataFrame) -> pd.DataFrame:
     """One feature row per stock and moment a new statement version became visible."""
-    columns = ["instrument", "financial_available_at", "financial_report_period", *FEATURES]
+    columns = ["instrument", "financial_available_at", "financial_report_period", *FEATURES, CONTEXT]
     if versions.empty:
         return pd.DataFrame(columns=columns).astype(
             {"financial_available_at": "datetime64[ns, UTC]", "financial_report_period": "datetime64[ns]"}
@@ -139,7 +142,11 @@ def fundamental_events(versions: pd.DataFrame) -> pd.DataFrame:
             state.update(
                 record.statement,
                 record.report_period,
-                {field: getattr(record, field) for field in fields[record.statement]},
+                {
+                    **{field: getattr(record, field) for field in fields[record.statement]},
+                    "comp_type": getattr(record, "comp_type", None),
+                    "available_at": record.available_at,
+                },
             )
             moment = record.available_at
         if found := state.features():
@@ -177,6 +184,12 @@ def attach_fundamentals(frame: pd.DataFrame, events: pd.DataFrame) -> pd.DataFra
         result[column] = values
     result["financial_report_period"] = merged.financial_report_period.to_numpy()
     result["financial_available_at"] = merged.financial_available_at.to_numpy()
+    result[CONTEXT] = [
+        {**value, "status": "missing", "reason": "stale_report", "raw": None}
+        if expired and isinstance(value, dict)
+        else value
+        for value, expired in zip(merged[CONTEXT], stale, strict=True)
+    ]
     return result
 
 
@@ -225,7 +238,9 @@ def fundamentals_for(binding: FinancialBinding | None, config, market: pd.DataFr
     if not uses_financials(config):
         return None
     if binding is None:
-        raise ValueError("所选基本面因子需要财务数据：请先在“数据管理 → 财务数据”下载后重新提交")
+        if requires_financials(config):
+            raise ValueError("所选基本面因子需要财务数据：请先在“数据管理 → 财务数据”下载后重新提交")
+        return None
     return load_fundamentals(binding, [from_qlib(code) for code in market.instrument.unique()])
 
 

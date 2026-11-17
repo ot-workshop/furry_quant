@@ -31,6 +31,7 @@ def test_active_future_valuation_dates_are_rejected(field, column):
 def test_actual_factor_path_rejects_unknown_or_future_availability():
 
     m = sample_market()
+    m["total_mv"] = 1e9
     m["valuation_available_at"] = m.date.dt.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=19)
     with pytest.raises(ValueError, match="晚于当日决策"):
         market_factors(m, "fixture", FactorConfig((FactorSpec("value", 1.0),)))

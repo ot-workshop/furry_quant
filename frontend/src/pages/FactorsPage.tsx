@@ -17,6 +17,8 @@ import { DownloadOutlined } from "@ant-design/icons";
 import { api } from "../api/client";
 import { setSearch } from "../app/routes";
 import { TemporalAuditPanel } from "../components/audit";
+import { MISSING_POLICY_LABELS } from "../components/FactorMissingPolicy";
+import { FactorCalculationDetails } from "../components/FactorCalculationDetails";
 import { IndustryPanel } from "../components/backtest";
 import { FactorHistoryChart } from "../components/charts";
 import {
@@ -318,6 +320,8 @@ const REASONS: Record<string, string> = {
   insufficient_history_or_trading_activity:
     "预热不足、成交额异常或有效成交日不足 80%",
   suspended_auxiliary_value: "停牌沿用值不参与",
+  missing_or_stale_financial_report: "财报缺失、过期或TTM历史不足",
+  missing_or_stale_ttm_profit: "TTM归母净利润缺失或报告过期",
 };
 
 function StockDetail({
@@ -410,7 +414,7 @@ function StockDetail({
         <>
           <Section
             title="因子明细"
-            description={`${date} · 贡献 = 得分 × 权重；缺失项不补零、不改权重`}
+            description={`${date} · 贡献 = 得分 × 权重；缺失处理按批次配置，不重分权重`}
           >
             <Resource state={scores}>
               {(data) => (
@@ -540,11 +544,24 @@ function FactorBreakdown({
             render: (_, { key }) => {
               const count = coverage?.factors[key];
               const reason = exclusion?.reasons[key];
-              return `${count ? `${count.valid}/${coverage?.universe} 只 · ` : ""}${reason ? (REASONS[reason] ?? reason) : score ? "可用" : "—"}`;
+              const detail =
+                score?.factor_details?.[key] ??
+                exclusion?.factor_details?.[key];
+              return `${count ? `${count.valid}/${coverage?.universe} 只真实有效${count.not_applicable ? `，${count.not_applicable}只不适用` : ""} · ` : ""}${detail?.status === "not_applicable" ? (score ? "行业不适用记50分" : "行业不适用；未参与本日评分") : detail?.imputed ? MISSING_POLICY_LABELS[detail.missing_policy] : (detail?.reason_label ?? (reason ? (REASONS[reason] ?? reason) : score ? "可用" : "—"))}`;
             },
           },
         ]}
       />
+      {Object.entries(
+        score?.factor_details ?? exclusion?.factor_details ?? {},
+      ).map(([key, detail]) => (
+        <FactorCalculationDetails
+          key={key}
+          label={definitions[key]?.label ?? key}
+          detail={detail}
+          scored={Boolean(score)}
+        />
+      ))}
       <Notes
         items={[
           "行情与估值按当日 18:00 可得的假设使用。",

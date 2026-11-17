@@ -52,9 +52,9 @@ assert validation_signature() != before
 def test_streaming_keeps_exclusions_when_early_industry_sections_have_no_variation():
     market = frame(8, 40)
     dates = sorted(market.date.unique())
-    market.loc[market.date.isin(dates[:15]), "pe_ttm"] = 10.0
+    market.loc[market.date.isin(dates[:15]), "pb"] = 1.0
     industry = history(sorted(market.instrument.unique()))
-    config = FactorConfig((FactorSpec("value", 1.0),))
+    config = FactorConfig((FactorSpec("book_to_price", 1.0),))
     kwargs = {"industry_history": industry, "neutralization": NeutralizationConfig("industry")}
     expected = market_factors(market, "fixture", config, **kwargs)
     tables = {"history": [], "diagnostics": []}

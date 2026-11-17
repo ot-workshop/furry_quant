@@ -8,6 +8,7 @@ from test_managed_data import Provider
 
 from finance_quant.application import experiment_workflow as workflow
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
+from finance_quant.data.financials import financial_root
 from finance_quant.research.evaluation import forward_open_labels
 from finance_quant.research.experiments import (
     ExperimentPlan,
@@ -15,10 +16,12 @@ from finance_quant.research.experiments import (
     load_experiment_plan,
     select_candidate,
 )
+from finance_quant.research.fundamentals import fundamentals_for
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.registry import EvaluationConfig
 from finance_quant.storage import ResultStore
 from support.fakes import make_app, make_service, run_claimed
+from support.financial import seed_earnings
 from support.fixed_pool import download_dataset, publish_fixture_snapshot
 
 
@@ -49,6 +52,7 @@ def setup(tmp_path):
         evaluation=EvaluationConfig(horizons=(1, 3)),
     )
     download_dataset(config.data, provider=Provider())
+    config = replace(config, financials=seed_earnings(financial_root(tmp_path / "data"), config.data.codes))
     return config, ExperimentPlan.from_dict(plan_document())
 
 
@@ -228,11 +232,12 @@ def test_future_prices_do_not_change_validation_signals_and_labels_cannot_exit_p
     config, plan = setup
     market, _, calendar, _ = workflow.load_configured_snapshot(config)
     for candidate in plan.candidates:
-        before = market_factors(market, "fixture", candidate.factors)
+        financials = fundamentals_for(config.financials, candidate.factors, market)
+        before = market_factors(market, "fixture", candidate.factors, financials=financials)
         changed = market.copy()
         future = changed.date > pd.Timestamp("2025-02-04")
         changed.loc[future, ["open", "close", "adj_factor", "pe_ttm"]] *= 100
-        after = market_factors(changed, "fixture", candidate.factors)
+        after = market_factors(changed, "fixture", candidate.factors, financials=financials)
         assert [r for r in before["history"] if r["date"] <= "2025-02-04"] == [
             r for r in after["history"] if r["date"] <= "2025-02-04"
         ]
@@ -300,6 +305,7 @@ def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path)
     manifest = publish_fixture_snapshot(
         data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
     )
+    seed_earnings(financial_root(data), ("600000.SH", "000001.SZ", "600519.SH"))
     service = make_service(runs, data)
     client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
     body = experiment_request(manifest["id"])

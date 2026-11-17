@@ -15,8 +15,15 @@ from support.fakes import make_app
 from support.financial import income, publish
 
 
-def request(tmp_path, mode="index_warehouse", size=3):
+def request(tmp_path, mode="index_warehouse", size=3, with_financials=True):
     data, root, document = pool(tmp_path, mode, size)
+    if with_financials:
+        codes = json.loads((root / "manifest.json").read_bytes())["assets"]
+        publish(
+            financial_root(data),
+            [income(code, period="20231231", announce="20240103") for code in codes],
+            seen_on="2024-01-03",
+        )
     return data, root, {"data": document["data"], "start": "2024-01-08", "factor": {"name": "value"}}
 
 
@@ -28,7 +35,7 @@ def test_dynamic_coverage_uses_actual_membership_and_is_read_only(tmp_path, mode
     assert result["as_of"] == "2024-01-05"
     assert result["total"] == (2 if mode == "index_warehouse" else 3)
     assert result["available"] == result["total"] and result["unavailable"] == 0
-    assert any("非正PE" in note for note in result["notes"])
+    assert any("零利润和亏损" in note for note in result["notes"])
     assert all(p.read_bytes() == value for p, value in before.items())
     assert set(before) == {p for p in data.rglob("*") if p.is_file()}
     assert not (tmp_path / "runs").exists()
@@ -55,13 +62,13 @@ def test_snapshot_coverage_respects_custom_stock_pool_and_windows(workspace):
 
 
 def test_missing_financial_version_is_counted_without_downloading(tmp_path):
-    data, _, document = request(tmp_path)
+    data, _, document = request(tmp_path, with_financials=False)
     document["factor"] = {"name": "gross_margin_ttm"}
     result = factor_coverage(document, data)
     assert result["unavailable"] == result["total"] == 2
-    assert result["reasons"] == [{"code": "no_financials", "label": "尚无财务数据版本", "count": 2}]
+    assert result["reasons"] == [{"code": "no_report", "label": "当时没有可用利润表", "count": 2}]
     assert not financial_root(data).exists()
-    assert any("金融行业" in note for note in result["notes"])
+    assert any("不适用" in note for note in result["notes"])
 
 
 def test_gross_margin_missing_field_differs_from_missing_report_and_future_cannot_fill_it(tmp_path):
@@ -78,7 +85,7 @@ def test_gross_margin_missing_field_differs_from_missing_report_and_future_canno
     document.update(factor={"name": "gross_margin_ttm"}, financial_version=manifest["id"])
     result = factor_coverage(document, data)
     assert result["available"] == 1 and result["unavailable"] == 1
-    assert result["reasons"][0]["code"] == "financial_inputs"
+    assert result["reasons"][0]["code"] == "missing_operating_cost"
     assert result["examples"][0]["code"] == "600000.SH"
     # A later report with complete costs must not fix the earlier signal date.
     future = publish(
@@ -109,7 +116,7 @@ def test_filters_custom_codes_and_future_prices_change_only_relevant_coverage(tm
     manifest = json.loads((root / "manifest.json").read_bytes())
     path = root / manifest["assets"]["600000.SH"]["file"]
     prices = pd.read_parquet(path)
-    prices.loc[prices.date.gt("2024-01-05"), ["pe_ttm", "close"]] = -999
+    prices.loc[prices.date.gt("2024-01-05"), ["pe_ttm", "close", "total_mv"]] = -999
     prices.to_parquet(path, index=False)
     refresh(root, manifest)
     document["data"]["warehouse_id"] = market_option(root)["id"]

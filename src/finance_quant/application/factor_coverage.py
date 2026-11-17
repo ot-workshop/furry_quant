@@ -14,6 +14,7 @@ from finance_quant.application.research_requests import _fields, snapshot_regist
 from finance_quant.configuration import BacktestConfig, DataConfig
 from finance_quant.data.financials import FinancialBinding, FinancialStore, financial_root
 from finance_quant.data.historical_warehouse import warehouse_option
+from finance_quant.data.industries import optional_industries
 from finance_quant.data.market_universe import market_option, market_roots
 from finance_quant.data.symbols import from_qlib, to_qlib
 from finance_quant.research.factor_library import FACTOR_LIBRARY
@@ -23,6 +24,8 @@ from finance_quant.research.fundamentals import (
     fundamental_events,
     load_fundamentals,
 )
+from finance_quant.research.gross_margin import CONTEXT
+from finance_quant.research.gross_margin import REASONS as GROSS_REASONS
 from finance_quant.research.market_factors import calculate_factor_values
 from finance_quant.research.registry import FactorConfig, FactorSpec
 
@@ -35,6 +38,7 @@ LABELS = {
     "report_unavailable": "当时没有可用财报",
     "stale_report": "当时可用财报已过期",
     "financial_inputs": "财报必要字段或TTM历史无效",
+    "market_cap": "当日总市值缺失或非正值",
 }
 
 
@@ -110,6 +114,10 @@ def _reason(row, spec, day, financial_version, dynamic):
         return "suspended"
     if dynamic and not bool(row.get("eligible_history", False)):
         return "history"
+    if spec.name == "gross_margin_ttm":
+        return row[CONTEXT]["reason"]
+    if spec.name == "value" and (not np.isfinite(row.get("total_mv", np.nan)) or row.total_mv <= 0):
+        return "market_cap"
     if FACTOR_LIBRARY[spec.name].fundamental:
         if financial_version is None:
             return "no_financials"
@@ -123,8 +131,8 @@ def _reason(row, spec, day, financial_version, dynamic):
 
 
 def factor_coverage(document, data_root):
-    _fields(document, ("data", "start", "factor"), ("financial_version",), label="因子覆盖查询")
-    _fields(document["factor"], ("name",), ("window", "skip", "baseline_window", "id"), label="因子")
+    _fields(document, ("data", "start", "factor"), ("financial_version", "industry_version"), label="因子覆盖查询")
+    _fields(document["factor"], ("name",), ("window", "skip", "baseline_window", "id", "missing_policy"), label="因子")
     spec = FactorSpec(**document["factor"], weight=1.0)
     config = FactorConfig((spec,))
     backtest = BacktestConfig(document["start"], document["start"], topk=1, n_drop=0)
@@ -134,40 +142,79 @@ def factor_coverage(document, data_root):
     # Exclude execution-day rows even from intermediate calculations.
     market = market.loc[market.date.le(day)].copy()
     financials, version = _financials(document, data_root, market, FACTOR_LIBRARY[spec.name].fundamental)
+    industry = (
+        optional_industries(version=document["industry_version"])
+        if document.get("industry_version") and spec.name == "gross_margin_ttm"
+        else None
+    )
     frame, _, _ = calculate_factor_values(
-        market, config, dynamic_context=meta if dynamic else None, exchange_calendar=sessions, financials=financials
+        market,
+        config,
+        dynamic_context=meta if dynamic else None,
+        exchange_calendar=sessions,
+        financials=financials,
+        industry_history=industry,
     )
     section = frame.loc[frame.date.eq(day)].copy()
     if dynamic:
         section = section.loc[section.selection_member]
     total = meta["declared_universe"].get(day, 0) if dynamic else len(codes)
     valid = np.isfinite(section["factor_" + spec.key].to_numpy(float))
+    not_applicable = (
+        section.gross_margin_status.eq("not_applicable").to_numpy()
+        if spec.name == "gross_margin_ttm"
+        else np.zeros(len(section), dtype=bool)
+    )
     if dynamic:
-        valid &= section.eligible_history.to_numpy(bool) & ~section.is_suspended.to_numpy(bool)
+        permitted = section.eligible_history.to_numpy(bool) & ~section.is_suspended.to_numpy(bool)
+        valid &= permitted
+        not_applicable &= permitted
     reasons: Counter[str] = Counter()
     examples: list[dict] = []
     if total > len(section):
         reasons["missing_market"] = total - len(section)
-    for (_, row), included in zip(section.iterrows(), valid, strict=True):
-        if not included:
+    reason_labels = LABELS | GROSS_REASONS
+    for (_, row), included, inapplicable in zip(section.iterrows(), valid, not_applicable, strict=True):
+        if not included and not inapplicable:
             reason = _reason(row, spec, day, version, dynamic)
             reasons[reason] += 1
             if len(examples) < 5:
-                examples.append({"code": from_qlib(row.instrument), "name": row["name"], "reason": LABELS[reason]})
+                examples.append(
+                    {"code": from_qlib(row.instrument), "name": row["name"], "reason": reason_labels[reason]}
+                )
     notes = [
         "仅统计该信号日；区间内的成分、财报和有效数量会变化。",
-        "组合评分要求所有已选因子共同有效，最终可评分数量可能更少。",
+        "组合评分还受其他因子有效性约束；缺失评分按所选规则处理，不重分权重。",
     ]
     if spec.name == "gross_margin_ttm":
-        notes.append("银行、证券、保险等企业可能没有通用营业成本字段，毛利率缺失可能集中于金融行业。")
+        notes.append("毛利率使用匹配口径的TTM营业收入与营业成本；不以营业总收入替代营业收入。")
+        notes.append(
+            "当时报表确认为银行、保险、证券、多元金融，或已固定的历史行业确认为金融时，该项不适用并固定记50分；不使用当前行业倒填历史。"
+        )
+        notes.append(
+            {
+                "zero": "真正缺失时该项记0分。",
+                "neutral": "真正缺失时该项记50分。",
+                "exclude": "真正缺失时剔除股票；行业不适用仍记50分。",
+            }[spec.missing_policy]
+        )
     elif spec.name == "value":
-        notes.append("非正PE不参与评分，样本会偏向盈利公司。")
+        notes.append("TTM归母净利润除以当日总市值，保留零利润和亏损；不使用PE空值判断是否亏损。")
+        notes.append(
+            {
+                "zero": "真正缺失时该项记0分，保留股票但惩罚缺失；不将原始值填成零。",
+                "neutral": "真正缺失时该项记50分，保留股票并作中性处理。",
+                "exclude": "真正缺失时剔除股票；零利润与亏损的有效值仍参与评分。",
+            }[spec.missing_policy]
+        )
     elif spec.name == "book_to_price":
         notes.append("非正PB和缺失估值不参与评分，样本可能偏向正净资产公司。")
     if FACTOR_LIBRARY[spec.name].fundamental:
-        notes.append("缺少必要字段、TTM历史或当时可用的报告会被排除；财报历史修订时点未完全认证。")
+        notes.append("缺少必要字段、TTM历史或当时可用的报告属于真实缺失，历史修订时点未完全认证。")
     if reasons:
-        notes.append("缺失值不会补成零；样本减少可能改变行业分布、因子相关性和回测结果。")
+        notes.append(
+            "原始缺失值保留为空；填补评分与样本变化均可能影响行业分布和回测结果，单因子IC与相关性不使用填补值。"
+        )
     return {
         "as_of": day,
         "execution_date": backtest.start,
@@ -176,8 +223,29 @@ def factor_coverage(document, data_root):
         "factor": spec.as_dict(),
         "total": total,
         "available": int(valid.sum()),
-        "unavailable": total - int(valid.sum()),
-        "reasons": [{"code": key, "label": LABELS[key], "count": count} for key, count in reasons.items()],
+        "unavailable": total - int(valid.sum()) - int(not_applicable.sum()),
+        **(
+            {
+                "not_applicable": int(not_applicable.sum()),
+                "not_applicable_score": 50,
+                "industry_version": industry.manifest["id"] if industry else None,
+            }
+            if spec.name == "gross_margin_ttm"
+            else {}
+        ),
+        **(
+            {
+                "missing_policy": spec.missing_policy,
+                "breakdown": {
+                    "positive": int((section["factor_" + spec.key].gt(0) & valid).sum()),
+                    "zero": int((section["factor_" + spec.key].eq(0) & valid).sum()),
+                    "negative": int((section["factor_" + spec.key].lt(0) & valid).sum()),
+                },
+            }
+            if spec.name in {"value", "gross_margin_ttm"}
+            else {}
+        ),
+        "reasons": [{"code": key, "label": reason_labels[key], "count": count} for key, count in reasons.items()],
         "examples": examples,
         "notes": notes,
     }

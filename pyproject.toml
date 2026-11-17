@@ -98,6 +98,7 @@ files = [
   "src/finance_quant/application/quote_quality.py",
   "src/finance_quant/research/market_factors.py",
   "src/finance_quant/research/factor_sections.py",
+  "src/finance_quant/research/gross_margin.py",
   "src/finance_quant/integrations/qlib_runner.py",
   "src/finance_quant/integrations/qlib_runtime.py",
   "src/finance_quant/integrations/qlib_results.py",

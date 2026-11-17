@@ -175,7 +175,7 @@ def test_switch_effect_and_off_reproduction_with_future_change(size):
     market = frame(size, 60)
     symbols = sorted(market.instrument.unique())
     h = history(symbols, switch=True)
-    config = FactorConfig((FactorSpec("value", 0.6), FactorSpec("momentum", 0.4, 10)))
+    config = FactorConfig((FactorSpec("book_to_price", 0.6), FactorSpec("momentum", 0.4, 10)))
     baseline = market_factors(market, "test", config)
     off = market_factors(market, "test", config, industry_history=h, neutralization=NeutralizationConfig("off"))
     on = market_factors(market, "test", config, industry_history=h, neutralization=NeutralizationConfig("industry"))

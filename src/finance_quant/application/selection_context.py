@@ -8,6 +8,7 @@ from finance_quant.application.research_requests import research_options
 from finance_quant.configuration import BacktestConfig
 from finance_quant.data.financials import FinancialBinding, financial_root
 from finance_quant.provenance import fingerprint
+from finance_quant.research.factor_library import FACTOR_LIBRARY
 from finance_quant.research.factor_selection import ALGORITHM, SelectionParameters, select_factors
 from finance_quant.research.neutralization import parse_neutralization
 from finance_quant.research.registry import FactorConfig, FactorSpec
@@ -52,6 +53,21 @@ def factor_configs(evaluation, selection):
     rows = evaluation["metadata"].get("factor_config")
     if not rows:
         raise ValueError("该评估未保存因子参数，无法自动创建比较；原结果仍可查看")
+    definitions = evaluation["metadata"].get("factor_definitions", {})
+    if any(
+        row["name"] == "value"
+        and definitions.get(row.get("id", row["name"]), {}).get("version")
+        != FACTOR_LIBRARY["value"].public()["version"]
+        for row in rows
+    ):
+        raise ValueError("来源盈利收益率为旧PE口径，请按当前TTM利润口径重新评估后创建比较；旧结果仍可查看")
+    if any(
+        row["name"] == "gross_margin_ttm"
+        and definitions.get(row.get("id", row["name"]), {}).get("version")
+        != FACTOR_LIBRARY["gross_margin_ttm"].public()["version"]
+        for row in rows
+    ):
+        raise ValueError("来源毛利率为旧收入或适用性口径，请重新评估后创建比较；旧结果仍可查看")
     baseline = FactorConfig(tuple(FactorSpec(**row) for row in rows))
     chosen = set(selection["selected_keys"])
     selected = FactorConfig(

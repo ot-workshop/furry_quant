@@ -61,7 +61,8 @@ def evaluation_markdown(result: dict) -> str:
         lines += ["", "## 数据时点核验", "", "历史公开时点尚未完全认证；程序时序约束不等于供应商历史版本已认证。"]
         lines += [f"- {row['label']}：{row['detail']}" for row in meta["temporal_audit"]["items"]]
     lines += ["", "## 标签覆盖", "", "| 持有期 | 有效股票标签 | 排除标签 |", "| ---: | ---: | ---: |"]
-    for horizon, labels in result["labels"].items():
+    for horizon in sorted(result["labels"], key=int):
+        labels = result["labels"][horizon]
         lines.append(f"| {horizon} | {labels['valid_observations']} | {labels['excluded_observations']} |")
     missing = sum(row["scored_instruments"] < params["min_cross_section"] for row in result["signal_coverage"])
     lines += [
@@ -73,8 +74,12 @@ def evaluation_markdown(result: dict) -> str:
         "| 因子 | 持有期 | 有效 IC 日期 | IC 均值 | Rank IC 均值 | Rank IC IR | 高组减低组平均收益 |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for name, factor in result["factors"].items():
-        for horizon, values in factor["horizons"].items():
+    # PostgreSQL JSONB does not retain dictionary insertion order. Rendering a
+    # reused result must produce the same immutable report as its first run.
+    for name in sorted(result["factors"]):
+        factor = result["factors"][name]
+        for horizon in sorted(factor["horizons"], key=int):
+            values = factor["horizons"][horizon]
             stats = values["summary"]
             lines.append(
                 f"| {name} | {horizon} | {stats['rank_ic']['valid_dates']} | {_value(stats['ic']['mean'])} | "
@@ -97,7 +102,7 @@ def evaluation_markdown(result: dict) -> str:
     lines += ["", "## 适用范围", ""]
     lines += [f"- {note}" for note in result["methodology"]["limitations"]]
     lines += [
-        "- 每日估值的历史修订与实际发布时间尚未审计；本报告未接入财报因子。",
+        "- 每日估值、财报与行业历史修订及实际发布时间尚未完全审计；缺失处理规则见评分批次。",
         "",
         "逐日IC、各组样本数及覆盖率见result.json；完整收益标签见JSON索引所列Parquet文件。"
         if result.get("tables")

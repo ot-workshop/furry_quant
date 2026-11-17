@@ -69,14 +69,14 @@ def write_document(tmp_path, document):
     return path
 
 
-def test_default_config_preserves_backwards_weights_and_values():
+def test_default_config_preserves_weights_and_records_earnings_missing_policy():
     config = FactorConfig()
     assert config.weights == {"momentum": 0.4, "value": 0.3, "volatility": 0.3}
     assert MARKET_WEIGHTS == config.weights
     assert MARKET_WEIGHTS is not FactorConfig().weights
     assert config.as_list() == [
         {"name": "momentum", "weight": 0.4, "window": 20},
-        {"name": "value", "weight": 0.3, "window": None},
+        {"name": "value", "weight": 0.3, "window": None, "missing_policy": "zero"},
         {"name": "volatility", "weight": 0.3, "window": 10},
     ]
 
@@ -214,7 +214,7 @@ def test_load_config_accepts_strict_factor_and_evaluation_sections(tmp_path):
     loaded = load_config(write_document(tmp_path, document))
     assert loaded.factors.as_list() == [
         {"name": "momentum", "weight": 0.7, "window": 12},
-        {"name": "value", "weight": 0.3, "window": None},
+        {"name": "value", "weight": 0.3, "window": None, "missing_policy": "zero"},
     ]
     assert loaded.evaluation.horizons == (1, 5, 10)
     assert loaded.evaluation.groups == 4

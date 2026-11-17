@@ -15,7 +15,16 @@ import pyarrow.parquet as pq
 
 from finance_quant.checksums import file_sha256
 
-JSON_COLUMNS = {"raw", "scores", "contributions", "reasons", "processed", "before_scores", "before_contributions"}
+JSON_COLUMNS = {
+    "raw",
+    "scores",
+    "contributions",
+    "reasons",
+    "processed",
+    "before_scores",
+    "before_contributions",
+    "factor_details",
+}
 
 
 class ResultTableError(ValueError):

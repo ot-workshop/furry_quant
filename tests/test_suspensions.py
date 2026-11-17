@@ -15,6 +15,7 @@ from finance_quant.integrations.qlib_runner import run_qlib, write_features
 from finance_quant.research.evaluation import forward_open_labels
 from finance_quant.research.registry import EvaluationConfig, FactorConfig, FactorSpec
 from finance_quant.storage import ResultStore
+from support.financial import seed_earnings
 from support.fixed_pool import download_dataset
 
 HALTS = ["2025-01-13", "2025-01-14", "2025-01-15"]
@@ -95,6 +96,7 @@ def test_confirmed_halts_carry_only_prior_known_values_and_keep_evidence(snapsho
         config.root.parent / "runs",
         FactorConfig((FactorSpec("value", 1),)),
         EvaluationConfig(horizons=(1, 3)),
+        financials=seed_earnings(config.root.parent / "financials", config.codes),
     )
     output = run_configured(research)
     saved = ResultStore(research.runs_dir).get("backtests", output["run_id"])

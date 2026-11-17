@@ -88,7 +88,7 @@ class ExperimentPlan:
                 if (
                     not isinstance(spec, dict)
                     or not {"name", "weight"}.issubset(spec)
-                    or set(spec) - {"name", "weight", "window", "skip", "baseline_window", "id"}
+                    or set(spec) - {"name", "weight", "window", "skip", "baseline_window", "id", "missing_policy"}
                 ):
                     raise ValueError("因子字段仅支持名称、权重与可选窗口参数")
                 specs.append(FactorSpec(**spec))

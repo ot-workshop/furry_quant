@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from finance_quant.data.financials import FinancialStore, merge_observations
+from finance_quant.data.financials import FinancialBinding, FinancialStore, merge_observations
 from finance_quant.data.providers import FINANCIAL_VALUE_FIELDS, normalize_financial_statement
 
 TRADING_DAYS = pd.bdate_range("2024-01-02", "2027-06-30")
@@ -28,6 +28,8 @@ def statement_frame(ts_code: str, statement: str, report_type: int, **values) ->
 def income(ts_code="600000.SH", report_type=1, period="20241231", announce="20250320", update_flag=None, **values):
     payload = {
         "total_revenue": 100.0,
+        "revenue": values.get("total_revenue", 100.0),
+        "comp_type": "1",
         "oper_cost": 60.0,
         "n_income_attr_p": 10.0,
         **values,
@@ -74,3 +76,14 @@ def publish(root, parts, *, calendar=TRADING_DAYS, seen_on="2025-06-30") -> dict
     for code, observations in grouped.items():
         store.save_stock(code, observations, fetched_at="2025-06-30T00:00:00+00:00")
     return store.publish()
+
+
+def seed_earnings(root, codes):
+    """Known TTM profits of 100,000 * (index+1), available before December 2024."""
+    parts = [
+        income(code, period=period, announce=announce, n_income_attr_p=100_000.0 * (index + 1))
+        for index, code in enumerate(codes)
+        for period, announce in (("20230930", "20231025"), ("20231231", "20240320"), ("20240930", "20241025"))
+    ]
+    manifest = publish(root, parts, seen_on="2024-10-25")
+    return FinancialBinding(root, manifest["id"])

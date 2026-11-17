@@ -2,6 +2,7 @@ import type { ResearchRequest } from "../api/research";
 const FACTOR_LABELS: Record<string, string> = {
   momentum: "动量",
   value: "盈利收益率",
+  gross_margin_ttm: "毛利率",
   quality: "质量",
   volatility: "低波动",
   book_to_price: "账面市值比",

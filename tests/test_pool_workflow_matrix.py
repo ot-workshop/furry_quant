@@ -15,11 +15,13 @@ from test_managed_data import Provider
 import finance_quant.application.research_requests as requests
 from finance_quant.application.research_requests import snapshot_registry, validate_request
 from finance_quant.configuration import BacktestConfig, DataConfig
+from finance_quant.data.financials import financial_root
 from finance_quant.data.managed import DatasetDownloadError
 from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.registry import EvaluationConfig
 from finance_quant.storage import ResultStore
 from support.fakes import make_service, run_claimed
+from support.financial import seed_earnings
 from support.fixed_pool import download_dataset, publish_fixture_snapshot
 
 
@@ -132,6 +134,7 @@ def run_request(document, data_root, runs, provider=None):
 def test_arbitrary_pool_sizes_complete_factors_and_native_backtest(tmp_path, size, seed):
     codes = codes_for(size, seed)
     request = request_for(codes)
+    seed_earnings(financial_root(tmp_path / "data"), codes)
     task = run_request(request, tmp_path / "data", tmp_path / "runs")
     assert task["status"] == "succeeded", task["error"]
     result = task["result"]
@@ -150,14 +153,14 @@ def test_arbitrary_pool_sizes_complete_factors_and_native_backtest(tmp_path, siz
     config = {s["name"]: s for s in request["factors"]}
     for date in ["2025-01-17", "2025-02-14", "2025-03-28"]:
         expected = {}
-        for code in codes:
+        for index, code in enumerate(codes):
             section = bars(code, pd.bdate_range("2024-12-02", date))
             values = section.close.to_numpy()
             w, v = config["momentum"]["window"], config["volatility"]["window"]
             returns = values[-v:] / values[-v - 1 : -1] - 1
             expected[code[-2:] + code[:6]] = {
                 "momentum": values[-1] / values[-1 - w] - 1,
-                "value": 1 / section.pe_ttm.iloc[-1],
+                "value": (100_000.0 * (index + 1)) / (1000 * 10000.0),
                 "volatility": float(np.std(returns, ddof=1) * math.sqrt(252)),
             }
         for saved in [r for r in factors["history"] if r["date"] == date]:
@@ -192,7 +195,7 @@ def test_listing_boundaries_fail_with_actionable_dates_before_fetching_that_stoc
     assert not (config.root / "manifest.json").exists()
 
 
-def test_valuation_ineligible_pool_is_rejected_at_submission_then_price_only_task_succeeds(tmp_path):
+def test_nonpositive_pe_does_not_filter_pool_and_price_only_task_still_succeeds(tmp_path):
     codes = codes_for(5, 93)
 
     class NoPE(DiversePrimary):
@@ -203,9 +206,11 @@ def test_valuation_ineligible_pool_is_rejected_at_submission_then_price_only_tas
             return frame
 
     request = request_for(codes)
-    with pytest.raises(ValueError, match="有效评分不足"):
-        run_request(request, tmp_path / "data", tmp_path / "runs", NoPE())
-    assert not (tmp_path / "runs").exists()
+    completed = run_request(request, tmp_path / "data", tmp_path / "runs", NoPE())
+    assert completed["status"] == "succeeded", completed["error"]
+    factors = ResultStore(tmp_path / "runs").get("factors", completed["result"]["factor_run_id"])
+    assert all(point["eligible"] == len(codes) for point in factors["metadata"]["coverage_by_date"].values())
+    assert all(row["raw"]["value"] is None and row["scores"]["value"] == 0 for row in factors["history"])
     request["factors"] = [{"name": "momentum", "weight": 1.0, "window": 7}]
     succeeded = run_request(request, tmp_path / "data", tmp_path / "runs", NoPE())
     assert succeeded["status"] == "succeeded", succeeded["error"]

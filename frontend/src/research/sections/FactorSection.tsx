@@ -16,6 +16,7 @@ import {
 import { CopyOutlined, DeleteOutlined } from "@ant-design/icons";
 import type { ResearchOptions } from "../../api/research";
 import { FactorDataHint } from "../../components/FactorDataHint";
+import { FactorMissingPolicy } from "../../components/FactorMissingPolicy";
 import {
   addFactorInstance,
   equalWeights,
@@ -186,6 +187,14 @@ export function FactorSection({
             </Tooltip>
           ) : null}
           <Space size={0}>
+            {["value", "gross_margin_ttm"].includes(row.name) ? (
+              <FactorMissingPolicy
+                label={definition.label}
+                value={row.missingPolicy}
+                disabled={!row.enabled}
+                onChange={(missingPolicy) => setRow(row.key, { missingPolicy })}
+              />
+            ) : null}
             {definition.default_window != null ? (
               <Tooltip title="再添加一个不同窗口的同类因子">
                 <Button

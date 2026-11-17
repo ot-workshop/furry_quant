@@ -5,6 +5,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 from test_dynamic_experiments import pool
+from test_earnings_yield_workflow import seed_financials
 from test_postgres_runtime import engine as engine
 
 from finance_quant.api import create_app
@@ -19,6 +20,7 @@ pytestmark = pytest.mark.skipif(
 
 def test_coverage_query_leaves_queue_and_results_unchanged(engine, tmp_path):
     data, _, document = pool(tmp_path, "index_warehouse", 3)
+    seed_financials(data, ["600000.SH", "000001.SZ", "688001.SH"])
     runs = tmp_path / "runs"
     queue = PgTaskStore(runs, engine=engine)
     service = TaskService(runs, data, task_store=queue)

@@ -3,6 +3,7 @@ import { request } from "./http";
 
 export type ValidationMode = "off" | "verify" | "fallback";
 export type SourceMode = "snapshot" | "index_warehouse" | "market_warehouse";
+export type MissingPolicy = "zero" | "neutral" | "exclude";
 export type TaskKind = "research" | "experiment";
 export type TaskStatus =
   | "queued"
@@ -60,6 +61,8 @@ export interface FactorDefinition {
   formula?: string;
   data_note?: string;
   requires_financials?: boolean;
+  missing_policy?: MissingPolicy;
+  missing_policies?: MissingPolicy[];
 }
 
 export interface FinancialCoverage {
@@ -95,6 +98,7 @@ export interface ResearchFactor {
   skip?: number;
   baseline_window?: number;
   id?: string;
+  missing_policy?: MissingPolicy;
 }
 
 export interface ResearchBacktest {

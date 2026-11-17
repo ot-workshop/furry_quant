@@ -145,13 +145,14 @@ def test_missing_daily_scores_cannot_silently_reuse_old_signals(tmp_path):
         def query(self, api, **params):
             frame = super().query(api, **params)
             if api == "daily_basic":
-                frame.loc[frame.trade_date == "20250108", "pe_ttm"] = float("nan")
+                frame.loc[frame.trade_date == "20250108", "pb"] = float("nan")
             return frame
 
     config = ResearchConfig(
         DataConfig(tmp_path / "data", "20241202", "20250228", ("600000.SH", "000001.SZ")),
         BacktestConfig("2025-01-02", "2025-02-28", topk=1),
         tmp_path / "runs",
+        factors=FactorConfig((FactorSpec("book_to_price", 1),)),
     )
     download_dataset(config.data, provider=MissingValuationProvider())
     with pytest.raises(ValueError, match="lacks valid factor scores"):

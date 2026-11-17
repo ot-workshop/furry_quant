@@ -72,6 +72,11 @@ export function FactorDataHint({
           ? "原始值越低，得分越高。"
           : "原始值越高，得分越高。"}
       </Typography.Text>
+      {definition.data_note ? (
+        <Typography.Text type="secondary">
+          {definition.data_note}
+        </Typography.Text>
+      ) : null}
       {validation ? (
         <Typography.Text type="secondary">{validation}</Typography.Text>
       ) : resource.error ? (
@@ -97,9 +102,34 @@ export function FactorDataHint({
             统计日期：{data.as_of}（回测首日前一交易日）
           </Typography.Text>
           <Typography.Text strong>
-            可评分 {data.available} / {data.total} 只；暂不可评分{" "}
+            {["value", "gross_margin_ttm"].includes(definition.name)
+              ? "原始值可用"
+              : "可评分"}{" "}
+            {data.available} / {data.total} 只；
+            {["value", "gross_margin_ttm"].includes(definition.name)
+              ? "缺失或受限"
+              : "暂不可评分"}{" "}
             {data.unavailable} 只
           </Typography.Text>
+          {data.not_applicable !== undefined ? (
+            <Typography.Text>
+              行业不适用 {data.not_applicable} 只；该项记50分
+            </Typography.Text>
+          ) : null}
+          {data.breakdown ? (
+            <Typography.Text>
+              {definition.name === "gross_margin_ttm" ? "正毛利率" : "盈利"}{" "}
+              {data.breakdown.positive} 只；
+              {definition.name === "gross_margin_ttm"
+                ? "零毛利率"
+                : "零利润"}{" "}
+              {data.breakdown.zero} 只；
+              {definition.name === "gross_margin_ttm"
+                ? "负毛利率"
+                : "亏损"}{" "}
+              {data.breakdown.negative} 只
+            </Typography.Text>
+          ) : null}
           {data.reasons.length ? (
             <div>
               {data.reasons.map((reason) => (

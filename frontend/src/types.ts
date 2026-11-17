@@ -36,6 +36,7 @@ export interface FactorRun {
     id?: string;
     skip?: number;
     baseline_window?: number;
+    missing_policy?: "zero" | "neutral" | "exclude";
   }>;
 }
 
@@ -50,6 +51,8 @@ export interface FactorDescriptor {
   params: Record<string, number>;
   lookback: number;
   data_note?: string;
+  missing_policy?: "zero" | "neutral" | "exclude";
+  version?: string;
 }
 
 /** A stock excluded from scoring on a date, with the reason per factor. */
@@ -58,6 +61,7 @@ export interface FactorExclusion {
   instrument: string;
   raw: NumericRecord;
   reasons: Record<string, string>;
+  factor_details?: FactorScore["factor_details"];
 }
 
 export interface FactorRunList {
@@ -68,6 +72,37 @@ export interface FactorRunList {
 export type NumericRecord = Record<string, number | null>;
 
 export interface FactorScore {
+  factor_details?: Record<
+    string,
+    {
+      ttm_net_profit?: number | null;
+      total_mv?: number | null;
+      revenue_ttm?: number | null;
+      operating_cost_ttm?: number | null;
+      company_type?: string | null;
+      status?: "applicable" | "not_applicable" | "missing";
+      reason_label?: string | null;
+      not_applicable_score?: number;
+      historical_industry?: {
+        industry_name?: string;
+        industry_code?: string;
+        classification?: string;
+      };
+      components?: Array<{
+        report_period: string;
+        coefficient: number;
+        available_at: string | null;
+        company_type: string | null;
+        revenue: number | null;
+        operating_cost: number | null;
+      }>;
+      report_period: string | null;
+      financial_available_at: string | null;
+      missing_policy: "zero" | "neutral" | "exclude";
+      imputed: boolean;
+      reason: string | null;
+    }
+  >;
   industry_code?: string | null;
   industry_name?: string | null;
   industry_status?: string;
@@ -99,7 +134,19 @@ export interface ScoreMetadata {
   coverage?: {
     universe: number;
     eligible: number;
-    factors: Record<string, { valid: number; missing: number }>;
+    factors: Record<
+      string,
+      {
+        valid: number;
+        missing: number;
+        positive?: number;
+        zero?: number;
+        negative?: number;
+        imputed?: number;
+        not_applicable?: number;
+        not_applicable_scored?: number;
+      }
+    >;
   };
   [key: string]: unknown;
 }

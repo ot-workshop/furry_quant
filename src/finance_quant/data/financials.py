@@ -338,7 +338,16 @@ def report_versions(observations: pd.DataFrame, sessions) -> pd.DataFrame:
     ``report_period``, ``available_at`` (UTC), ``priority`` and ``revision`` plus values.
     Quarantined rows and versions that never become visible are excluded.
     """
-    columns = ["instrument", "statement", "report_type", "report_period", "available_at", "priority", "revision"]
+    columns = [
+        "instrument",
+        "statement",
+        "report_type",
+        "comp_type",
+        "report_period",
+        "available_at",
+        "priority",
+        "revision",
+    ]
     if observations.empty:
         return pd.DataFrame(columns=[*columns, *FINANCIAL_VALUE_FIELDS])
     frame = observations.loc[~quarantined_rows(observations) & observations.report_type.isin(REPORT_TYPES)].reset_index(

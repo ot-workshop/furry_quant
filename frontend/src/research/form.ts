@@ -40,6 +40,7 @@ export interface FactorRow {
   window: number | null;
   skip: number | null;
   baselineWindow: number | null;
+  missingPolicy?: "zero" | "neutral" | "exclude";
 }
 
 export interface FormState {
@@ -210,6 +211,9 @@ export function factorRows(
           (definition.name === "momentum" ? 0 : null),
         baselineWindow:
           config?.baseline_window ?? definition.default_baseline_window ?? null,
+        ...(["value", "gross_margin_ttm"].includes(definition.name)
+          ? { missingPolicy: config?.missing_policy ?? "zero" }
+          : {}),
       });
     }
   }
@@ -246,6 +250,7 @@ export function factorAvailable(
   coverage: { covered: number; total: number } | null,
 ): boolean {
   return (
+    ["value", "gross_margin_ttm"].includes(definition.name) ||
     !definition.requires_financials ||
     Boolean(coverage && coverage.covered >= 2)
   );
@@ -342,6 +347,23 @@ export function formFromRequest(
 ): { form: FormState; warnings: string[] } {
   const base = defaultForm(options);
   const warnings: string[] = [];
+  if (
+    request.factors.some(
+      (factor) =>
+        factor.name === "value" && factor.missing_policy === undefined,
+    )
+  )
+    warnings.push("盈利收益率将按TTM归母净利润除以市值重新计算，原结果保留。");
+  if (
+    request.factors.some(
+      (factor) =>
+        factor.name === "gross_margin_ttm" &&
+        factor.missing_policy === undefined,
+    )
+  )
+    warnings.push(
+      "毛利率将按营业收入与营业成本重新计算，金融报表不适用记50分，原结果保留。",
+    );
   let form: FormState = {
     ...base,
     filtersEnabled: Boolean(request.data.filters),
@@ -604,6 +626,11 @@ export function buildFactors(
       else factor.baseline_window = baseline;
     }
     if (row.key !== row.name) factor.id = row.key;
+    if (["value", "gross_margin_ttm"].includes(row.name)) {
+      factor.missing_policy = row.missingPolicy ?? "zero";
+      if (!["zero", "neutral", "exclude"].includes(factor.missing_policy))
+        errors.push(`${label}的缺失处理方式无效。`);
+    }
     result.push(factor);
   }
   const total = weightTotal(form);
@@ -820,6 +847,16 @@ export function buildRequest(
   const data = buildData(form, options, errors);
   const factors = buildFactors(form, options.factor_definitions, errors);
   const coverage = financialCoverage(form, options);
+  if (
+    factors.some(
+      (factor) =>
+        factor.name === "value" && factor.missing_policy === "exclude",
+    ) &&
+    (!coverage || coverage.covered < 2)
+  )
+    errors.push(
+      "盈利收益率选择缺失时剔除，需要财务数据至少覆盖两只股票；请下载财务数据或切换缺失处理方式。",
+    );
   const blocked = form.factors
     .filter((row) => row.enabled)
     .map((row) => options.factor_definitions.find((d) => d.name === row.name))

@@ -21,7 +21,7 @@ const React = await import("react");
 const { act } = React;
 const { createRoot } = await import("react-dom/client");
 const { ConfigProvider } = await import("antd");
-const { hints, coverage, forms, experiments } = await load({ experiments: "./src/pages/ExperimentNewPage", hints: "./src/components/FactorDataHint", coverage: "./src/research/factor-coverage", forms: "./src/research/form" });
+const { hints, coverage, forms, experiments, sections } = await load({ sections: "./src/research/sections/FactorSection", experiments: "./src/pages/ExperimentNewPage", hints: "./src/components/FactorDataHint", coverage: "./src/research/factor-coverage", forms: "./src/research/form" });
 const config = options();
 const definition = config.factor_definitions.find((d) => d.name === "momentum");
 const state = forms.defaultForm(config);
@@ -33,10 +33,12 @@ globalThis.fetch = async (url, init) => {
   if (String(url).endsWith("/research/options")) return new Response(JSON.stringify(config), { headers: { "Content-Type": "application/json" } });
   calls.push(JSON.parse(init.body));
   return new Response(JSON.stringify(fail ? { detail: "预热历史不足" } : {
-    as_of: "2025-02-28", execution_date: "2025-03-03", total: 3, available: 3 - missing, unavailable: missing,
+    as_of: "2025-02-28", execution_date: "2025-03-03", total: 3, available: 3 - missing - (calls.at(-1).factor.name === "gross_margin_ttm" ? 1 : 0), unavailable: missing,
     reasons: [{ code: "history", label: "历史窗口不足或滚动样本无效", count: 1 }],
     examples: [{ name: "测试股票", code: "600000.SH", reason: "history" }],
     notes: ["缺失值不会补成零；样本减少可能改变行业分布、因子相关性和回测结果。"],
+    ...(calls.at(-1).factor.name === "value" ? { breakdown: { positive: 1, zero: 1, negative: 0 } } : {}),
+    ...(calls.at(-1).factor.name === "gross_margin_ttm" ? { not_applicable: 1, not_applicable_score: 50 } : {}),
   }), { status: fail ? 422 : 200, headers: { "Content-Type": "application/json" } });
 };
 async function waitFor(check) {
@@ -133,6 +135,86 @@ test("comparison dropdown notes do not select the factor and preserve searchable
     await waitFor(() => assert.ok(document.body.textContent.includes("暂不可评分 1 只")));
     assert.equal(select.querySelectorAll(".ant-select-selection-item").length, before);
     assert.equal(calls.at(-1).factor.name, "roe_ttm");
+  } finally { await act(async () => root.unmount()); }
+});
+
+test("earnings policy selector changes the coverage request and shows real zero profits separately", async () => {
+  const root = createRoot(document.getElementById("root"));
+  let current;
+  function Form() {
+    const [form, setForm] = React.useState(state);
+    current = form;
+    return React.createElement(sections.FactorSection, { form, options: config, setForm,
+      update: (patch) => setForm((value) => ({ ...value, ...patch })) });
+  }
+  try {
+    await act(async () => root.render(React.createElement(ConfigProvider, null, React.createElement(Form))));
+    const control = document.querySelector('[aria-label="盈利收益率缺失处理"]');
+    assert.ok(control);
+    const select = control.closest(".ant-select");
+    const input = select.querySelector('input[role="combobox"]');
+    await act(async () => input.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true })));
+    await waitFor(() => assert.ok(document.querySelector('.ant-select-item-option[title="缺失记50分"]')));
+    await act(async () => document.querySelector('.ant-select-item-option[title="缺失记50分"]').click());
+    await waitFor(() => assert.equal(current.factors.find((row) => row.name === "value").missingPolicy, "neutral"));
+    const button = document.querySelector('button[aria-label="盈利收益率数据说明"]');
+    await act(async () => button.click());
+    await waitFor(() => assert.ok(document.body.textContent.includes("原始值可用 2 / 3 只；缺失或受限 1 只")));
+    assert.ok(document.body.textContent.includes("零利润 1 只"));
+    assert.equal(calls.at(-1).factor.missing_policy, "neutral");
+    assert.equal(current.factors.find((row) => row.name === "value").weight, 50);
+    assert.ok(button.querySelector('[aria-label="exclamation-circle"]'));
+  } finally { await act(async () => root.unmount()); }
+});
+
+test("gross margin separates inapplicable coverage from genuine missing warnings", async () => {
+  const gross = {...definition, name: "gross_margin_ttm", label: "毛利率TTM", default_window: null};
+  const mounted = await mount();
+  try {
+    missing = 0;
+    await mounted.render({definition: gross, row: {...row, key: "gross_margin_ttm", name: "gross_margin_ttm", window: null, missingPolicy: "exclude"}});
+    const button = document.querySelector('button[aria-label="毛利率TTM数据说明"]');
+    await act(async () => button.click());
+    await waitFor(() => assert.ok(document.body.textContent.includes("行业不适用 1 只；该项记50分")));
+    assert.ok(button.querySelector('[aria-label="info-circle"]'));
+    assert.equal(button.classList.contains("factor-data-hint-warning"), false);
+    assert.equal(calls.at(-1).factor.missing_policy, "exclude");
+    missing = 1;
+    await mounted.render({definition: gross, row: {...row, key: "gross_margin_ttm", name: "gross_margin_ttm", window: null, missingPolicy: "zero"}});
+    await waitFor(() => assert.ok(button.querySelector('[aria-label="exclamation-circle"]')));
+    assert.equal(button.classList.contains("factor-data-hint-warning"), true);
+    assert.equal(calls.at(-1).factor.missing_policy, "zero");
+  } finally { missing = 1; await mounted.close(); }
+});
+
+test("gross selector and request round trip retain policy, weights and pinned industry", async () => {
+  const gross = {...definition, name: "gross_margin_ttm", label: "毛利率TTM", default_window: null, default_skip: null};
+  const options = {...config, factor_definitions: [...config.factor_definitions, gross]};
+  const form = forms.defaultForm(options);
+  const target = form.factors.find((r) => r.name === "gross_margin_ttm");
+  Object.assign(target, {enabled: true, weight: 50, missingPolicy: "exclude"});
+  const root = createRoot(document.getElementById("root"));
+  let current = form;
+  function Form() {
+    const [state, setForm] = React.useState(form);
+    current = state;
+    return React.createElement(sections.FactorSection, {form: state, options, setForm, update: (patch) => setForm((value) => ({...value, ...patch}))});
+  }
+  try {
+    await act(async () => root.render(React.createElement(ConfigProvider, null, React.createElement(Form))));
+    const control = document.querySelector('[aria-label="毛利率TTM缺失处理"]');
+    assert.ok(control);
+    await act(async () => control.closest(".ant-select").querySelector('input[role="combobox"]').dispatchEvent(new dom.window.MouseEvent("mousedown", {bubbles: true})));
+    await waitFor(() => assert.ok(document.querySelector('.ant-select-item-option[title="缺失记50分"]')));
+    await waitFor(() => assert.ok(document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option[title="缺失记50分"]')));
+    await act(async () => document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option[title="缺失记50分"]').click());
+    await waitFor(() => assert.equal(current.factors.find((r) => r.name === "gross_margin_ttm").missingPolicy, "neutral"));
+    assert.equal(current.factors.find((r) => r.name === "gross_margin_ttm").weight, 50);
+    const query = coverage.coverageRequest({...current, industryVersion: "b".repeat(64)}, options, current.factors.find((r) => r.name === "gross_margin_ttm"));
+    assert.equal(query.industry_version, "b".repeat(64));
+    assert.equal(query.factor.missing_policy, "neutral");
+    const restored = forms.factorRows([{name: "gross_margin_ttm", weight: 0.5, missing_policy: "exclude"}], options.factor_definitions);
+    assert.equal(restored.find((r) => r.name === "gross_margin_ttm").missingPolicy, "exclude");
   } finally { await act(async () => root.unmount()); }
 });
 

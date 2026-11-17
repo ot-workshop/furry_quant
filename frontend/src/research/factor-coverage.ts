@@ -11,6 +11,7 @@ export interface FactorCoverageRequest {
   start: string;
   factor: Omit<ResearchRequest["factors"][number], "weight">;
   financial_version?: string;
+  industry_version?: string;
 }
 export interface FactorCoverage {
   as_of: string;
@@ -20,6 +21,11 @@ export interface FactorCoverage {
   total: number;
   available: number;
   unavailable: number;
+  not_applicable?: number;
+  not_applicable_score?: number;
+  industry_version?: string | null;
+  missing_policy?: "zero" | "neutral" | "exclude";
+  breakdown?: { positive: number; zero: number; negative: number };
   reasons: Array<{ code: string; label: string; count: number }>;
   examples: Array<{ code: string; name: string; reason: string }>;
   notes: string[];
@@ -43,11 +49,18 @@ export function coverageRequest(
     ...(row.baselineWindow !== null
       ? { baseline_window: row.baselineWindow }
       : {}),
+    ...(["value", "gross_margin_ttm"].includes(row.name)
+      ? { missing_policy: row.missingPolicy ?? ("zero" as const) }
+      : {}),
   };
   return {
     data,
     start: form.start,
     factor,
+    ...(row.name === "gross_margin_ttm" &&
+    (form.industryVersion || options.industry_data?.id)
+      ? { industry_version: form.industryVersion || options.industry_data?.id }
+      : {}),
     ...(options.financial_data
       ? { financial_version: options.financial_data.version }
       : {}),
@@ -62,6 +75,9 @@ export function defaultCoverageRow(definition: FactorDefinition): FactorRow {
     window: definition.default_window,
     skip: definition.default_skip ?? null,
     baselineWindow: definition.default_baseline_window ?? null,
+    ...(["value", "gross_margin_ttm"].includes(definition.name)
+      ? { missingPolicy: "zero" as const }
+      : {}),
   };
 }
 export const fetchFactorCoverage = (

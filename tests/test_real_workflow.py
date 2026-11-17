@@ -9,6 +9,7 @@ from finance_quant.application.real_workflow import adjusted_quotes
 from finance_quant.data.market import SnapshotFetcher
 from finance_quant.integrations.qlib_runner import run_qlib
 from finance_quant.research.market_factors import market_factors
+from finance_quant.research.registry import FactorConfig, FactorSpec
 from finance_quant.storage import ResultStore
 from support.fakes import make_app
 from support.synthetic import sample_factors, sample_prices
@@ -126,10 +127,11 @@ def test_market_factors_do_not_read_future_prices_or_adjustment_factors():
     assert "quality" not in baseline["metadata"]["weights"]
 
 
-def test_missing_valuation_is_excluded_and_counted_in_coverage():
+def test_missing_strict_valuation_is_excluded_and_counted_in_coverage():
     market = extended_market()
-    market.loc[market["instrument"] == "SH600000", "pe_ttm"] = np.nan
-    factors = market_factors(market, "fixture")
+    market["pb"] = 1.0
+    market.loc[market["instrument"] == "SH600000", "pb"] = np.nan
+    factors = market_factors(market, "fixture", FactorConfig((FactorSpec("book_to_price", 1),)))
     assert all(row["instrument"] != "SH600000" for row in factors["history"])
     assert all(point == {"eligible": 2, "universe": 3} for point in factors["metadata"]["coverage_by_date"].values())
 

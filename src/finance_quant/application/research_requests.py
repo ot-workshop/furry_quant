@@ -36,7 +36,7 @@ from finance_quant.data.pool_inputs import security_coverage
 from finance_quant.data.shared_market import validation_counts
 from finance_quant.data.symbols import to_qlib
 from finance_quant.data.validation_config import CrosscheckConfig
-from finance_quant.research.factor_library import FACTOR_LIBRARY, uses_financials
+from finance_quant.research.factor_library import FACTOR_LIBRARY, requires_financials, uses_financials
 from finance_quant.research.fundamentals import fundamentals_for
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.neutralization import industry_context, parse_neutralization
@@ -295,11 +295,22 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
         raise ValueError("请选择因子并设置权重")
     factors = FactorConfig(
         tuple(
-            FactorSpec(**_fields(item, ("name", "weight"), ("window", "skip", "baseline_window", "id"), "因子"))
+            FactorSpec(
+                **_fields(
+                    item, ("name", "weight"), ("window", "skip", "baseline_window", "id", "missing_policy"), "因子"
+                )
+            )
             for item in factor_list
         )
     )
     binding = financials if financials is not None else pin_financials(factors, data_root)
+    if any(spec.name == "gross_margin_ttm" for spec in factors.specs) and not neutralization.industry_version:
+        industry = industry_context(neutralization)
+        if industry:
+            neutral_extra = {
+                "neutralization": {**neutralization.as_dict(), "industry_version": industry.manifest["id"]}
+            }
+            neutralization = parse_neutralization(neutral_extra["neutralization"])
     financial_extra = {"financials": binding.as_dict()} if binding else {}
     obj = document["data"]
     if not isinstance(obj, dict) or obj.get("mode") not in {"snapshot", "index_warehouse", "market_warehouse"}:
@@ -307,7 +318,7 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
     if obj["mode"] == "market_warehouse":
         selected, pins, option = validate_market_request(obj, data_root, backtest, factors, evaluation)
         neutral_extra = pool_industry_display(selected, neutral_extra, neutralization)
-        require_financial_coverage(binding, option["codes"])
+        require_financial_coverage(binding, option["codes"], factors)
         if binding:
             pins["financials"] = binding.as_dict()
         return {
@@ -353,7 +364,7 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
         )
         if filter_extra:
             neutral_extra = pool_industry_display(filter_extra, neutral_extra, neutralization)
-        require_financial_coverage(binding, option["codes"])
+        require_financial_coverage(binding, option["codes"], factors)
         normalized = {
             "name": name.strip(),
             "data": {"mode": "index_warehouse", "warehouse_id": option["id"], **filter_extra},
@@ -395,7 +406,7 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
     validate_execution_universe(data.codes)
     if backtest.initial_cash > 1e12:
         raise ValueError("初始资金不能超过一万亿元")
-    require_financial_coverage(binding, list(data.codes))
+    require_financial_coverage(binding, list(data.codes), factors)
     config = ResearchConfig(data, backtest, runs_root, factors, evaluation, neutralization, binding)
     if "filters" in obj:
         execution["manifest_sha256"] = file_sha256(Path(manifest["snapshot_dir"]) / "manifest.json")
@@ -431,27 +442,33 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
 def pin_financials(factors: FactorConfig, data_root: Path):
     """Pin the current financial version when any factor needs statements."""
 
-    return _pin_financials(data_root) if uses_financials(factors) else None
+    return _pin_financials(data_root, required=requires_financials(factors)) if uses_financials(factors) else None
 
 
 def pin_financials_for(configs, data_root: Path):
     """Pin for a set of alternative factor configurations (experiment candidates)."""
 
-    return _pin_financials(data_root) if any(uses_financials(config) for config in configs) else None
+    return (
+        _pin_financials(data_root, required=any(requires_financials(config) for config in configs))
+        if any(uses_financials(config) for config in configs)
+        else None
+    )
 
 
-def _pin_financials(data_root: Path):
+def _pin_financials(data_root: Path, *, required=True):
 
     root = financial_root(data_root)
     manifest = FinancialStore(root).current()
     if manifest is None:
+        if not required:
+            return None
         raise ValueError("所选基本面因子需要财务数据：请先在“数据管理 → 财务数据”下载财务数据")
     return FinancialBinding(root, manifest["id"])
 
 
-def require_financial_coverage(binding, codes) -> None:
+def require_financial_coverage(binding, codes, factors=None) -> None:
     """Refuse a request whose universe holds no usable report in the pinned version."""
-    if binding is None:
+    if binding is None or (factors is not None and not requires_financials(factors)):
         return
 
     manifest = FinancialStore(binding.root).version(binding.version)

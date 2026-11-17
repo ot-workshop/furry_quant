@@ -260,7 +260,7 @@ def test_market_factors_uses_the_selected_level():
     history = IndustryHistory(
         pd.DataFrame(rows), {"id": "a" * 64, "source": "fixture", "policy": "fixture", "point_in_time_certified": False}
     )
-    config = FactorConfig((FactorSpec("value", 1.0),))
+    config = FactorConfig((FactorSpec("book_to_price", 1.0),))
     first = market_factors(
         market, "fixture", config, industry_history=history, neutralization=NeutralizationConfig("industry", None, "L1")
     )
@@ -268,8 +268,8 @@ def test_market_factors_uses_the_selected_level():
         market, "fixture", config, industry_history=history, neutralization=NeutralizationConfig("industry", None, "L2")
     )
     day = first["metadata"]["as_of"]
-    left = {row["instrument"]: row["scores"]["value"] for row in first["history"] if row["date"] == day}
-    right = {row["instrument"]: row["scores"]["value"] for row in second["history"] if row["date"] == day}
+    left = {row["instrument"]: row["scores"]["book_to_price"] for row in first["history"] if row["date"] == day}
+    right = {row["instrument"]: row["scores"]["book_to_price"] for row in second["history"] if row["date"] == day}
     assert left != right
     assert first["metadata"]["industry_data"]["level"] == "L1"
     assert second["metadata"]["industry_data"]["level"] == "L2"

@@ -79,4 +79,8 @@
 
 ### 因子覆盖说明
 
+`gross_margin_ttm` 的 `missing_policy=zero|neutral|exclude` 仅控制真正缺失，行业不适用固定赋50分。覆盖查询可传已选 `industry_version`，不传时不会借用后续新增的历史行业。响应分别返回 `available`（原始有效）、`not_applicable` 和 `unavailable`（真实缺失或交易/历史限制），三者之和为 `total`。不适用本身不触发黄色缺失图标。评分覆盖额外保存 `not_applicable/not_applicable_scored`；个股 `factor_details` 保存 `status`、`reason_label`、`company_type`、`revenue_ttm`、`operating_cost_ttm` 和 `components`（组成报告期、系数、类型、收入成本和可用时间）。不适用及缺失的原始值均为 null，依靠状态区分；其填补值不进入单因子评估。
+
 `POST /api/v1/research/factor-coverage` 为只读核验。请求包含股票池 `data`、回测首日 `start`、单因子 `factor`（名称及窗口参数，不传权重），可选 `financial_version` 固定财务版本。返回首个信号日、数据版本、独立可评分/不可评分数量、互斥主因统计、少量股票示例及口径说明。结果不代表全区间覆盖，也不计入其他因子或行业中性化的进一步限制。该接口不创建任务、下载或发布数据。
+
+盈利收益率 `factor.name=value` 接受 `missing_policy=zero|neutral|exclude`，默认 `zero`，研究、方案比较和覆盖查询使用同一字段。返回 `breakdown` 中的正数、零、负数数量；`available/unavailable` 表示真实值及交易条件的覆盖，不把填补评分计入真实有效数。评分响应的 `coverage.factors.<key>` 保存 `positive/zero/negative/imputed/missing_policy`；每只股票的 `factor_details.<key>` 保存TTM利润、市值、报告期、可用时间和 `imputed`。原始缺失值返回 null，零利润返回数值0。

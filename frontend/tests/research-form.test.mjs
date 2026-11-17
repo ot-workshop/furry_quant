@@ -78,3 +78,22 @@ test("drafts merge onto fresh defaults and drop stale values", () => {
   assert.equal(merged.topk, base.topk);
   assert.ok(merged.factors.every((row) => row.name !== "bogus"));
 });
+
+test("earnings yield missing policy survives request and draft round trips without changing weights", () => {
+  const opts = options();
+  const base = f.defaultForm(opts);
+  for (const missingPolicy of ["zero", "neutral", "exclude"]) {
+    const form = { ...base, factors: base.factors.map((row) => row.name === "value" ? { ...row, missingPolicy } : row) };
+    const built = f.buildRequest(form, opts);
+    assert.deepEqual(built.errors, []);
+    assert.equal(built.request.factors.find((row) => row.name === "value").missing_policy, missingPolicy);
+    assert.equal(built.request.factors.find((row) => row.name === "value").weight, .5);
+    const restored = f.formFromRequest(built.request, opts).form;
+    assert.equal(restored.factors.find((row) => row.name === "value").missingPolicy, missingPolicy);
+    assert.equal(f.mergeDraft(base, restored, opts).factors.find((row) => row.name === "value").missingPolicy, missingPolicy);
+  }
+  const noReports = { ...opts, financial_data: null, snapshots: opts.snapshots.map((row) => ({ ...row, financial_coverage: null })) };
+  const strict = { ...base, factors: base.factors.map((row) => row.name === "value" ? { ...row, missingPolicy: "exclude" } : row) };
+  assert.match(f.buildRequest(strict, noReports).errors.join(), /切换缺失处理/);
+  assert.deepEqual(f.buildRequest(base, noReports).errors, []);
+});
