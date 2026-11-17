@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from finance_quant.research.comparison import ComparisonSettings, comparison_markdown
+from finance_quant.research.neutralization import NeutralizationConfig, parse_neutralization
 from finance_quant.research.registry import FactorConfig, FactorSpec
 
 PERIODS = ("development", "validation", "test")
@@ -50,6 +52,15 @@ class Candidate:
     id: str
     name: str
     factors: FactorConfig
+    neutralization: NeutralizationConfig | None = None
+
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "factors": self.factors.as_list(),
+            **({"neutralization": self.neutralization.as_dict()} if self.neutralization is not None else {}),
+        }
 
 
 @dataclass(frozen=True)
@@ -57,16 +68,28 @@ class ExperimentPlan:
     name: str
     periods: tuple[Period, ...]
     candidates: tuple[Candidate, ...]
+    comparison: ComparisonSettings | None = None
 
     @classmethod
     def from_dict(cls, document: dict) -> ExperimentPlan:
-        _object(document, {"name", "periods", "candidates", "selection_metric"}, "Experiment plan")
+        has_comparison = "comparison" in document
+        _object(
+            document,
+            {"name", "periods", "candidates", "selection_metric"} | ({"comparison"} if has_comparison else set()),
+            "Experiment plan",
+        )
+        comparison = (
+            ComparisonSettings(**_object(document["comparison"], {"baseline_id", "sample_mode"}, "收益来源对照"))
+            if has_comparison
+            else None
+        )
         name = _name(document["name"], "Plan name")
-        if document["selection_metric"] != SELECTION_METRIC:
+        if document["selection_metric"] != ("none" if comparison else SELECTION_METRIC):
             raise ValueError(f"选择指标只能为{SELECTION_METRIC}")
-        periods_obj = _object(document["periods"], set(PERIODS), "Periods")
+        period_names = ("analysis",) if comparison else PERIODS
+        periods_obj = _object(document["periods"], set(period_names), "Periods")
         periods = []
-        for key in PERIODS:
+        for key in period_names:
             obj = _object(periods_obj[key], {"start", "end"}, key)
             period = Period(key, _date(obj["start"]), _date(obj["end"]))
             if period.start > period.end or (periods and period.start <= periods[-1].end):
@@ -77,7 +100,11 @@ class ExperimentPlan:
             raise ValueError("候选方案须为2至8个")
         candidates = []
         for item in candidate_list:
-            _object(item, {"id", "name", "factors"}, "Candidate")
+            _object(
+                item,
+                {"id", "name", "factors"} | ({"neutralization"} if comparison and "neutralization" in item else set()),
+                "Candidate",
+            )
             identifier = item["id"]
             if not isinstance(identifier, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,39}", identifier):
                 raise ValueError("候选方案编号只能使用小写字母、数字、连字符或下划线，并以字母开头")
@@ -92,19 +119,37 @@ class ExperimentPlan:
                 ):
                     raise ValueError("因子字段仅支持名称、权重与可选窗口参数")
                 specs.append(FactorSpec(**spec))
-            candidates.append(Candidate(identifier, _name(item["name"], "Candidate name"), FactorConfig(tuple(specs))))
+            candidates.append(
+                Candidate(
+                    identifier,
+                    _name(item["name"], "Candidate name"),
+                    FactorConfig(tuple(specs)),
+                    parse_neutralization(item["neutralization"]) if "neutralization" in item else None,
+                )
+            )
         if len({item.id for item in candidates}) != len(candidates):
             raise ValueError("候选方案编号不能重复")
-        if len({item.factors.scheme for item in candidates}) != len(candidates):
+        if len(
+            {
+                (
+                    item.factors.scheme,
+                    json.dumps(item.neutralization.as_dict(), sort_keys=True) if item.neutralization else None,
+                )
+                for item in candidates
+            }
+        ) != len(candidates):
             raise ValueError("候选方案的因子配置不能完全相同")
-        return cls(name, tuple(periods), tuple(sorted(candidates, key=lambda item: item.id)))
+        if comparison and comparison.baseline_id not in {item.id for item in candidates}:
+            raise ValueError("基准方案不存在")
+        return cls(name, tuple(periods), tuple(sorted(candidates, key=lambda item: item.id)), comparison)
 
     def as_dict(self) -> dict:
         return {
             "name": self.name,
-            "selection_metric": SELECTION_METRIC,
+            "selection_metric": "none" if self.comparison else SELECTION_METRIC,
             "periods": {p.name: {"start": p.start, "end": p.end} for p in self.periods},
-            "candidates": [{"id": c.id, "name": c.name, "factors": c.factors.as_list()} for c in self.candidates],
+            "candidates": [c.as_dict() for c in self.candidates],
+            **({"comparison": self.comparison.as_dict()} if self.comparison else {}),
         }
 
 
@@ -156,6 +201,8 @@ def select_candidate(rows: list[dict], candidate_ids: list[str]) -> dict:
 
 
 def experiment_markdown(result: dict) -> str:
+    if result["metadata"].get("validation_kind") == "return_comparison":
+        return comparison_markdown(result)
     """A portable record; separate accounts and prior data exposure stay explicit."""
     names = {c["id"]: c["name"] for c in result["plan"]["candidates"]}
     periods = {"development": "开发", "validation": "验证", "test": "测试"}

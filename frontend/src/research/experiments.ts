@@ -1,5 +1,9 @@
 import type { SelectionReference } from "../api/factorSelection";
-import type { ExperimentRequest, ResearchOptions } from "../api/research";
+import type {
+  ExperimentRequest,
+  ResearchOptions,
+  Neutralization,
+} from "../api/research";
 import {
   buildRequest,
   earliestStart,
@@ -12,6 +16,89 @@ export interface ExperimentCandidateDraft {
   id: string;
   name: string;
   factors: FactorRow[];
+  neutralization?: Neutralization;
+}
+
+export function buildReturnComparison(
+  form: FormState,
+  options: ResearchOptions,
+  candidates: ExperimentCandidateDraft[],
+  baseline: string,
+  common: boolean,
+) {
+  const errors: string[] = [];
+  if (candidates.length < 2 || candidates.length > 8)
+    errors.push("对照方案需为2–8个。");
+  if (!candidates.some((c) => c.id === baseline))
+    errors.push("请选择基准方案。");
+  const built = candidates.map((candidate) => {
+    const neutral = candidate.neutralization;
+    const state = {
+      ...form,
+      factors: candidate.factors,
+      ...(neutral
+        ? {
+            neutralization: neutral.mode,
+            industryLevel: neutral.industry_level ?? ("L1" as const),
+          }
+        : {}),
+    };
+    const result = buildRequest(state, options);
+    errors.push(...result.errors.map((e) => `${candidate.name}：${e}`));
+    if (!candidate.name.trim()) errors.push("请填写每个方案的名称。");
+    return result.request;
+  });
+  const fingerprints = built.filter(Boolean).map((r) =>
+    JSON.stringify({
+      factors: r!.factors,
+      neutralization: r!.neutralization ?? { mode: "off" },
+    }),
+  );
+  if (new Set(fingerprints).size !== fingerprints.length)
+    errors.push("对照方案的因子、权重和行业处理不能完全相同。");
+  const first = built[0];
+  const earliest =
+    candidates
+      .map((c) => earliestStart({ ...form, factors: c.factors }, options))
+      .filter((v): v is string => Boolean(v))
+      .sort()
+      .at(-1) ?? null;
+  const request: ExperimentRequest | null =
+    errors.length || !first
+      ? null
+      : {
+          name: form.name,
+          data: first.data,
+          evaluation: first.evaluation,
+          backtest: Object.fromEntries(
+            Object.entries(first.backtest).filter(
+              ([key]) => key !== "start" && key !== "end",
+            ),
+          ) as ExperimentRequest["backtest"],
+          ...(form.industryVersion || options.industry_data?.id
+            ? {
+                neutralization: {
+                  mode: "off",
+                  industry_version:
+                    form.industryVersion || options.industry_data?.id,
+                },
+              }
+            : {}),
+          plan: {
+            periods: { analysis: { start: form.start, end: form.end } },
+            comparison: {
+              baseline_id: baseline,
+              sample_mode: common ? "common" : "independent",
+            },
+            candidates: candidates.map((c, i) => ({
+              id: c.id,
+              name: c.name.trim(),
+              factors: built[i]!.factors,
+              neutralization: built[i]!.neutralization ?? { mode: "off" },
+            })),
+          },
+        };
+  return { request, errors: [...new Set(errors)], earliest };
 }
 
 export function buildExperiment(

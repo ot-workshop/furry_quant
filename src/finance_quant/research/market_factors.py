@@ -119,6 +119,7 @@ def market_factors(
     neutralization=None,
     industry_history=None,
     financials=None,
+    scoring_universe=None,
 ) -> dict:
     """Score a market frame.
 
@@ -160,6 +161,10 @@ def market_factors(
                 continue
             universe = dynamic_context["declared_universe"][day]
             section = section.loc[section.selection_member].copy()
+        if scoring_universe is not None:
+            members = scoring_universe.get(day, ())
+            section = section.loc[section.instrument.isin(members)].copy()
+            universe = len(members)
         eligible, assigned, daily_availability, industry_coverage = section_eligibility(
             section,
             date,
@@ -188,6 +193,8 @@ def market_factors(
             row_sink("diagnostics", diagnostics)
         section = section.loc[eligible]
         if len(section) < 2:
+            if scoring_universe is not None:
+                coverage[day] = {"eligible": 0, "universe": universe}
             for status in daily_availability["factors"].values():
                 if "imputed" in status:
                     status["imputed"] = 0
@@ -229,6 +236,8 @@ def market_factors(
             )
             coverage.setdefault(day, {"eligible": 0, "universe": declared})
     if not history_count:
+        if scoring_universe is not None:
+            raise ValueError("共同样本没有足够的有效评分，请扩大股票池或调整因子与缺失处理")
         if dynamic_context is not None and "universe_filters" in dynamic_context:
             raise ValueError(
                 "当前区间筛选后没有足够的有效股票：评分至少需要两只。请检查ST历史覆盖、上市天数、市值、成交额、行业和因子预热条件"

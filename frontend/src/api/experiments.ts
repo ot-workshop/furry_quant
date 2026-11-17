@@ -1,5 +1,9 @@
 import type { FactorSelection } from "./factorSelection";
-import type { ResearchRequest, Neutralization } from "./research";
+import type {
+  ResearchRequest,
+  Neutralization,
+  ExperimentCandidateInput,
+} from "./research";
 import { API_BASE, request } from "./http";
 
 export type ExperimentPeriodName = "development" | "validation" | "test";
@@ -12,7 +16,7 @@ export interface ExperimentMetadata {
   data_version: string;
   dataset_id?: string | null;
   is_synthetic: boolean;
-  selected_candidate: string;
+  selected_candidate: string | null;
   validation_kind: string;
 }
 
@@ -113,13 +117,58 @@ export interface ExperimentList {
   total: number;
 }
 
+export interface ReturnComparisonRow
+  extends Omit<ExperimentRow, "period" | "coverage"> {
+  period: "analysis";
+  sample: "independent" | "common";
+  metrics: ExperimentRow["metrics"] & {
+    volatility?: number;
+    sharpe_ratio?: number;
+    trade_count?: number;
+  };
+  coverage: {
+    signal_days: number;
+    scored_days: number;
+    min_scored: number;
+    max_scored: number;
+  };
+}
+export interface ReturnComparisonResult {
+  metadata: ExperimentMetadata;
+  plan: {
+    name: string;
+    comparison: { baseline_id: string; sample_mode: "common" | "independent" };
+    periods: { analysis: ExperimentPeriod };
+    candidates: ExperimentCandidateInput[];
+  };
+  shared_parameters: ExperimentSharedParameters;
+  rows: ReturnComparisonRow[];
+  selection: null;
+  comparisons: Array<{
+    candidate_id: string;
+    independent_difference: number;
+    common_difference: number | null;
+    sample_difference: number | null;
+  }>;
+  sample_days: Array<{
+    date: string;
+    pool: number;
+    common: number;
+    candidates: Record<string, number>;
+  }>;
+  limitations: string[];
+}
+
 const id = encodeURIComponent;
 
 export const experimentsApi = {
   list: (signal?: AbortSignal) =>
     request<ExperimentList>("/experiments", { signal }),
   get: (runId: string, signal?: AbortSignal) =>
-    request<ExperimentResult>(`/experiments/${id(runId)}`, { signal }),
+    request<ExperimentResult | ReturnComparisonResult>(
+      `/experiments/${id(runId)}`,
+      { signal },
+    ),
   downloadUrl: (runId: string) =>
     `${API_BASE}/experiments/${id(runId)}/download`,
   reportUrl: (runId: string) => `${API_BASE}/experiments/${id(runId)}/report`,

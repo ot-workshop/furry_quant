@@ -125,12 +125,9 @@ function RequestSummary({ task }: { task: ResearchTask }) {
           },
           {
             key: "periods",
-            label: "分段",
-            children: (["development", "validation", "test"] as const)
-              .map(
-                (key) =>
-                  `${request.plan.periods[key].start} ~ ${request.plan.periods[key].end}`,
-              )
+            label: request.plan.comparison ? "对照区间" : "分段",
+            children: Object.values(request.plan.periods)
+              .map((period) => `${period.start} ~ ${period.end}`)
               .join(" / "),
           },
           {
@@ -340,6 +337,19 @@ export function TaskTable({
               onClick={() => navigate(paths.newResearch(task.id))}
             >
               复用配置
+            </Button>
+          ) : null}
+          {!compact && task.kind === "research" ? (
+            <Button
+              size="small"
+              type="link"
+              onClick={() =>
+                navigate(
+                  `${paths.newExperiment()}?mode=comparison&from=${encodeURIComponent(task.id)}`,
+                )
+              }
+            >
+              收益来源对照
             </Button>
           ) : null}
         </Space>

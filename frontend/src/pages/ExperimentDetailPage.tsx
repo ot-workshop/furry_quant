@@ -1,4 +1,5 @@
 import { poolLabel } from "../utils/format";
+import ReturnComparisonDetail from "./ReturnComparisonDetail";
 import {
   Alert,
   Button,
@@ -69,6 +70,8 @@ export default function ExperimentDetailPage({ id }: { id: string }) {
     ) : (
       <Loading rows={10} />
     );
+  if ("comparisons" in detail.data)
+    return <ReturnComparisonDetail result={detail.data} />;
   return <ExperimentView result={detail.data} />;
 }
 

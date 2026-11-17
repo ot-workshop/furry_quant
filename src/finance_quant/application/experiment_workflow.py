@@ -10,6 +10,7 @@ from pathlib import Path
 
 from filelock import FileLock, Timeout
 
+from finance_quant.application.comparison_workflow import run_comparison
 from finance_quant.application.evaluation_workflow import evaluate_configured
 from finance_quant.application.experiment_inputs import dynamic_preflight
 from finance_quant.application.experiment_inputs import preflight as _preflight
@@ -50,6 +51,15 @@ def run_experiment(
     """
     # Round-trip even for in-process callers; dataclass construction cannot bypass validation.
     plan = ExperimentPlan.from_dict(plan.as_dict())
+    if plan.comparison:
+        return run_comparison(
+            config,
+            plan,
+            result_store=result_store,
+            progress=progress,
+            dynamic_request=dynamic_request,
+            expected_sha=expected_sha,
+        )
     candidate_coverage = None
     if dynamic_request is None:
         market, _, calendar, manifest = load_configured_snapshot(config)

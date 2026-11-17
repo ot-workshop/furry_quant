@@ -1,7 +1,6 @@
 import { query, request } from "./http";
 import type {
   ExperimentCandidateInput,
-  ExperimentRequest,
   FinancialCoverage,
   ResearchOptions,
   ResearchRequest,
@@ -65,7 +64,10 @@ export interface FactorSelection {
 export interface SelectionDraft {
   research: ResearchRequest;
   candidates: ExperimentCandidateInput[];
-  periods: ExperimentRequest["plan"]["periods"];
+  periods: Record<
+    "development" | "validation" | "test",
+    { start: string; end: string }
+  >;
   reference: SelectionReference;
   selection: FactorSelection;
   warnings: string[];

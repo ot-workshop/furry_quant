@@ -216,6 +216,7 @@ export interface ExperimentCandidateInput {
   id: string;
   name: string;
   factors: ResearchFactor[];
+  neutralization?: Neutralization;
 }
 
 export interface ExperimentRequest {
@@ -223,13 +224,23 @@ export interface ExperimentRequest {
   name: string;
   data: ResearchRequest["data"];
   backtest: Omit<ResearchBacktest, "start" | "end">;
-  plan: {
-    periods: Record<
-      "development" | "validation" | "test",
-      { start: string; end: string }
-    >;
-    candidates: ExperimentCandidateInput[];
-  };
+  plan:
+    | {
+        comparison?: undefined;
+        periods: Record<
+          "development" | "validation" | "test",
+          { start: string; end: string }
+        >;
+        candidates: ExperimentCandidateInput[];
+      }
+    | {
+        comparison: {
+          baseline_id: string;
+          sample_mode: "common" | "independent";
+        };
+        periods: { analysis: { start: string; end: string } };
+        candidates: ExperimentCandidateInput[];
+      };
   evaluation: ResearchEvaluation;
   neutralization?: Neutralization;
 }
@@ -242,7 +253,7 @@ export interface ResearchResult {
   backtest_run_id?: string;
   evaluation_run_id?: string;
   experiment_run_id?: string;
-  selected_candidate?: string;
+  selected_candidate?: string | null;
   reused?: boolean;
 }
 

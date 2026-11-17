@@ -83,6 +83,10 @@ def filter_input(inputs, root, manifest, filters, start, end, *, industry=None, 
 
 def load_snapshot_input(root, start, end, lookback, *, filters, industry=None, codes=None):
     market, benchmark, calendar, manifest = load_market(Path(root))
+    if "is_suspended" not in market:
+        # Legacy snapshots have no status flag. Zero-volume rows are excluded
+        # conservatively; they are not evidence of a confirmed suspension.
+        market["is_suspended"] = market.volume.le(0)
     if codes is not None:
         if not set(codes).issubset(manifest["codes"]):
             raise ValueError("所选股票不在快照中")

@@ -77,7 +77,13 @@
 - 这两个 GET 不发布结果、不下载数据。任务执行前再次核对来源摘要，完成后在实验元数据和报告中保存筛选证据。
 
 
-### 因子覆盖说明
+### 收益来源对照
+
+使用相同的 `POST /api/v1/research/experiments` 队列入口。`plan.comparison` 包含 `baseline_id` 和 `sample_mode`（`common` 或 `independent`），此时 `plan.periods` 只有 `analysis: {start, end}`。各候选额外接受 `neutralization`；所有方案仍共用行情、财务、行业版本、股票池规则和交易参数。普通三段比较的请求与结果结构不变，不能把MILP选优来源混入历史收益对照。
+
+结果仍位于 `/api/v1/experiments/{id}`，元数据 `validation_kind=return_comparison`，`selection=null`。`rows` 按 `candidate_id/sample` 记录各次独立回测，`comparisons` 保存独立样本收益差、共同样本收益差和两者差额，`sample_days` 保存逐日基础池、各候选可评分数及共同样本数。共同样本完整股票可通过相应 `factor_run_id` 的评分接口按日查询。共同样本的来源摘要进入回测与结果标识；旧文件不覆写。报告与JSON导出继续使用实验结果的既有下载入口。
+
+### 因子覆盖查询
 
 `gross_margin_ttm` 的 `missing_policy=zero|neutral|exclude` 仅控制真正缺失，行业不适用固定赋50分。覆盖查询可传已选 `industry_version`，不传时不会借用后续新增的历史行业。响应分别返回 `available`（原始有效）、`not_applicable` 和 `unavailable`（真实缺失或交易/历史限制），三者之和为 `total`。不适用本身不触发黄色缺失图标。评分覆盖额外保存 `not_applicable/not_applicable_scored`；个股 `factor_details` 保存 `status`、`reason_label`、`company_type`、`revenue_ttm`、`operating_cost_ttm` 和 `components`（组成报告期、系数、类型、收入成本和可用时间）。不适用及缺失的原始值均为 null，依靠状态区分；其填补值不进入单因子评估。
 

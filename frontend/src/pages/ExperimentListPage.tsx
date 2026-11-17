@@ -12,7 +12,7 @@ export default function ExperimentListPage() {
     <>
       <PageHeader
         title="方案比较"
-        subtitle="把历史分成开发、验证、测试三段：只按验证段选方案，测试段只复核被选中的方案"
+        subtitle="分段验证因子方案，或比较因子、行业处理与样本变化对收益的影响"
         extra={
           <Button
             type="primary"
@@ -77,7 +77,17 @@ export default function ExperimentListPage() {
                     </div>
                   ),
                 },
-                { title: "选定方案", dataIndex: "selected_candidate" },
+                {
+                  title: "类型",
+                  render: (_, row) =>
+                    row.validation_kind === "return_comparison"
+                      ? "收益来源对照"
+                      : "分段比较",
+                },
+                {
+                  title: "选定方案",
+                  render: (_, row) => row.selected_candidate ?? "—",
+                },
                 {
                   title: "数据版本",
                   dataIndex: "data_version",

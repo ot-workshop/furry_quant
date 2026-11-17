@@ -1,5 +1,6 @@
-import { FactorDataHint } from "../components/FactorDataHint";
-import { FactorMissingPolicy } from "../components/FactorMissingPolicy";
+import { CandidateEditor } from "../components/CandidateEditor";
+import ReturnComparisonNew from "./ReturnComparisonNew";
+import type { ExperimentCandidateDraft as Candidate } from "../research/experiments";
 import {
   selectionApi,
   parseSelectionReference,
@@ -18,18 +19,12 @@ import {
   DatePicker,
   Flex,
   Form,
-  Input,
-  InputNumber,
   List,
-  Select,
   Space,
   Typography,
+  Tabs,
 } from "antd";
-import {
-  DeleteOutlined,
-  PlusOutlined,
-  RocketOutlined,
-} from "@ant-design/icons";
+import { PlusOutlined, RocketOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { describeError, newIdempotencyKey } from "../api/http";
 import {
@@ -37,6 +32,7 @@ import {
   type FactorDefinition,
   type FinancialCoverage,
   type ResearchOptions,
+  type ResearchRequest,
 } from "../api/research";
 import { navigate, paths } from "../app/routes";
 import { EmptyState, ErrorState, Loading, PageHeader } from "../components/ui";
@@ -44,12 +40,10 @@ import { useApiResource } from "../hooks/useApiResource";
 import {
   defaultForm,
   formFromRequest,
-  FAMILY_ORDER,
   factorAvailable,
   factorRows,
   financialCoverage,
   tradingDates,
-  type FactorRow,
   type FormState,
 } from "../research/form";
 import {
@@ -59,12 +53,6 @@ import {
   EvaluationSection,
   UniverseFilters,
 } from "../research/sections";
-
-interface Candidate {
-  id: string;
-  name: string;
-  factors: FactorRow[];
-}
 
 function candidate(
   index: number,
@@ -96,21 +84,27 @@ export default function ExperimentNewPage({
 }: {
   selection?: string | null;
 }) {
+  const fromTask = new URLSearchParams(window.location.search).get("from");
   const resource = useApiResource(
     async (signal) => {
       const reference = selection ? parseSelectionReference(selection) : null;
-      const [options, seed] = await Promise.all([
+      const [options, seed, baseline] = await Promise.all([
         researchApi.options(signal),
         reference
           ? selectionApi.draft(reference, signal)
           : Promise.resolve(null),
+        fromTask ? researchApi.task(fromTask, signal) : Promise.resolve(null),
       ]);
       return {
         options: seed ? selectionOptions(options, seed) : options,
         seed,
+        baseline:
+          baseline?.kind === "research"
+            ? (baseline.request as ResearchRequest)
+            : null,
       };
     },
-    [selection],
+    [selection, fromTask],
   );
   const options = { ...resource, data: resource.data?.options ?? null };
   if (options.data === null)
@@ -153,11 +147,34 @@ export default function ExperimentNewPage({
         </Card>
       </>
     );
-  return (
+  const splitForm = (
     <ExperimentForm
       key={selection ?? "manual"}
       options={options.data}
       seed={resource.data?.seed ?? null}
+    />
+  );
+  if (selection) return splitForm;
+  return (
+    <Tabs
+      defaultActiveKey={
+        new URLSearchParams(window.location.search).get("mode") === "comparison"
+          ? "comparison"
+          : "split"
+      }
+      items={[
+        { key: "split", label: "分段比较", children: splitForm },
+        {
+          key: "comparison",
+          label: "收益来源对照",
+          children: (
+            <ReturnComparisonNew
+              options={options.data}
+              research={resource.data?.baseline ?? null}
+            />
+          ),
+        },
+      ]}
     />
   );
 }
@@ -418,174 +435,5 @@ function ExperimentForm({
         </div>
       </div>
     </>
-  );
-}
-
-function CandidateEditor({
-  value,
-  definitions,
-  form,
-  options,
-  coverage,
-  removable,
-  onChange,
-  onRemove,
-}: {
-  value: Candidate;
-  definitions: FactorDefinition[];
-  form: FormState;
-  options: ResearchOptions;
-  coverage: FinancialCoverage | null;
-  removable: boolean;
-  onChange: (value: Candidate) => void;
-  onRemove: () => void;
-}) {
-  const enabled = value.factors.filter((row) => row.enabled);
-  const setRow = (rowKey: string, patch: Partial<FactorRow>) =>
-    onChange({
-      ...value,
-      factors: value.factors.map((row) =>
-        row.key === rowKey ? { ...row, ...patch } : row,
-      ),
-    });
-  const groups = useMemo(() => {
-    const byFamily = new Map<string, FactorDefinition[]>();
-    for (const definition of definitions) {
-      const family = definition.family ?? "value";
-      byFamily.set(family, [...(byFamily.get(family) ?? []), definition]);
-    }
-    return [...byFamily.entries()]
-      .sort(
-        ([left], [right]) =>
-          FAMILY_ORDER.indexOf(left as (typeof FAMILY_ORDER)[number]) -
-          FAMILY_ORDER.indexOf(right as (typeof FAMILY_ORDER)[number]),
-      )
-      .map(([family, items]) => ({
-        family,
-        label: items[0]?.family_label ?? family,
-        options: items.map((definition) => ({
-          value: definition.name,
-          label: definition.label,
-          disabled: !factorAvailable(definition, coverage),
-        })),
-      }));
-  }, [definitions, coverage]);
-  return (
-    <Card
-      size="small"
-      type="inner"
-      title={
-        <Input
-          value={value.name}
-          variant="borderless"
-          maxLength={80}
-          onChange={(e) => onChange({ ...value, name: e.target.value })}
-          style={{ fontWeight: 600, paddingInline: 0 }}
-        />
-      }
-      extra={
-        removable ? (
-          <Button
-            type="text"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={onRemove}
-            aria-label="删除方案"
-          />
-        ) : null
-      }
-    >
-      <Select
-        mode="multiple"
-        value={enabled.map((row) => row.key)}
-        onChange={(keys: string[]) =>
-          onChange({
-            ...value,
-            factors: value.factors.map((row) => ({
-              ...row,
-              enabled: keys.includes(row.key),
-            })),
-          })
-        }
-        options={groups}
-        optionFilterProp="label"
-        optionRender={(option) => {
-          const definition = definitions.find(
-            (item) => item.name === option.value,
-          );
-          return (
-            <Space>
-              {option.label}
-              {definition ? (
-                <FactorDataHint
-                  definition={definition}
-                  form={form}
-                  options={options}
-                  row={value.factors.find(
-                    (row) => row.name === definition.name,
-                  )}
-                />
-              ) : null}
-            </Space>
-          );
-        }}
-        style={{ width: "100%" }}
-        placeholder="选择因子"
-      />
-      {enabled.map((row) => {
-        const definition = definitions.find((d) => d.name === row.name);
-        return (
-          <Flex
-            key={row.key}
-            gap={12}
-            align="center"
-            style={{ marginTop: 8 }}
-            wrap
-          >
-            <Space style={{ width: 145 }}>
-              <Typography.Text>{definition?.label ?? row.name}</Typography.Text>
-              {definition ? (
-                <FactorDataHint
-                  definition={definition}
-                  form={form}
-                  options={options}
-                  row={row}
-                />
-              ) : null}
-            </Space>
-            <InputNumber
-              size="small"
-              min={0}
-              max={100}
-              value={row.weight}
-              suffix="%"
-              style={{ width: 110 }}
-              onChange={(v) => setRow(row.key, { weight: Number(v ?? 0) })}
-            />
-            {["value", "gross_margin_ttm"].includes(row.name) ? (
-              <FactorMissingPolicy
-                label={definition?.label ?? row.name}
-                value={row.missingPolicy}
-                onChange={(missingPolicy) => setRow(row.key, { missingPolicy })}
-              />
-            ) : null}
-            {definition?.default_window != null ? (
-              <InputNumber
-                size="small"
-                min={2}
-                max={252}
-                value={row.window}
-                prefix="窗口"
-                suffix="日"
-                style={{ width: 130 }}
-                onChange={(v) =>
-                  setRow(row.key, { window: v === null ? null : Number(v) })
-                }
-              />
-            ) : null}
-          </Flex>
-        );
-      })}
-    </Card>
   );
 }

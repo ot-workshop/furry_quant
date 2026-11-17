@@ -37,7 +37,7 @@ def load_research_input(request, warehouse_root, config, backtest, *, expected_s
     """Load one immutable pool version with causal membership and factor prehistory."""
     market_mode = request.get("data", {}).get("mode") == "market_warehouse"
     data = request.get("data", {})
-    filtered = market_mode or "filters" in data
+    filtered = market_mode or "filters" in data or data.get("mode") == "snapshot"
     if filtered:
         filters = (
             parse_filters(data["filters"])
@@ -57,7 +57,7 @@ def load_research_input(request, warehouse_root, config, backtest, *, expected_s
             expected_sha=expected_sha,
             codes=data.get("codes"),
         )
-    elif data.get("mode") == "snapshot" and filtered:
+    elif data.get("mode") == "snapshot":
         market, benchmark, sessions, meta = load_snapshot_input(
             warehouse_root,
             backtest.start,
@@ -97,6 +97,7 @@ def run_historical_research(
     stage=None,
     result_store=None,
     financials=None,
+    scoring_universe=None,
 ):
     stage = stage or (lambda *args: None)
     runs_root = Path(runs_root)
@@ -111,7 +112,7 @@ def run_historical_research(
     stage("prepare", "校验历史数据仓、每日成分及股票生命周期", 0)
     data = request.get("data", {})
     market_mode = data.get("mode") == "market_warehouse"
-    filtered = market_mode or "filters" in data
+    filtered = market_mode or "filters" in data or data.get("mode") == "snapshot"
     market, benchmark, sessions, meta = load_research_input(
         request, warehouse_root, config, backtest, expected_sha=expected_sha
     )
@@ -127,6 +128,8 @@ def run_historical_research(
         **financial_provenance(financials, config),
     }
     provenance["neutralization"] = neutralization.as_dict()
+    if scoring_universe is not None:
+        provenance["scoring_sample"] = {"policy": "signal_date_common_v1", "sha256": fingerprint(scoring_universe)}
     if filtered:
         provenance["universe_filters"] = meta["universe_filters"]
         provenance["pool_kind"] = meta["universe_kind"]
@@ -150,6 +153,7 @@ def run_historical_research(
                 neutralization=neutralization,
                 industry_history=industry,
                 financials=fundamentals_for(financials, config, market),
+                scoring_universe=scoring_universe,
             )
             factors["tables"] = tables.finish()
         factors["metadata"].update(
