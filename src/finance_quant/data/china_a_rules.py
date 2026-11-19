@@ -17,6 +17,8 @@ def board(instrument):
         return "chinext"
     if instrument.startswith("SH60") or instrument.startswith("SZ00"):
         return "main"
+    if instrument.startswith("SH689"):
+        raise ValueError("科创板存托凭证（CDR）行情可下载归档，当前暂不支持回测交易：" + instrument)
     raise ValueError("动态回测尚不支持该证券板块：" + instrument)
 
 
@@ -40,7 +42,9 @@ def round_shares(amount, factor, instrument, day=None):
 
 def ipo_no_band_mask(instrument, listed, dates, sessions):
     """The dated IPO rule used by both acquisition and execution, on exchange sessions."""
-    kind = board(instrument)
+    # STAR CDRs share the IPO price-band rule. This does not enable their order
+    # quantities or financial units: board() deliberately remains execution-only.
+    kind = "star" if instrument.startswith("SH689") else board(instrument)
     listed = pd.Timestamp(listed)
     sessions = pd.DatetimeIndex(sessions)
     positions = sessions.get_indexer(pd.DatetimeIndex(dates))
@@ -62,6 +66,7 @@ def apply_execution_rules(frame, sessions):
     out = frame.copy()
     out["has_daily_price_limit"] = True
     for instrument, part in out.groupby("instrument"):
+        board(instrument)  # Execution support is narrower than archival price-band support.
         listed = pd.Timestamp(part.list_date.iloc[0])
         no_band = ipo_no_band_mask(instrument, listed, part.date, sessions)
         reviewed = part.get("reviewed_unbounded_session", pd.Series(False, index=part.index)).fillna(False).to_numpy()

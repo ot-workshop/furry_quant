@@ -5,15 +5,17 @@ import pandas as pd
 import pytest
 from test_index_download import setup_plan
 from test_joint_data import Primary, Secondary, market_frame
-from test_shared_market import quote_calls, spec
+from test_shared_market import SharedProvider, quote_calls, spec
 from test_shared_market import workspace as shared_workspace
 
 from finance_quant.application import market_download as downloads
 from finance_quant.application import quote_capture
 from finance_quant.application.halt_history import find_halt_anchor
 from finance_quant.data import shared_market as shared
+from finance_quant.data.market_universe import load_market_input, market_roots
 from finance_quant.data.network_budget import DownloadPaused
 from finance_quant.data.validation_errors import MarketDataError
+from finance_quant.research.universe import UniverseFilters
 from support import warehouse
 
 
@@ -204,3 +206,78 @@ def test_old_partial_checkpoints_skip_successful_refreshes_and_retry_only_failed
     added = quote_calls(provider)[len(before) :]
     assert added and all(params["ts_code"] == "000001.SZ" for _, params in added)
     assert set(resumed["completed_codes"]) == {"600000.SH", "000001.SZ"}
+
+
+class CdrProvider(SharedProvider):
+    def query(self, api, **params):
+        frame = super().query(api, **params)
+        if api == "stock_basic" and params["list_status"] == "L":
+            return pd.concat(
+                [
+                    frame,
+                    pd.DataFrame(
+                        [
+                            {
+                                "ts_code": "689009.SH",
+                                "name": "测试CDR",
+                                "industry": "fixture",
+                                "list_date": "20250106",
+                                "delist_date": "",
+                                "list_status": "L",
+                            }
+                        ]
+                    ),
+                ],
+                ignore_index=True,
+            )
+        if params.get("ts_code") == "689009.SH":
+            if api == "daily":
+                frame.loc[frame.trade_date.ge("20250108"), ["open", "high", "low", "close"]] *= 2
+                frame.loc[frame.trade_date.gt("20250108"), "pre_close"] *= 2
+                frame.loc[frame.trade_date.eq("20250108"), "pct_chg"] = 100
+            elif api == "stk_limit":
+                frame.loc[frame.trade_date.between("20250106", "20250110"), ["up_limit", "down_limit"]] = float("nan")
+        return frame
+
+
+def test_cdr_archival_resumes_the_old_plan_without_enabling_backtest_execution(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    root = downloads.shared_root(data)
+    provider = CdrProvider()
+    monkeypatch.setattr(quote_capture, "sample_code", lambda code: False)
+    plan = downloads.prepare(root, spec("all_market", codes=[]), provider=provider)
+    frozen = (root / "plans" / plan["id"] / "plan.json").read_bytes()
+    original = downloads.trading_events
+
+    def legacy_events(code, *args):
+        if code == "689009.SH":
+            raise ValueError("动态回测尚不支持该证券板块：SH689009")
+        return original(code, *args)
+
+    monkeypatch.setattr(downloads, "trading_events", legacy_events)
+    first = downloads.run(root, plan["id"], provider=provider, secondary=Secondary(error=True))
+    assert first["status"] == "partial" and first["completed"] == 3
+    assert first["failures"][0]["code"] == "689009.SH"
+    cached = {path: shared.digest(path) for path in root.glob("captures/*/assets/*/market.parquet")}
+    before = quote_calls(provider).copy()
+    monkeypatch.setattr(downloads, "trading_events", original)
+    result = downloads.run(root, plan["id"], provider=provider, secondary=Secondary(error=True))
+    assert result["status"] == "complete" and result["completed"] == 4, result
+    assert (root / "plans" / plan["id"] / "plan.json").read_bytes() == frozen
+    assert cached == {path: shared.digest(path) for path in cached}
+    added = quote_calls(provider)[len(before) :]
+    assert added and all(params["ts_code"] == "689009.SH" for _, params in added)
+    sessions = pd.bdate_range("2025-01-06", "2025-02-28")
+    cdr, _ = shared.read_asset(root, "689009.SH", sessions, plan["provider_id"])
+    assert cdr.loc[cdr.date.eq("2025-01-08"), "close"].item() == 20
+    assert cdr.reviewed_unbounded_session.iloc[:5].all()
+    assert any(repair["action"] == "archived_only" and repair["code"] == "689009.SH" for repair in result["repairs"])
+    [view] = market_roots(data)
+    market, _, _, _ = load_market_input(
+        view, "2025-01-10", "2025-02-28", 2, filters=UniverseFilters(min_listing_days=0)
+    )
+    assert set(market.instrument) == {"SH600000", "SH600519", "SZ000001"}
+    before = quote_calls(provider).copy()
+    resumed = downloads.run(root, plan["id"], provider=provider, secondary=Secondary(error=True))
+    assert resumed["status"] == "complete" and quote_calls(provider) == before
+    assert resumed["repairs"] == result["repairs"]

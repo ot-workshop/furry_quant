@@ -479,6 +479,17 @@ def _record_repair(progress, record):
 
 def _record_validation_actions(progress, code, receipt):
     quality = receipt.get("quality", {})
+    if code.startswith("689") and code.endswith(".SH"):
+        _record_repair(
+            progress,
+            {
+                "code": code,
+                "action": "archived_only",
+                "reason": "科创板存托凭证（CDR）行情已归档；交易及财务口径尚未适配，暂不支持用于回测。",
+                "source": "tushare:daily",
+                "validation_level": receipt.get("validation_level"),
+            },
+        )
     for event in quality.get("verified_event_moves", []):
         labels = {
             "ipo_first_five_sessions": "上市前五个交易日",

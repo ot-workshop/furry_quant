@@ -6,7 +6,13 @@ import pytest
 from test_joint_data import Secondary, bundle, market_frame
 
 from finance_quant.application.quote_quality import _secondary_evidence, primary_events, primary_valid
-from finance_quant.data.china_a_rules import ipo_no_band_mask
+from finance_quant.data.china_a_rules import (
+    apply_execution_rules,
+    board,
+    ipo_no_band_mask,
+    max_order_shares,
+    round_shares,
+)
 from finance_quant.data.managed import coverage_report
 from finance_quant.data.quality import adjustment_discontinuities, published_adjustment_discontinuities
 from finance_quant.data.reviewed_events import REVIEWED_EVENTS
@@ -40,6 +46,7 @@ def history(code="600000.SH", day="20230615", announced="20230607", name="退市
         ("688159.SH", "2020-01-23"),
         ("300937.SZ", "2021-01-27"),
         ("603273.SH", "2023-10-23"),
+        ("689009.SH", "2020-10-29"),
     ],
 )
 def test_ipo_candidates_share_execution_rule_and_do_not_include_sixth_session(code, listed):
@@ -283,3 +290,27 @@ def test_secondary_leading_halt_requests_history_expansion_instead_of_quarantini
             SecondaryBundle(item),
         )
     assert not (tmp_path / "quarantine/asset.json").exists()
+
+
+@pytest.mark.parametrize("instrument", ["SH689009", "SH689001", "SH689999"])
+def test_cdr_quote_rules_do_not_enable_equity_execution(instrument):
+    sessions = pd.bdate_range("2020-10-29", periods=6)
+    assert ipo_no_band_mask(instrument, sessions[0], sessions, sessions).tolist() == [True] * 5 + [False]
+    with pytest.raises(ValueError, match="CDR.*归档.*暂不支持回测"):
+        board(instrument)
+    with pytest.raises(ValueError, match="CDR"):
+        max_order_shares(instrument)
+    with pytest.raises(ValueError, match="CDR"):
+        round_shares(200, 1, instrument)
+    frame = pd.DataFrame(
+        {
+            "instrument": [instrument],
+            "list_date": [sessions[0]],
+            "date": [sessions[0]],
+            "up_limit": [11.0],
+            "down_limit": [9.0],
+            "execution_available": [True],
+        }
+    )
+    with pytest.raises(ValueError, match="CDR"):
+        apply_execution_rules(frame, sessions)
