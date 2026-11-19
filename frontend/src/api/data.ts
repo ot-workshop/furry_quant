@@ -48,7 +48,37 @@ export interface MarketJob {
   message?: string;
   version_id?: string;
   updated_at?: string;
-  failures: Array<{ code: string; type?: string; reason: string }>;
+  failures: MarketFailure[];
+  repairs?: MarketRepair[];
+}
+
+export interface MarketFailure {
+  code: string;
+  type?: string;
+  reason: string;
+  category?: string;
+  dates?: string[];
+  date_count?: number;
+  action?: string;
+  evidence?: {
+    quarantine_file?: string;
+    capture?: string;
+    issues?: Array<{ rule: string; message: string; dates: string[] }>;
+  };
+}
+
+export interface MarketRepair {
+  code: string;
+  action: string;
+  reason: string;
+  dates?: string[];
+  start?: string;
+  end?: string;
+  detail?: string;
+  source?: string;
+  known_by?: string;
+  evidence_basis?: string;
+  validation_level?: string;
 }
 
 export interface MarketVersion {
@@ -350,7 +380,15 @@ export interface UpdateJob {
   message?: string;
   steps: Record<
     string,
-    { status: string; message?: string; result?: { version_id?: string } }
+    {
+      status: string;
+      message?: string;
+      result?: {
+        version_id?: string;
+        failures?: MarketFailure[];
+        repairs?: MarketRepair[];
+      };
+    }
   >;
 }
 export interface UpdateSchedule {

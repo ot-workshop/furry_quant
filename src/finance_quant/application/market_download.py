@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from filelock import FileLock, Timeout
 
+from finance_quant.application.halt_history import extend_calendar, find_halt_anchor
 from finance_quant.application.quote_capture import download_asset, validation_signature
 from finance_quant.application.update_service import publish_references, refresh_dates
 from finance_quant.checksums import sha256_text
@@ -29,6 +30,8 @@ from finance_quant.data.providers import TushareProvider, TushareSettings, norma
 from finance_quant.data.providers.baostock import BaoStockProvider
 from finance_quant.data.security_history import normalize_names
 from finance_quant.data.suspensions import LeadingHaltError
+from finance_quant.data.trading_events import trading_events
+from finance_quant.data.validation_errors import MarketDataError, failure_record
 
 POLICY = "shared-incremental-v1"
 INDEX_SIZE = 300
@@ -414,10 +417,12 @@ class SegmentFetch:
             except LeadingHaltError:
                 if first - extra <= 0:
                     break
-        raise ValueError(
-            f"{task['code']}在 {pd.Timestamp(start):%Y-%m-%d} 处于停牌，"
-            f"向前补查 {LEADING_HALT_LOOKBACK[-1]} 个交易日仍未找到停牌前报价；请把下载开始日期提前后重新预览"
+        anchor, evidence = find_halt_anchor(
+            self.root, self.provider, task["code"], start, task.get("list_date", "1990-01-01")
         )
+        self.calendar = extend_calendar(self.root, self.provider, self.calendar, anchor)
+        self.sessions = pd.DatetimeIndex(self.calendar.loc[self.calendar.is_open, "date"])
+        return self._fetch({**task, "halt_anchor": evidence}, anchor, pd.Timestamp(end), suffix, job_prefix)
 
     def _fetch(self, task, left, right, suffix, job_prefix):
         plan = self.plan
@@ -460,8 +465,64 @@ class SegmentFetch:
             record = download_asset(capture, segment, self.calendar, intervals, fetch, self.secondary)
             catalog.finish(job, "complete", {"code": task["code"]})
             return record, key, capture
+        except MarketDataError as error:
+            error.evidence = {**error.evidence, "capture": str(capture.relative_to(self.root)).replace("\\", "/")}
+            raise
         finally:
             catalog.close()
+
+
+def _record_repair(progress, record):
+    if record not in progress["repairs"]:
+        progress["repairs"].append(record)
+
+
+def _record_validation_actions(progress, code, receipt):
+    quality = receipt.get("quality", {})
+    for event in quality.get("verified_event_moves", []):
+        labels = {
+            "ipo_first_five_sessions": "上市前五个交易日",
+            "delisting_consolidation_first_session": "退市整理首日",
+            "listing_resumption": "恢复上市首日",
+        }
+        _record_repair(
+            progress,
+            {
+                "code": code,
+                "action": "verified_unbounded_session",
+                "dates": [event["date"]],
+                "reason": f"{labels.get(event['event'], event['event'])}：按历史事件及适用规则识别，价格与收益一致性检查通过，原始价格未改动。",
+                "source": event["source"],
+                "known_by": event["known_by"],
+                "evidence_basis": event.get("evidence_basis", "reviewed_public_notice"),
+                "validation_level": receipt.get("validation_level"),
+            },
+        )
+    if quality.get("halt_anchor"):
+        anchor = quality["halt_anchor"]
+        _record_repair(
+            progress,
+            {
+                "code": code,
+                "action": "located_pre_halt_quote",
+                "dates": [anchor["date"]],
+                "reason": "已找到停牌前的有效成交报价，仅使用过去价格估值停牌期；未更改研究起点。",
+                "source": anchor["source"],
+            },
+        )
+    report = receipt.get("cross_validation", {})
+    if report.get("status") == "unavailable":
+        _record_repair(
+            progress,
+            {
+                "code": code,
+                "action": "secondary_unavailable",
+                "dates": report.get("validation_dates", []),
+                "reason": report.get("action", "官方行情检查通过，抽样核验不可用，保留单源检查通过。"),
+                "detail": report.get("reason", ""),
+                "validation_level": receipt.get("validation_level"),
+            },
+        )
 
 
 def run(root, identifier, *, provider=None, secondary=None):
@@ -472,15 +533,26 @@ def run(root, identifier, *, provider=None, secondary=None):
     secondary = secondary or BaoStockProvider(root / "secondary", timeout=90)
     calendar = pd.read_parquet(directory / "reference/calendar.parquet")
     sessions = pd.DatetimeIndex(calendar.loc[calendar.is_open, "date"])
+    instruments = pd.read_parquet(directory / "reference/instruments.parquet").set_index("ts_code")
+    previous_path = directory / "progress.json"
+    previous = _json(previous_path) if previous_path.exists() else {}
+    completed_before = set(previous.get("completed_codes", []))
+    if previous and "completed_codes" not in previous:
+        # Older checkpoints recorded counts plus failures in deterministic task order.
+        failed_codes = {item["code"] for item in previous.get("failures", [])}
+        processed = previous.get("completed", 0) + len(failed_codes)
+        completed_before = {task["code"] for task in plan["tasks"][:processed]} - failed_codes
     progress = {
         "id": identifier,
         "spec": plan["spec"],
         "status": "running",
         "total": len(plan["tasks"]),
-        "completed": 0,
+        "completed": len(completed_before),
+        "completed_codes": sorted(completed_before),
         "failures": [],
         "reused_rows": 0,
         "downloaded_rows": 0,
+        "repairs": previous.get("repairs", []),
         "updated_at": utc_now(),
     }
 
@@ -510,12 +582,24 @@ def run(root, identifier, *, provider=None, secondary=None):
                                 fields="ts_code,name,start_date,end_date,ann_date,change_reason",
                             )
                             _save(names_path, normalize_names(raw_names, task["code"]))
+                    history_path = directory / "name-history" / f"{task['code']}.parquet"
+                    history = pd.read_parquet(history_path) if history_path.exists() else pd.DataFrame()
+                    listed = pd.Timestamp(instruments.loc[task["code"], "list_date"])
+                    task = {
+                        **task,
+                        "list_date": listed.strftime("%Y-%m-%d"),
+                        "trading_events": trading_events(task["code"], listed, history, sessions),
+                    }
                     expected = sessions[
                         (sessions >= pd.Timestamp(task["start"])) & (sessions <= pd.Timestamp(task["end"]))
                     ]
                     covered = shared.covered_dates(shared.catalog(root), task["code"], expected, plan["provider_id"])
                     progress["reused_rows"] += len(covered)
-                    revisions = pd.DatetimeIndex(task.get("refresh_dates", []))
+                    # A frozen refresh plan is acquired once. A fresh preview gets
+                    # a new refresh_id; resuming never refreshes its successful stocks again.
+                    revisions = pd.DatetimeIndex(
+                        [] if task["code"] in completed_before else task.get("refresh_dates", [])
+                    )
                     ranges = [
                         (pd.Timestamp(a), pd.Timestamp(b))
                         for left, right in shared.gap_ranges(expected, covered.difference(revisions))
@@ -537,15 +621,17 @@ def run(root, identifier, *, provider=None, secondary=None):
                         segment = SegmentFetch(root, plan, provider, secondary, calendar, sessions)
                         record, key, capture = segment.fetch(task, left, right)
                         if record["start"] != left.strftime("%Y%m%d"):
-                            progress.setdefault("repairs", []).append(
+                            _record_repair(
+                                progress,
                                 {
                                     "code": task["code"],
                                     "action": "extended_before_suspension",
                                     "start": record["start"],
                                     "end": record["end"],
                                     "reason": "分段起点处于停牌期，已自动向前补取停牌前的最后报价",
-                                }
+                                },
                             )
+                        _record_validation_actions(progress, task["code"], record)
                         try:
                             shared.register_segment(
                                 root, record, capture / record["file"], batch_id=identifier + "-" + key
@@ -584,19 +670,16 @@ def run(root, identifier, *, provider=None, secondary=None):
                     # Verifies all slices and overlap before declaring a stock covered.
                     shared.read_asset(root, task["code"], expected, plan["provider_id"])
                     progress["downloaded_rows"] += len(expected) - len(covered)
-                    progress["completed"] += 1
+                    if task["code"] not in progress["completed_codes"]:
+                        progress["completed"] += 1
+                        progress["completed_codes"].append(task["code"])
                 except DownloadPaused:
                     raise
                 except Exception as error:
-                    progress["failures"].append(
-                        {
-                            "code": task["code"],
-                            "type": type(error).__name__,
-                            "reason": str(error)[:240]
-                            if isinstance(error, ValueError)
-                            else "数据源或质量检查失败，请检查分区日志；未替换旧版本",
-                        }
-                    )
+                    if task["code"] in progress["completed_codes"]:
+                        progress["completed_codes"].remove(task["code"])
+                        progress["completed"] -= 1
+                    progress["failures"].append(failure_record(task["code"], error))
                 save()
             if progress["failures"]:
                 progress.update(status="partial", message="有待复核数据，未切换当前版本；可续传")
@@ -795,7 +878,9 @@ def export_snapshot(root, identifier, version_id):
     benchmark = pd.read_parquet(directory / "reference/benchmark.parquet")
     # This projection is explicitly a fixed user-selected pool, not a dynamic all-market backtest.
     selected = sessions[(sessions >= pd.Timestamp(plan["data_start"])) & (sessions <= pd.Timestamp(plan["end"]))]
-    coverage = coverage_report(market, benchmark, selected, tuple(t["code"] for t in plan["tasks"]), "000300.SH")
+    coverage = coverage_report(
+        market, benchmark, selected, tuple(t["code"] for t in plan["tasks"]), "000300.SH", validated_shared=True
+    )
     if coverage["status"] != "complete":
         return None
     destination = root.parent / "research/downloads" / ("shared-" + version_id)

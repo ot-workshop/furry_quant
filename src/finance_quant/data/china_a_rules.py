@@ -38,23 +38,32 @@ def round_shares(amount, factor, instrument, day=None):
     return (real // 100 * 100) / factor
 
 
+def ipo_no_band_mask(instrument, listed, dates, sessions):
+    """The dated IPO rule used by both acquisition and execution, on exchange sessions."""
+    kind = board(instrument)
+    listed = pd.Timestamp(listed)
+    sessions = pd.DatetimeIndex(sessions)
+    positions = sessions.get_indexer(pd.DatetimeIndex(dates))
+    age = positions - sessions.searchsorted(listed) + 1
+    return (
+        (positions >= 0)
+        & (age >= 1)
+        & (age <= 5)
+        & (listed in sessions)
+        & (
+            kind == "star"
+            or (kind == "chinext" and listed >= pd.Timestamp("2020-08-24"))
+            or (kind == "main" and listed >= pd.Timestamp("2023-04-10"))
+        )
+    )
+
+
 def apply_execution_rules(frame, sessions):
     out = frame.copy()
     out["has_daily_price_limit"] = True
     for instrument, part in out.groupby("instrument"):
-        kind = board(instrument)
         listed = pd.Timestamp(part.list_date.iloc[0])
-        age = sessions.get_indexer(part.date) - sessions.searchsorted(listed) + 1
-        no_band = (
-            (age >= 1)
-            & (age <= 5)
-            & (listed in sessions)
-            & (
-                kind == "star"
-                or (kind == "chinext" and listed >= pd.Timestamp("2020-08-24"))
-                or (kind == "main" and listed >= pd.Timestamp("2023-04-10"))
-            )
-        )
+        no_band = ipo_no_band_mask(instrument, listed, part.date, sessions)
         reviewed = part.get("reviewed_unbounded_session", pd.Series(False, index=part.index)).fillna(False).to_numpy()
         out.loc[part.index, "has_daily_price_limit"] = ~(no_band | reviewed)
     valid = (

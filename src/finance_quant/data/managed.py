@@ -23,7 +23,11 @@ from finance_quant.data.providers import (
     normalize_daily_basic,
     normalize_index_daily,
 )
-from finance_quant.data.quality import adjustment_discontinuities
+from finance_quant.data.quality import (
+    adjustment_discontinuities,
+    published_adjustment_discontinuities,
+    published_event_mask,
+)
 from finance_quant.data.suspensions import invalid_halt_rows
 from finance_quant.data.symbols import to_qlib
 
@@ -319,6 +323,8 @@ def coverage_report(
     sessions: pd.DatetimeIndex,
     codes: tuple[str, ...],
     benchmark_code: str,
+    *,
+    validated_shared: bool = False,
 ) -> dict:
     def dates(values):
         return sorted(pd.DatetimeIndex(values).strftime("%Y-%m-%d").tolist())
@@ -327,7 +333,7 @@ def coverage_report(
         actual = pd.DatetimeIndex(frame["date"])
         missing, extra = sessions.difference(actual), actual.difference(sessions)
         invalid = pd.Series(False, index=frame.index)
-        required = ["open", "high", "low", "close"] + (["adj_factor", "up_limit", "down_limit"] if stock else [])
+        required = ["open", "high", "low", "close"] + (["adj_factor"] if stock else [])
         values = frame[required].to_numpy(dtype=float)
         invalid |= ~np.isfinite(values).all(axis=1) | (values <= 0).any(axis=1)
         halted = (
@@ -341,7 +347,14 @@ def coverage_report(
         invalid |= frame["high"] < frame[["open", "close", "low"]].max(axis=1)
         invalid |= frame["low"] > frame[["open", "close", "high"]].min(axis=1)
         if stock:
-            invalid |= frame["up_limit"] <= frame["down_limit"]
+            unbounded = published_event_mask(frame) if validated_shared else pd.Series(False, index=frame.index)
+            valid_limits = (
+                np.isfinite(frame.up_limit)
+                & np.isfinite(frame.down_limit)
+                & frame.down_limit.gt(0)
+                & frame.up_limit.gt(frame.down_limit)
+            )
+            invalid |= ~valid_limits & ~unbounded
         duplicate = frame.loc[frame["date"].duplicated(keep=False), "date"]
         result = {
             "code": code,
@@ -361,7 +374,7 @@ def coverage_report(
         )
         return result
 
-    anomalies = adjustment_discontinuities(market)
+    anomalies = published_adjustment_discontinuities(market) if validated_shared else adjustment_discontinuities(market)
     stocks = [assess(market.loc[market["instrument"] == instrument(code)], code, True) for code in codes]
     for row in stocks:
         rejected = [item["date"] for item in anomalies if item["instrument"] == instrument(row["code"])]

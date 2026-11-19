@@ -29,6 +29,7 @@ import { Resource, Section } from "../../components/ui";
 import { useApiResource } from "../../hooks/useApiResource";
 import { formatDateTime } from "../../utils/format";
 import { SCOPES } from "./shared";
+import MarketJobDetails, { hasMarketDetails } from "./MarketJobDetails";
 
 const LABELS: Record<string, string> = {
   market: "行情与参考数据",
@@ -376,6 +377,13 @@ export default function UnifiedUpdates() {
               rowKey="id"
               dataSource={data.jobs}
               pagination={{ pageSize: 10 }}
+              expandable={{
+                rowExpandable: (job) =>
+                  hasMarketDetails(job.steps.market?.result),
+                expandedRowRender: (job) => (
+                  <MarketJobDetails {...job.steps.market?.result} />
+                ),
+              }}
               columns={[
                 { title: "状态", dataIndex: "status" },
                 {

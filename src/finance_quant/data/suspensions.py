@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from finance_quant.data.symbols import to_baostock
+from finance_quant.data.validation_errors import MarketDataError
 
 
 class MemoizedSecondary:
@@ -27,12 +28,16 @@ def confirmed_halts(bundle, code: str, sessions: pd.DatetimeIndex) -> pd.Datetim
         raise ValueError("Unsupported secondary adjustment basis")
     for frame, flag in ((bundle.raw, "3"), (bundle.adjusted, adjusted_flag)):
         required = {"date", "code", "adjustflag", "tradestatus"}
-        if (
-            not required.issubset(frame)
-            or not frame.code.eq(expected_code).all()
-            or not frame.adjustflag.astype(str).eq(flag).all()
-        ):
+        if not required.issubset(frame) or not frame.code.eq(expected_code).all():
             raise ValueError("Suspension evidence has wrong instrument or adjustment basis")
+        wrong_basis = ~frame.adjustflag.astype(str).eq(flag)
+        if wrong_basis.any():
+            raise MarketDataError(
+                "Suspension evidence has wrong instrument or adjustment basis",
+                category="secondary_adjustment_basis",
+                dates=frame.loc[wrong_basis, "date"].astype(str).tolist(),
+                action="复权标记混杂，拒绝使用该口径；可尝试另一完整复权口径，不拼接错误行。",
+            )
         dates = pd.DatetimeIndex(pd.to_datetime(frame.date, format="%Y-%m-%d", errors="raise"))
         indexed = frame.assign(date=dates).sort_values("date").set_index("date")
         if indexed.index.has_duplicates or not indexed.index.equals(sessions):
@@ -46,8 +51,14 @@ def confirmed_halts(bundle, code: str, sessions: pd.DatetimeIndex) -> pd.Datetim
             values = indexed.loc[status.eq("0"), field]
             numeric = pd.to_numeric(values, errors="coerce")
             blank = values.isna() | values.astype(str).str.strip().eq("")
-            if (~blank & (numeric.isna() | ~np.isfinite(numeric) | numeric.ne(0))).any():
-                raise ValueError("Secondary trading activity conflicts with suspension status")
+            conflict = ~blank & (numeric.isna() | ~np.isfinite(numeric) | numeric.ne(0))
+            if conflict.any():
+                raise MarketDataError(
+                    "Secondary trading activity conflicts with suspension status",
+                    category="secondary_suspension_activity_conflict",
+                    dates=values.index[conflict].strftime("%Y-%m-%d").tolist(),
+                    action="BaoStock停牌标记与成交量或成交额冲突，不将该日当作停牌，也不采用矛盾数据。",
+                )
         masks.append(status.eq("0"))
     if not masks[0].equals(masks[1]):
         raise ValueError("Raw and adjusted suspension evidence disagree")

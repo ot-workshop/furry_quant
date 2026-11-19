@@ -10,7 +10,6 @@ import {
   Form,
   Input,
   InputNumber,
-  List,
   Progress,
   Segmented,
   Table,
@@ -23,6 +22,7 @@ import {
   PauseCircleOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
+import MarketJobDetails, { hasMarketDetails } from "./MarketJobDetails";
 import {
   dataApi,
   type MarketJob,
@@ -310,18 +310,11 @@ export default function MarketDownload() {
               dataSource={data.jobs}
               pagination={{ pageSize: 10, hideOnSinglePage: true }}
               expandable={{
-                rowExpandable: (job) => job.failures.length > 0,
+                rowExpandable: hasMarketDetails,
                 expandedRowRender: (job) => (
-                  <List
-                    size="small"
-                    dataSource={job.failures}
-                    renderItem={(failure) => (
-                      <List.Item>
-                        <Typography.Text type="danger">
-                          {failure.code}：{failure.reason}
-                        </Typography.Text>
-                      </List.Item>
-                    )}
+                  <MarketJobDetails
+                    failures={job.failures}
+                    repairs={job.repairs}
                   />
                 ),
               }}

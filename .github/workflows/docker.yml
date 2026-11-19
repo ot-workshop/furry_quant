@@ -43,6 +43,8 @@ jobs:
           tests/test_persistence_datasets.py
           tests/test_tushare_provider.py
           tests/test_web_research.py
+          tests/test_trading_events.py
+          tests/test_download_recovery.py
           --basetemp /tmp/finance-quant-tests
           -o cache_dir=/tmp/finance-quant-pytest-cache
 

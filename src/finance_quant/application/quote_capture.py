@@ -31,6 +31,7 @@ from finance_quant.data.reconciliation import (
 )
 from finance_quant.data.reviewed_events import REVIEWED_EVENTS
 from finance_quant.data.suspensions import carry_halt_rows, confirmed_halts
+from finance_quant.data.validation_errors import MarketDataError
 
 WAREHOUSE_POLICY = "official-primary-sample-sha256-mod10-v1"
 
@@ -52,14 +53,20 @@ def validation_signature():
     files = [
         Path(__file__),
         Path(__file__).with_name("quote_quality.py"),
+        Path(__file__).with_name("halt_history.py"),
         *[
             base / "data" / name
             for name in [
                 "index_universe.py",
                 "quality.py",
+                "managed.py",
+                "market.py",
                 "reconciliation.py",
                 "suspensions.py",
                 "reviewed_events.py",
+                "trading_events.py",
+                "china_a_rules.py",
+                "validation_errors.py",
                 "official_suspensions.py",
                 "providers/tushare.py",
                 "providers/baostock.py",
@@ -80,6 +87,7 @@ def asset_key(task, provider_id, membership_sha, validation_sha):
                 "provider_id": provider_id,
                 "membership_sha256": membership_sha,
                 "validation_sha256": validation_sha,
+                "trading_events": task.get("trading_events", []),
                 "policy": "index-asset-v1",
             },
             sort_keys=True,
@@ -177,7 +185,8 @@ def _assemble_primary_frame(task, expected, parts):
 
 def _validate_primary_sources(frame, root, task, parts, expected, eligible, fetch, secondary):
     code = task["code"]
-    events = primary_events(frame, code)
+    event_candidates = (*REVIEWED_EVENTS, *task.get("trading_events", []))
+    events = primary_events(frame, code, event_candidates)
     basic_complete = pd.DatetimeIndex(parts[2].date.sort_values()).equals(expected)
     valid = primary_valid(frame, expected, eligible, events) and basic_complete
     suspension_evidence = None
@@ -213,7 +222,7 @@ def _validate_primary_sources(frame, root, task, parts, expected, eligible, fetc
                 )
         if len(confirmed):
             frame = carry_halt_rows(frame.set_index("date"), confirmed).rename_axis("date").reset_index()
-            events = primary_events(frame, code)
+            events = primary_events(frame, code, event_candidates)
             basic_complete = not len(expected.difference(confirmed).difference(pd.DatetimeIndex(parts[2].date)))
             valid = primary_valid(frame, expected, eligible, events) and basic_complete
             suspension_evidence = {
@@ -222,15 +231,31 @@ def _validate_primary_sources(frame, root, task, parts, expected, eligible, fetc
                 "requests": official.requests,
                 "scope": "official full-day status; no independent price certification",
             }
-    if not valid:
+    needs_status = frame[["open", "high", "low", "close"]].isna().any(axis=1) | frame.volume.eq(0) | frame.amount.eq(0)
+    if not valid and (needs_status & ~frame.is_suspended).any():
         # A broken secondary adjusted-price series need not invalidate its
         # independently matching raw/adjusted trading-status fields. Confirm
         # halts separately; never turn an unexplained quote hole into a halt.
         status_bundle = secondary.fetch(code, task["start"], task["end"])
-        halted = confirmed_halts(status_bundle, code, expected)
+        try:
+            halted = confirmed_halts(status_bundle, code, expected)
+        except MarketDataError as error:
+            path = "quarantine/suspension-status.json"
+            atomic_json(
+                root / path,
+                {
+                    "code": code,
+                    "category": error.category,
+                    "reason": str(error),
+                    "dates": error.validation_dates,
+                    "source_evidence": status_bundle.metadata,
+                },
+            )
+            error.evidence = {"quarantine_file": path}
+            raise
         if len(halted):
             frame = carry_halt_rows(frame.set_index("date"), halted).rename_axis("date").reset_index()
-            events = primary_events(frame, code)
+            events = primary_events(frame, code, event_candidates)
             basic_complete = not len(expected.difference(halted).difference(pd.DatetimeIndex(parts[2].date)))
             valid = primary_valid(frame, expected, eligible, events) and basic_complete
             suspension_evidence = {
@@ -255,8 +280,10 @@ def _crosscheck_secondary(frame, root, key, task, expected, fetch, secondary, pa
         # the secondary's availability, quota, or internally broken factors.
         report.update(
             status="unavailable",
-            reason=type(error).__name__,
+            reason=str(error) if isinstance(error, ValueError) else type(error).__name__,
+            category=getattr(error, "category", "secondary_unavailable"),
             validation_dates=getattr(error, "validation_dates", []),
+            action="官方行情检查通过，保留单源检查通过；本次BaoStock核验不可用，未使用其数据补缺。",
         )
     else:
         halted = pd.DatetimeIndex(evidence.loc[evidence.is_suspended, "date"])
@@ -286,7 +313,7 @@ def _crosscheck_secondary(frame, root, key, task, expected, fetch, secondary, pa
             "fallback",
             Captured(),
             primary_failures=fetch.errors,
-            reviewed_events=REVIEWED_EVENTS,
+            reviewed_events=(*REVIEWED_EVENTS, *task.get("trading_events", [])),
         )
         report.update(
             trigger=trigger, rejected_secondary_bases=rejected, official_status_reviews=official_status_reviews
@@ -296,9 +323,31 @@ def _crosscheck_secondary(frame, root, key, task, expected, fetch, secondary, pa
                 root / "quarantine" / f"{key}.json",
                 {"code": code, "category": "source_conflict", "cross_validation": report},
             )
-            raise ValueError("两源行情、复权或停牌校验存在冲突")
-        events = report["stocks"][0].get("verified_event_moves", [])
+            stocks = report.get("stocks", [])
+            dates = {
+                item["date"] if isinstance(item, dict) else item
+                for stock in stocks
+                for field in ("raw_price_differences", "return_differences", "corporate_action_differences")
+                for item in stock.get(field, [])
+            }
+            raise MarketDataError(
+                "两源行情、复权或停牌校验存在冲突。",
+                category="source_conflict",
+                dates=dates,
+                action="查看冲突日期与隔离记录；未自动选择任一冲突来源。",
+                evidence={"quarantine_file": f"quarantine/{key}.json"},
+            )
         level = "secondary_fallback_passed" if report["status"] == "fallback" else "dual_source_verified"
+        if report["status"] == "fallback":
+            events = [
+                {**event, "evidence_level": "secondary_source"}
+                for event in primary_events(frame, code, (*REVIEWED_EVENTS, *task.get("trading_events", [])))
+            ]
+        else:
+            events = [
+                {**event, "evidence_level": "dual_source"}
+                for event in report["stocks"][0].get("verified_event_moves", [])
+            ]
     return frame, report, events, level
 
 
@@ -331,6 +380,8 @@ def _publish_asset(frame, root, key, task, intervals, fetch, expected, events, r
     frame.loc[unbounded, "has_daily_price_limit"] = False
     frame["reviewed_unbounded_session"] = unbounded
     quality = _quality(frame, expected, eligible, events)
+    if task.get("halt_anchor"):
+        quality["halt_anchor"] = task["halt_anchor"]
     quality["internal_consistency"] = primary_valid(frame, expected, eligible, events)
     quality["complete"] = quality["complete"] and quality["internal_consistency"]
     if not quality["complete"]:
@@ -345,7 +396,31 @@ def _publish_asset(frame, root, key, task, intervals, fetch, expected, events, r
                 "created_at": utc_now(),
             },
         )
-        raise ValueError("股票数据质量或成分期执行价格约束不完整，详情已隔离保存")
+        issues = []
+        for field, rule, label in (
+            ("invalid_price_dates", "invalid_quote", "价格、成交或停牌估值无效"),
+            ("missing_limits_in_membership", "missing_execution_limits", "执行日期缺少有效涨跌停价"),
+            ("return_identity_dates", "return_identity_mismatch", "价格、复权收益与公布涨跌幅不一致"),
+        ):
+            if quality[field]:
+                issues.append({"rule": rule, "message": label, "dates": quality[field]})
+        if quality["adjustment_audits"]:
+            issues.append(
+                {
+                    "rule": "unverified_price_move",
+                    "message": "异常涨跌尚无有效事件依据",
+                    "dates": [a["date"] for a in quality["adjustment_audits"]],
+                }
+            )
+        dates = sorted({day for issue in issues for day in issue["dates"]})
+        summary = "；".join(issue["message"] for issue in issues) or "交易日覆盖不完整"
+        raise MarketDataError(
+            f"{summary}（{len(dates)}个日期）；原始响应及明细已保留。",
+            category="market_quality_requires_review",
+            dates=dates,
+            action="核对所列日期的行情和历史事件后续传；不会放行未解释的异常或修改原始价格。",
+            evidence={"quarantine_file": f"quarantine/{key}.json", "issues": issues},
+        )
     if validation_signature() != fetch.validation_sha256:
         raise DownloadPaused("校验代码已更新，已保留断点；请续传以使用新版本")
     directory.mkdir(parents=True, exist_ok=True)

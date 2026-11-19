@@ -13,7 +13,7 @@ from finance_quant.checksums import file_sha256, sha256_text
 from finance_quant.data.providers import (
     TushareProvider,
 )
-from finance_quant.data.quality import adjustment_discontinuities
+from finance_quant.data.quality import adjustment_discontinuities, published_adjustment_discontinuities
 from finance_quant.data.reconciliation import validate_published_sources
 from finance_quant.data.shared_market import validate_snapshot
 
@@ -90,7 +90,12 @@ def load_market(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, d
         validate_published_sources(market, manifest)
     if manifest.get("schema_version") == "market-v4-shared":
         validate_snapshot(market, manifest)
-    if adjustment_discontinuities(market):
+    anomalies = (
+        published_adjustment_discontinuities(market)
+        if manifest.get("schema_version") == "market-v4-shared"
+        else adjustment_discontinuities(market)
+    )
+    if anomalies:
         raise ValueError(
             "Market adjustment continuity failed; verify supplier data or corporate actions before backtesting"
         )
