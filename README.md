@@ -187,7 +187,7 @@ chmod 600 .env
 在 `.env` 中填写应用镜像、数据库密码和数据源 Token：
 
 ```dotenv
-APP_IMAGE=ghcr.io/quqionfree/my_quant_project:sha-实际提交号
+APP_IMAGE=ghcr.io/ot-workshop/furry_quant@sha256:实际已验digest
 POSTGRES_USER=quant
 POSTGRES_DB=finance_quant
 POSTGRES_PASSWORD='替换为数据库密码'
@@ -366,7 +366,7 @@ npm.cmd --prefix frontend run build
 
 默认 `uv run pytest -q` 会收集集成测试，但未启用 `FINANCE_QUANT_TEST_POSTGRES=1` 时数据库用例跳过，不能据此声称 PostgreSQL 已验收。真实测试库、备份恢复 Compose、UI 回测与比较验收、失败清理及各命令覆盖范围见[测试指南](docs/testing.md)。
 
-CI 的 `full-tests.yml` 配置 PR 与手动触发；基线 `docker.yml` 在推送 `master`、`v*` tag 或手动派发时构建发布镜像。配置了触发器不等于已有成功运行：核对当前 PR 头、实际检出 SHA 和每个必要 job 的 run 链接；新提交须重核。镜像命名迁移和发布证据要求见[运维文档](docs/operations.md#镜像来源与发布约定)，职责与审批流程见[协作指南](docs/contributing.md)。
+CI 的 `full-tests.yml` 配置 PR、`master` push 与手动触发；`docker.yml` 在推送 `master`、`v*` tag 或手动派发时构建发布镜像。配置了触发器不等于已有成功运行：核对当前 PR 头、实际检出 SHA 和每个必要 job 的 run 链接；新提交须重核。镜像命名与发布证据要求见[运维文档](docs/operations.md#镜像来源与发布约定)，职责与审批流程见[协作指南](docs/contributing.md)。
 
 ## 文档索引
 

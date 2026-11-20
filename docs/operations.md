@@ -7,7 +7,7 @@
 | 用途 | 约定 |
 | --- | --- |
 | 新发布目标 | `ghcr.io/ot-workshop/furry_quant:sha-<完整40位提交>`，运行时固定 `ghcr.io/ot-workshop/furry_quant@sha256:<digest>`。 |
-| 基线旧配置 | `docker.yml` 和环境示例曾使用 `ghcr.io/quqionfree/my_quant_project` 与短 SHA；迁移由 workflow 修订落实，不能只改文档就假定新镜像已发布。 |
+| 旧环境 | 旧命名空间 `ghcr.io/quqionfree/my_quant_project` 与短 SHA 仍可能出现在运行环境及旧配置；当前 workflow 使用新命名空间，不能据此假定新镜像已发布。 |
 | 回滚来源 | 保留部署前实际验证过的旧镜像 digest，包括旧命名空间产物，不因更名删除。 |
 
 新命名空间的私有包推送、目标机授权拉取和对应源码必须用首个真实产物验证。`manifest unknown`、匿名拒绝、workflow 配置为 active 或没有 Actions 记录，都不能证明目标镜像可部署；记录实际成功 pull 的 digest。`:master` 是移动标签，短 SHA 可用于查找，均不替代完整提交与 digest 的核对。
@@ -23,17 +23,95 @@
 - 正确版本的 Compose 文件、配置与目录；部署前一致备份 create/verify 成功、回滚目标及恢复方法可用。
 - 测试与部署窗口、失败责任人和证据目录明确，未完成任务已处理。目标机不能访问 Docker Hub 时不在其上构建，先确认所需数据库镜像已存在或有可用授权来源。
 
-以下仅做产物检查，不启动应用；在部署目录用已确定的真实值替换占位符：
+### 固定 Docker 与 Compose 目标
+
+以下发布、回滚与恢复示例使用 Bash。先在专用终端初始化函数：固定已核 Docker context/配置目录、项目、Compose 文件和 env 文件，不继承 COMPOSE_FILE、DOCKER_HOST、APP_IMAGE 或数据路径等外部覆盖。示例值按当前部署登记替换；初始化后若改变任一目标，重新核验，不能接续上次窗口。
 
 ```sh
-cd /data/finance-quant
-docker compose config --quiet
-docker compose ps -a
+set -euo pipefail
+docker_context=default
+docker_config="$HOME/.docker"
+prod_dir=/data/finance-quant
+prod_project=finance-quant
+prod_file="$prod_dir/docker-compose.yaml"
+prod_env="$prod_dir/.env"
+prod_storage="$prod_dir/storage"
+prod_backups="$prod_dir/backups"
+prod_restores="$prod_dir/restores"
+prod_postgres="$prod_dir/postgres"
+expected_db=finance_quant
+expected_user=quant
+dkr() {
+  env -i PATH="$PATH" HOME="$HOME" docker --config "$docker_config" --context "$docker_context" "$@"
+}
+prod_compose() {
+  dkr compose -p "$prod_project" --project-directory "$prod_dir" --env-file "$prod_env" -f "$prod_file" "$@"
+}
+```
+
+先核**当前服务**，不停止或启动业务；`current_image` 填当前线上已核 digest。逐项核旧镜像、四个实际挂载、Compose 解析目标和数据库身份，全部成功后才进入候选产物/发布步骤。临时核配置的容器无网络和业务挂载，只接收配置并输出核验结论，不回显密码：
+
+```sh
+set -euo pipefail
+current_image='ghcr.io/旧命名空间/应用@sha256:<当前已核digest>'
+prod_compose config --quiet
+api_id="$(prod_compose ps -q api)"
+worker_id="$(prod_compose ps -q worker)"
+db_id="$(prod_compose ps -q db)"
+test -n "$api_id"
+test -n "$worker_id"
+test -n "$db_id"
+current_id="$(dkr image inspect "$current_image" --format '{{.Id}}')"
+for app_id in "$api_id" "$worker_id"; do
+  test "$(dkr inspect "$app_id" --format '{{.Image}}')" = "$current_id"
+  test "$(dkr inspect "$app_id" --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}')" = "$prod_file"
+done
+mount_source() {
+  dkr inspect "$1" --format "{{range .Mounts}}{{if eq .Destination \"$2\"}}{{.Source}}{{end}}{{end}}"
+}
+for app_id in "$api_id" "$worker_id"; do
+  test "$(mount_source "$app_id" /app/storage)" = "$prod_storage"
+  test "$(mount_source "$app_id" /backups)" = "$prod_backups"
+  test "$(mount_source "$app_id" /restores)" = "$prod_restores"
+done
+test "$(mount_source "$db_id" /var/lib/postgresql)" = "$prod_postgres"
+compose_image() {
+  prod_compose --profile tools config --format json | dkr run --rm -i --network none --entrypoint python "$current_image" -c 'import json, sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "$1"
+}
+configured_app="$(compose_image api)"
+configured_db="$(compose_image db)"
+test "$(dkr image inspect "$configured_app" --format '{{.Id}}')" = "$current_id"
+test "$(dkr image inspect "$configured_db" --format '{{.Id}}')" = "$(dkr inspect "$db_id" --format '{{.Image}}')"
+prod_compose --profile tools config --format json | dkr run --rm -i --network none --entrypoint python "$current_image" -c '
+import json, sys
+s = json.load(sys.stdin)["services"]
+storage, backups, restores, postgres, db, user, image = sys.argv[1:]
+expected = {"/app/storage": storage, "/backups": backups, "/restores": restores}
+for name in ("api", "worker", "migrate", "maintenance"):
+    service = s[name]
+    assert service["image"] == image, "应用镜像配置不一致"
+    assert {v["target"]: v["source"] for v in service["volumes"]} == expected, "应用挂载配置不符"
+    env = service["environment"]
+    assert (env["POSTGRES_HOST"], str(env["POSTGRES_PORT"]), env["POSTGRES_DB"], env["POSTGRES_USER"]) == ("db", "5432", db, user), "应用数据库目标不符"
+assert {v["target"]: v["source"] for v in s["db"]["volumes"]} == {"/var/lib/postgresql": postgres}, "数据库挂载配置不符"
+print("Compose 镜像、挂载和数据库目标已核")
+' "$prod_storage" "$prod_backups" "$prod_restores" "$prod_postgres" "$expected_db" "$expected_user" "$configured_app"
+actual_identity="$(prod_compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT current_database(), current_user"')"
+test "$actual_identity" = "$expected_db|$expected_user"
+printf '已核当前项目=%s；数据库=%s；镜像ID=%s\n' "$prod_project" "$expected_db" "$current_id"
+```
+
+`config --images api` 可能包含依赖链镜像并返回多行，不能当作 API 镜像单值；上面的函数从已解析 JSON 精确读取对应服务。`--profile tools` 保证 maintenance 也参与配置核验。
+
+候选产物检查同样沿已固定的 `dkr`，不启动业务应用：
+
+```sh
+set -euo pipefail
 release_image='ghcr.io/ot-workshop/furry_quant@sha256:<已核digest>'
-docker pull "$release_image"
-docker image inspect "$release_image" --format '{{.Id}} {{json .RepoDigests}}'
-docker image inspect "$release_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
-docker run --rm --entrypoint python "$release_image" -c 'from finance_quant.provenance import source_provenance; import json; print(json.dumps(source_provenance()))'
+dkr pull "$release_image"
+dkr image inspect "$release_image" --format '{{.Id}} {{json .RepoDigests}}'
+dkr image inspect "$release_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+dkr run --rm --entrypoint python "$release_image" -c 'from finance_quant.provenance import source_provenance; import json; print(json.dumps(source_provenance()))'
 ```
 
 镜像标签的 revision 应对应发布完整提交；缺少或冲突时核对构建证据，不猜测。可在同一提交的干净源码目录执行 `uv run python -c "from finance_quant.provenance import source_provenance; print(source_provenance())"`，对照 `code_sha256`、依赖锁哈希和 Python 版本。`code_sha256` 只覆盖计算层，排除了网页、持久化和部分进程入口，不能单独证明完整应用或前端相同；完整身份还需提交、构建 run 与镜像 digest。
@@ -57,7 +135,7 @@ finance-quant/
 `.env` 至少配置：
 
 ```dotenv
-APP_IMAGE=ghcr.io/quqionfree/my_quant_project:sha-实际提交号
+APP_IMAGE=ghcr.io/ot-workshop/furry_quant@sha256:实际已验digest
 TUSHARE_TOKEN=官方TushareToken
 POSTGRES_DB=finance_quant
 POSTGRES_USER=quant
@@ -113,25 +191,21 @@ docker compose logs --tail=100 db storage-init migrate api worker
 
 ## 更新镜像
 
-先完成[发布准入与版本核对](#发布准入与版本核对)，确认没有运行中的任务。以下是发布专用停写步骤；不要用后文会恢复旧服务的例行备份代码块代替。示例部署目录及项目名为 `/data/finance-quant`、`finance-quant`，使用前核对实际值；在独立 shell 中执行，任一步失败立即退出，保留现场并由负责人处理，不继续下一段。
+先完成[发布准入与版本核对](#发布准入与版本核对)，确认没有运行中的任务；在同一专用 Bash 终端沿已核 `dkr` / `prod_compose` 函数继续。以下是发布专用停写步骤，不用后文会恢复旧服务的例行备份替代。任一步失败立即退出，保留现场并由负责人处理；新开终端必须重新初始化及核验目标。
 
 ```sh
-set -eu
-cd /data/finance-quant
-prod_project=finance-quant
-release_image='ghcr.io/ot-workshop/furry_quant@sha256:<已核digest>'
-unset APP_IMAGE  # 备份先使用 .env 中的旧版本，不接受外部同名覆盖。
-test "$(grep -c '^APP_IMAGE=' .env)" -eq 1
-docker pull "$release_image"  # 拉取失败时尚未停服务。
+set -euo pipefail
+test "$(grep -c '^APP_IMAGE=' "$prod_env")" -eq 1
+dkr pull "$release_image"  # 拉取失败时尚未停服务。
 backup_dir="/backups/predeploy-$(date -u +%Y%m%dT%H%M%SZ)"
-docker compose -p "$prod_project" stop -t 90 api worker
-docker compose -p "$prod_project" --profile tools run --rm maintenance python -m finance_quant.backup create "$backup_dir"
-docker compose -p "$prod_project" --profile tools run --rm maintenance python -m finance_quant.backup verify "$backup_dir"
+prod_compose stop -t 90 api worker
+prod_compose --profile tools run --rm maintenance python -m finance_quant.backup create "$backup_dir"
+prod_compose --profile tools run --rm maintenance python -m finance_quant.backup verify "$backup_dir"
 # 校验成功后仍保持停写；此间不能重新启动旧 API/worker。
-sed -i "s|^APP_IMAGE=.*|APP_IMAGE=$release_image|" .env
-docker compose -p "$prod_project" config --quiet
-docker compose -p "$prod_project" up -d --pull never --wait --wait-timeout 180 api worker
-docker compose -p "$prod_project" ps -a
+sed -i "s|^APP_IMAGE=.*|APP_IMAGE=$release_image|" "$prod_env"
+prod_compose config --quiet
+prod_compose up -d --pull never --wait --wait-timeout 180 api worker
+prod_compose ps -a
 ```
 
 数据库保持运行。worker 收到停止信号后停止领取新任务，并给当前子进程保留退出时间。归档校验完成到新应用启动之间持续停写，使回滚点覆盖最后一次旧版本写入。新镜像的迁移依赖自动执行；`--wait` 等待应用健康，`--pull never` 使用事先已核镜像，避免在切换时隐式访问 Docker Hub。所需数据库镜像也须已在准入阶段准备好。
@@ -141,11 +215,11 @@ docker compose -p "$prod_project" ps -a
 ### 部署后核验
 
 ```sh
-docker compose ps -a
+prod_compose ps -a
 curl -fsS http://127.0.0.1:8000/api/v1/health
-docker compose --profile tools run --rm maintenance python -m finance_quant.server check
-docker compose exec -T api python -c 'from finance_quant.provenance import source_provenance; print(source_provenance())'
-docker compose exec -T worker python -c 'from finance_quant.provenance import source_provenance; print(source_provenance())'
+prod_compose --profile tools run --rm maintenance python -m finance_quant.server check
+prod_compose exec -T api python -c 'from finance_quant.provenance import source_provenance; print(source_provenance())'
+prod_compose exec -T worker python -c 'from finance_quant.provenance import source_provenance; print(source_provenance())'
 ```
 
 端口按实际配置替换。核对 api/worker 容器 image ID 与目标镜像、计算与依赖哈希，以及 health 的数据库 revision；健康检查的 revision 是数据库迁移版本，不是 Git 提交。
@@ -167,31 +241,30 @@ docker compose exec -T worker python -c 'from finance_quant.provenance import so
 普通应用版本只需要更换 `APP_IMAGE`。当服务、volume、端口或环境变量结构发生变化时，再从本地仓库复制新版文件：
 
 ```powershell
-scp docker-compose.yaml 用户名@服务器:~/finance-quant/docker-compose.yaml.new
+scp docker-compose.yaml 用户名@服务器:/data/finance-quant/docker-compose.yaml.new
 ```
 
 服务器先校验新文件，再替换：
 
 ```sh
-docker compose --env-file .env -f docker-compose.yaml.new config --quiet
-mv docker-compose.yaml.new docker-compose.yaml
+dkr compose -p "$prod_project" --project-directory "$prod_dir" --env-file "$prod_env" -f "$prod_dir/docker-compose.yaml.new" config --quiet
+mv -- "$prod_dir/docker-compose.yaml.new" "$prod_file"
 ```
 
 私有仓库不提供匿名 raw 下载。若必须从 GitHub API 下载，需要单独的仓库 Contents 只读凭据；该凭据与 GHCR 的 `read:packages` Token 权限不同。
 
 ## 回滚
 
-先判断数据和 schema 是否仍兼容旧版本。无迁移或已独立验证向后兼容时，经负责人决定，将 `.env` 的 `APP_IMAGE` 改回部署前验证过的完整 digest，必要时连同原 Compose 文件一起恢复。以下在独立 shell 执行，`prod_project` 替换为实际现有项目名；拉取或停止失败会立即退出，不再执行后续切换：
+先判断数据和 schema 是否仍兼容旧版本。无迁移或已独立验证向后兼容时，经负责人决定，先按[发布准入](#发布准入与版本核对)重新初始化并核当前服务目标；`current_image` 是当前运行版本，`rollback_image` 是部署前已验旧 digest。沿同一组固定 context/项目/文件/env 执行；拉取或停止失败立即退出，不改 APP_IMAGE 或继续切换。Compose 内容需要恢复时先按技术方案准备并重新核验目标，不能临时换另一组文件跳过核验。
 
 ```sh
-set -eu
-cd /data/finance-quant
-prod_project=finance-quant
-unset APP_IMAGE
-docker compose -p "$prod_project" --env-file .env -f docker-compose.yaml config --quiet
-docker compose -p "$prod_project" --env-file .env -f docker-compose.yaml pull migrate api worker
-docker compose -p "$prod_project" --env-file .env -f docker-compose.yaml stop -t 90 worker api
-docker compose -p "$prod_project" --env-file .env -f docker-compose.yaml up -d --pull never --wait --wait-timeout 180 api worker
+set -euo pipefail
+rollback_image='ghcr.io/旧命名空间/应用@sha256:<部署前已验digest>'
+dkr pull "$rollback_image"
+prod_compose stop -t 90 worker api
+sed -i "s|^APP_IMAGE=.*|APP_IMAGE=$rollback_image|" "$prod_env"
+prod_compose config --quiet
+prod_compose up -d --pull never --wait --wait-timeout 180 api worker
 ```
 
 镜像回滚不会自动回滚数据库。存在迁移而未证明向后兼容时，不只切旧镜像；使用部署前已校验备份，按[恢复](#恢复)在独立空数据库和空存储中恢复、验证，再由负责人切换访问。不要先 migrate 空目标，也不要在现有业务目录上覆盖恢复。迁移应采用向前兼容的扩展/收缩方式；删除列、修改字段类型等破坏性操作拆分到后续版本。
@@ -273,7 +346,7 @@ uv run python -m finance_quant.backup verify D:/quant-backups/backup-20261112
 
 回滚恢复与演练使用独立项目、数据库、回环端口和四个真实挂载目录。**先把已校验归档复制到独立 BACKUP_ROOT**，不要直接挂载生产备份目录：Compose 的 storage-init 会修改挂载根目录的所有者，即使只运行恢复工具也会触发。
 
-在单独的终端从原部署目录准备副本，替换 `verified_archive` 为实际已校验归档；以下不启动任何服务：
+在单独的 Bash 终端先执行[固定 Docker 目标的函数定义](#固定-docker-与-compose-目标)，只复用清除外部覆盖且固定 context/config 的 `dkr`，不执行生产核验或切换。替换 `verified_archive` 为实际已校验归档；以下不启动任何服务，也不复制生产 `.env`：
 
 ```sh
 set -eu
@@ -286,18 +359,21 @@ drill_root="$(mktemp -d /data/fq-restore.XXXXXX)"
 drill_project="$(basename "$drill_root" | tr '[:upper:]' '[:lower:]' | tr '.' '-')"
 mkdir "$drill_root/postgres" "$drill_root/storage" "$drill_root/backups" "$drill_root/restores"
 cp -- "$verified_compose" "$drill_root/docker-compose.yaml"
-cp -- .env "$drill_root/.env"
+: > "$drill_root/.env"
 chmod 600 "$drill_root/.env"
 cp -a -- "$verified_archive" "$drill_root/backups/input"
 printf '恢复项目=%s；独立目录=%s\n' "$drill_project" "$drill_root"
 ```
 
-用备份对应的已验证旧镜像及 Compose 版本。启动前编辑副本 `.env`，将以下示例中的“唯一目录”全部替换为刚生成的 `drill_root` 绝对路径；数据库账号/密码仅在本机配置，项目、端口须与现有实例不同：
+用备份对应的已验证旧镜像及 Compose 版本。启动前在空白 `.env` 中只填写下列独立配置，将“唯一目录”全部替换为刚生成的 `drill_root` 绝对路径；使用恢复项目专用账号/密码，不复制生产专用设置。项目、端口与四个数据路径须独立：
 
 ```dotenv
 APP_IMAGE=ghcr.io/旧命名空间/应用@sha256:备份对应的已验digest
 COMPOSE_PROJECT_NAME=刚生成的drill_project
+POSTGRES_IMAGE=postgres:18.6-bookworm
 POSTGRES_DB=finance_quant_restore_test
+POSTGRES_USER=quant_restore
+POSTGRES_PASSWORD='仅在本机填写恢复项目专用密码'
 POSTGRES_DATA_ROOT=/data/唯一目录/postgres
 STORAGE_ROOT=/data/唯一目录/storage
 BACKUP_ROOT=/data/唯一目录/backups
@@ -310,13 +386,10 @@ ALLOWED_ORIGINS=http://127.0.0.1:18081
 核对四个目录都是真实独立路径，不是生产目录、指向生产的链接或复用挂载；备份副本与源归档内容一致。端口须空闲，旧应用和数据库镜像已可用。所有命令显式使用同一随机项目，外部 COMPOSE_PROJECT_NAME 不会覆盖；在保留 `drill_root`、`drill_project` 的同一终端继续：
 
 ```sh
-set -eu
+set -euo pipefail
 drill_compose() {
-  docker compose -p "$drill_project" --env-file "$drill_root/.env" -f "$drill_root/docker-compose.yaml" "$@"
+  dkr compose -p "$drill_project" --project-directory "$drill_root" --env-file "$drill_root/.env" -f "$drill_root/docker-compose.yaml" "$@"
 }
-unset APP_IMAGE POSTGRES_DATA_ROOT STORAGE_ROOT BACKUP_ROOT RESTORE_ROOT COMPOSE_PROJECT_NAME
-unset HTTP_BIND_HOST HTTP_PORT ALLOWED_ORIGINS POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_IMAGE
-unset RESTORE_POSTGRES_USER RESTORE_POSTGRES_PASSWORD
 drill_compose config --quiet
 drill_compose up -d --pull never db storage-init
 drill_compose --profile tools run --rm maintenance python -m finance_quant.backup verify /backups/input
@@ -337,7 +410,9 @@ drill_compose up -d --pull never --wait --wait-timeout 180 api worker
 curl -fsS http://127.0.0.1:18081/api/v1/health
 ```
 
-`server check` 只检查表结构和服务可用；还须从该隔离端口读回相同 `run_id`、`dataset_id`，核对冻结输入、结果和报告哈希及旧镜像身份，全部符合后再由负责人考虑访问切换。保存证据后执行 `drill_compose down --volumes`，只清本次项目；主机目录另行核对保留/清理，原数据库、storage 和备份均不操作。失败现场保留并报告残留，不能自动把演练实例切成生产。
+`server check` 只检查表结构和服务可用；还须从该隔离端口读回相同 `run_id`、`dataset_id`，核对冻结输入、结果和报告哈希及旧镜像身份，全部符合后再由负责人考虑访问切换。
+
+**仅在演练已结束、未切流且不再承担服务时**，保存证据后执行 `drill_compose down --volumes`，只清本次演练项目；主机目录另行核对保留/清理。若用于真实回滚并已切换访问，保留恢复后的目标实例、数据目录和旧现场，不能执行这条清理；按实际发布方案维护与后续退出。失败现场也先保留并报告残留，不自动把演练实例切成生产。
 
 恢复不会执行清库或覆盖已有文件。原排队、运行中任务改为中断状态，自动更新计划关闭，确认数据后再手动续传或开启计划。已完成任务、数据版本及结果保留。发布前检查失败不会写入数据库或目标目录；已有空目标无法移除时保持原样，不同级其他挂载不会阻断合法子目录。不会清理原环境。自定义目录布局可在备份 manifest 的 layout 中查看，并在恢复环境配置相同的相对布局。
 

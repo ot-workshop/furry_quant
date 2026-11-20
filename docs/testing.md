@@ -109,16 +109,94 @@ python3 scripts/check_compose_startup.py --image finance-quant:startup-check
 
 ### 隔离 UI 地址
 
-原生测试先从空白配置准备 `.env.ui-test`，使用独立测试库（如 `finance_quant_ui_test`）、专用账号和独立存储根；所有 `FINANCE_QUANT_*` 路径覆盖也须位于该根内，不复制生产路径。设置 `ALLOWED_ORIGINS=http://127.0.0.1:18122`，端口改动时同步修改完整来源。安装依赖后：
+原生测试使用独立 PostgreSQL，示例只接受 `127.0.0.1:18123` 的 `finance_quant_ui_test`，不复用开发/生产库。安装锁定依赖后，从空白文件准备仓库根目录 `.env.ui-test`；专用密码只在本机填写：
 
-```sh
-npm --prefix frontend run build
-uv run python -m finance_quant.server migrate --env-file .env.ui-test
-uv run python -m finance_quant.server check --env-file .env.ui-test
-uv run python -m finance_quant.server api --env-file .env.ui-test --host 127.0.0.1 --port 18122
+```dotenv
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=18123
+POSTGRES_DB=finance_quant_ui_test
+POSTGRES_USER=quant_ui_test
+POSTGRES_PASSWORD='本机专用测试密码'
+STORAGE_ROOT=.agent-work/ui-test/storage
+BACKUP_ROOT=.agent-work/ui-test/backups
+RESTORE_ROOT=.agent-work/ui-test/restores
+ALLOWED_ORIGINS=http://127.0.0.1:18122
 ```
 
-在另一个终端用同一 `.env.ui-test` 启动一个 worker：`uv run python -m finance_quant.server worker --env-file .env.ui-test`。浏览器只打开该 API 托管的 <http://127.0.0.1:18122>。首次提交前，从这个地址核 `/api/v1/health`、已登记测试数据及浏览器 Network 的实际请求地址，确认全部指向隔离实例。
+API 和 worker 都使用下列同一启动器，保存为 `.agent-work/ui-test.sh`（Bash；Windows 可用 Git Bash）。它不继承应用连接/路径变量，每次先读取独立配置、核真实数据库身份及存储路径，再启动角色；migrate 前构建失败或任何核验失败均立即停止。端口、库名或根目录确需变化时，同步修改配置与核验常量并重新验收，不取消核验。
+
+```sh
+#!/usr/bin/env bash
+set -eu
+cd "$(dirname "$0")/.."
+role="${1:?指定 migrate/check/api/worker}"
+case "$role" in migrate|check|api|worker) ;; *) exit 2 ;; esac
+clean_ui() {
+  env -i PATH="$PATH" HOME="$HOME" SYSTEMROOT="${SYSTEMROOT:-}" \
+    USERPROFILE="${USERPROFILE:-}" TEMP="${TEMP:-/tmp}" TMP="${TMP:-/tmp}" "$@"
+}
+if [ "$role" = migrate ]; then clean_ui npm --prefix frontend run build; fi
+clean_ui uv run --no-sync python - "$role" "$PWD/.env.ui-test" <<'PY'
+import os
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from finance_quant import paths
+from finance_quant.persistence.database import database_url
+
+role, env_file = sys.argv[1:]
+if not Path(env_file).is_file():
+    raise SystemExit("缺少独立 UI 配置")
+load_dotenv(env_file, override=False)
+project = Path.cwd() / ".agent-work/ui-test"
+if project.resolve() != project:
+    raise SystemExit("隔离目录不能经链接指向其他位置")
+root = project / "storage"
+url = database_url()
+if (url.host, url.port, url.database, url.username) != ("127.0.0.1", 18123, "finance_quant_ui_test", "quant_ui_test"):
+    raise SystemExit("隔离数据库地址不符；未迁移或启动")
+if paths.storage_root() != root:
+    raise SystemExit("隔离存储根不符；未迁移或启动")
+for location in (paths.data_root(), paths.runs_root(), paths.quota_database()):
+    if not location.is_relative_to(root):
+        raise SystemExit("数据路径越出隔离存储根")
+for key in ("FINANCE_QUANT_INDUSTRY_ROOT", "FINANCE_QUANT_BENCHMARK_ROOT"):
+    if os.environ.get(key) and not Path(os.environ[key]).resolve().is_relative_to(root):
+        raise SystemExit("行业或基准路径越出隔离存储根")
+for key, folder in (("BACKUP_ROOT", "backups"), ("RESTORE_ROOT", "restores")):
+    if Path(os.environ.get(key, "")).resolve() != project / folder:
+        raise SystemExit("备份或恢复路径不符")
+if os.environ.get("ALLOWED_ORIGINS") != "http://127.0.0.1:18122":
+    raise SystemExit("隔离页面来源不符")
+if paths.frontend_dist() != Path("frontend/dist").resolve() or not (paths.frontend_dist() / "index.html").is_file():
+    raise SystemExit("缺少本次构建的同源前端")
+engine = create_engine(url, hide_parameters=True, connect_args={"connect_timeout": 10})
+try:
+    with engine.connect() as connection:
+        actual_db, actual_user = connection.exec_driver_sql("SELECT current_database(), current_user").one()
+finally:
+    engine.dispose()
+if (actual_db, actual_user) != ("finance_quant_ui_test", "quant_ui_test"):
+    raise SystemExit("实际连接库不符；未迁移或启动")
+print("已核隔离目标：", url.host, url.port, actual_db, root, flush=True)
+args = [sys.executable, "-m", "finance_quant.server", role]
+if role == "api":
+    args += ["--host", "127.0.0.1", "--port", "18122"]
+os.execv(sys.executable, args)
+PY
+```
+
+在仓库根目录执行；本段失败即停：
+
+```sh
+set -eu
+bash .agent-work/ui-test.sh migrate
+bash .agent-work/ui-test.sh check
+bash .agent-work/ui-test.sh api
+```
+
+另一个终端只执行 `bash .agent-work/ui-test.sh worker`，同样经过干净环境和实际目标核验。浏览器只打开该 API 托管的 <http://127.0.0.1:18122>。首次提交前，从这个地址核 `/api/v1/health`、已登记测试数据及浏览器 Network 的实际请求地址，确认全部指向隔离实例。
 
 README 的默认 Vite 将 `/api` 代理到 `127.0.0.1:8000`，可能连接现有实例或 SSH 隧道；本步骤不使用这个入口。独立 Compose 同样绑定回环高位端口、配完整 ALLOWED_ORIGINS，并打开该端口同源页面。UI 提交成功、API 结果复核与完整比较流程分别记录，不把只打开比较入口写成比较通过。
 
@@ -126,4 +204,4 @@ README 的默认 Vite 将 `/api` 代理到 `127.0.0.1:8000`，可能连接现有
 
 测试负责人记录 PR head、base、实际检出 SHA、各必要 job 的 run URL 和结论。GitHub PR workflow 默认可能检出合并测试提交，应说明它与 head/base 的关系，不能只抄 PR head 当作实际运行版本。初次 PR 和后续提交都需核验；无结果、跳过必要路径、取消、超时或旧提交通过均不能算当前通过。
 
-基线 `full-tests.yml` 的 job ID 为 `test`、`backup-restore`；后者还运行 Compose 启动检查。本轮 workflow 适配沿用这两个 job，目标是补主干 `master` push 触发及全部非备份数据库集成，真实备份集成继续走 Compose；是否生效以合入的 YAML 和实际 run 为准。workflow 的新增触发、分组和覆盖调整需随对应 PR 同步此处，并核实真实运行。发布另核合并提交的检查、镜像来源和目标机 digest 拉取；本地回归、PR CI、发布产物与线上冒烟是不同证据，职责见[协作指南](contributing.md)。
+`full-tests.yml` 保留 `test`、`backup-restore` 两个 job，覆盖 PR 开启/后续提交、`master` push 与手动触发。`test` 的非备份数据库集成和 Compose 中的两个真实备份集成都校验 JUnit 的执行数与零跳过；`backup-restore` 另有启动检查。只有同一 PR 的过期运行可被并发取消，主干/手动运行各自保留。workflow 的触发、分组和覆盖调整需随对应 PR 同步此处，并核实真实 run。发布另核合并提交的检查、镜像来源和目标机 digest 拉取；本地回归、PR CI、发布产物与线上冒烟是不同证据，职责见[协作指南](contributing.md)。
