@@ -84,6 +84,10 @@ def restore_valuation_dates(frame):
     return out
 
 
+def _nonempty_string(value) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def financial_audit_item(metadata):
     """Use frozen dependencies, not whether missing-value policies allow a run."""
     definitions = metadata.get("factor_definitions")
@@ -102,20 +106,28 @@ def financial_audit_item(metadata):
         else (False if complete and dependencies and all(value is False for value in dependencies) else None)
     )
     financial = metadata.get("financial_data")
+    version = _nonempty_string(financial.get("version")) if isinstance(financial, dict) else None
+    policy = _nonempty_string(financial.get("policy")) if isinstance(financial, dict) else None
     provenance = metadata.get("provenance")
-    requested = provenance.get("financial_version") if isinstance(provenance, dict) else None
+    requested_value = provenance.get("financial_version") if isinstance(provenance, dict) else None
+    requested = _nonempty_string(requested_value)
     if required is None:
         status = "unknown"
         detail = "结果中的财务依赖或绑定记录不完整，无法判断相关财务数据是否可用。"
-        if requested:
+        if version:
+            detail += f"已记录财务版本 {version}，入选因子的实际依赖及有效覆盖仍需核对。"
+        elif requested:
             detail += f"冻结请求记录了财务版本 {requested}，实际使用及覆盖仍需核对。"
     elif not required:
         status = "not_used"
         detail = "本次入选因子不依赖财务报表，无需绑定财务版本。"
-    elif (not isinstance(financial, dict) or not financial.get("version")) and requested:
+    elif not version and requested:
         status = "unknown"
         detail = f"冻结请求记录了财务版本 {requested}，但结果未保存实际读取及覆盖证据，暂无法确认财务数据是否可用。"
-    elif not isinstance(financial, dict) or not financial.get("version"):
+    elif not version and (financial is not None or requested_value is not None):
+        status = "unknown"
+        detail = "历史财务版本记录格式不完整，暂无法确认实际绑定及财务数据是否可用。"
+    elif not version:
         status = "missing_binding"
         detail = (
             "本次入选因子需要财务数据，但结果未记录绑定的财务版本。"
@@ -127,9 +139,9 @@ def financial_audit_item(metadata):
         status = "unverified"
         detail = (
             "使用财务数据版本 "
-            + str(financial["version"])
+            + version
             + "："
-            + (financial.get("policy") or "按公告日估计历史可见时间")
+            + (policy or "按公告日估计历史可见时间")
             + "。供应商未留痕的历史更正无法还原，因此不是严格PIT。"
         )
     return {"key": "financials", "label": "财务报表", "status": status, "detail": detail}

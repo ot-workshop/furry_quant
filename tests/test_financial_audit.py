@@ -122,11 +122,12 @@ def test_legacy_api_corrects_only_audit_and_keeps_frozen_metrics_and_files(tmp_p
     assert {path: file_sha256(path) for path in before} == before
 
 
-def test_legacy_nullable_policy_and_audit_rows_do_not_break_reads(tmp_path):
+@pytest.mark.parametrize("policy", [None, 5])
+def test_legacy_nullable_policy_and_audit_rows_do_not_break_reads(tmp_path, policy):
     result = {
         "metadata": {
             "factor_definitions": {"value": {"requires_financials": True}},
-            "financial_data": {"version": "frozen-financials", "policy": None},
+            "financial_data": {"version": "frozen-financials", "policy": policy},
             "temporal_audit": {"items": [None]},
         },
         "labels": {"1": {"observations": []}},
@@ -178,3 +179,49 @@ def test_dependency_lookup_uses_selected_instance_ids_and_ignores_unselected_def
     assert financial_item(factor_temporal_audit(metadata))["status"] == "missing_binding"
     metadata["factor_config"] = [{"name": "momentum"}]
     assert financial_item(factor_temporal_audit(metadata))["status"] == "not_used"
+
+
+@pytest.mark.parametrize("policy", [None, 5, False, {}, [], "", "   "])
+def test_invalid_legacy_policies_use_default_explanation(policy):
+    metadata = {
+        "factor_config": [{"name": "value"}],
+        "factor_definitions": {"value": {"requires_financials": True}},
+        "financial_data": {"version": "frozen-version", "policy": policy},
+    }
+    item = financial_item(factor_temporal_audit(metadata))
+    assert item["status"] == "unverified"
+    assert "frozen-version" in item["detail"]
+    assert "按公告日估计历史可见时间" in item["detail"]
+
+
+@pytest.mark.parametrize("version", [None, 5, False, {}, [], "", "   "])
+def test_invalid_legacy_versions_cannot_claim_a_used_version(version):
+    metadata = {
+        "factor_config": [{"name": "value"}],
+        "factor_definitions": {"value": {"requires_financials": True}},
+        "financial_data": {"version": version},
+    }
+    item = financial_item(factor_temporal_audit(metadata))
+    assert item["status"] == "unknown"
+    assert "记录格式不完整" in item["detail"]
+
+
+@pytest.mark.parametrize("version", [5, False, {}, [], "", "   "])
+def test_invalid_requested_versions_stay_unknown(version):
+    metadata = {
+        "factor_config": [{"name": "value"}],
+        "factor_definitions": {"value": {"requires_financials": True}},
+        "provenance": {"financial_version": version},
+    }
+    assert financial_item(factor_temporal_audit(metadata))["status"] == "unknown"
+
+
+def test_known_actual_version_is_preserved_when_selected_definitions_are_incomplete():
+    metadata = {
+        "factor_config": [{"name": "value"}, {"name": "momentum"}],
+        "factor_definitions": {"momentum": {"requires_financials": False}},
+        "financial_data": {"version": "actual-frozen-version"},
+    }
+    item = financial_item(factor_temporal_audit(metadata))
+    assert item["status"] == "unknown"
+    assert "actual-frozen-version" in item["detail"]
