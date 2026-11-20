@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { JSDOM } from "jsdom";
 import { load } from "./helpers/load.mjs";
 
@@ -82,26 +82,25 @@ globalThis.ResizeObserver = class {
   disconnect() {}
 };
 dom.window.ResizeObserver = globalThis.ResizeObserver;
-// antd's menu opens a MessageChannel and never closes it; in jsdom that port is
-// the only thing keeping the test worker alive. The shell does not depend on the
-// channel, so hand it an inert one instead of forcing the whole runner to exit.
-class InertMessageChannel {
+// antd's menu opens a MessageChannel and never closes it; that port is the only
+// handle keeping the test worker alive. Keep the real channel (antd's measurement
+// relies on its scheduling) and close the ports when this file finishes.
+const trackedChannels = [];
+class TrackedMessageChannel extends globalThis.MessageChannel {
   constructor() {
-    const port = {
-      onmessage: null,
-      onmessageerror: null,
-      postMessage() {},
-      close() {},
-      start() {},
-      addEventListener() {},
-      removeEventListener() {},
-    };
-    this.port1 = port;
-    this.port2 = port;
+    super();
+    trackedChannels.push(this);
   }
 }
-globalThis.MessageChannel = InertMessageChannel;
-dom.window.MessageChannel = InertMessageChannel;
+globalThis.MessageChannel = TrackedMessageChannel;
+dom.window.MessageChannel = TrackedMessageChannel;
+after(() => {
+  for (const channel of trackedChannels) {
+    channel.port1.close();
+    channel.port2.close();
+  }
+  trackedChannels.length = 0;
+});
 dom.window.scrollTo = () => {};
 globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0);
 globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
@@ -250,5 +249,5 @@ test("the desktop shell keeps the sider and crosses the 768px breakpoint", async
   }
 });
 
-// Every test reports on its own; the inert MessageChannel above keeps the worker
-// free of stray handles so `node --test` exits without a forced stop.
+// Every test reports on its own; the ports opened above are closed in `after`,
+// so `node --test` exits without a forced stop.

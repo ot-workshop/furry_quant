@@ -229,6 +229,10 @@ body {
   .result-tabs .ant-tabs-nav-wrap {
     overflow-x: auto !important;
   }
+  /* Draw the focus ring inside the tab so the scrolling strip cannot clip it. */
+  .result-tabs .ant-tabs-tab-btn:focus-visible {
+    outline-offset: -2px;
+  }
 }
 
 /* A value never breaks inside a number. Below a two-column width the summary
