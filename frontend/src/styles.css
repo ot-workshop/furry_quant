@@ -231,8 +231,16 @@ body {
   }
 }
 
+/* A value never breaks inside a number. Below a two-column width the summary
+   falls back to one column instead (200% zoom on a 390px phone is ~195 CSS px). */
 .kpi-grid .ant-statistic-content {
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+}
+
+@media (max-width: 279px) {
+  .kpi-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .with-aside {
