@@ -728,3 +728,23 @@ def test_a_string_provenance_or_nan_metric_is_a_conflict_response(tmp_path):
             params={"baseline_run_id": "good", "candidate_run_id": run_id},
         )
         assert response.status_code == 409, run_id
+
+
+def test_a_broken_provenance_is_not_masked_by_a_valid_related_factor_id(tmp_path):
+    # The archive carries a usable factor_run_id and a factors archive exists; the
+    # broken provenance must still be rejected before the recipe lookup runs.
+    broken = backtest("broken", provenance={"factor_run_id": "fixed-factors", "factors": None})
+    broken["metadata"]["provenance"] = "corrupt"
+    broken["metadata"]["factor_run_id"] = "fixed-factors"
+    publish(tmp_path, "broken", broken)
+    ResultStore(tmp_path).publish(
+        "factors",
+        "fixed-factors",
+        {"metadata": {"factor_config": {"factors": [{"name": "momentum", "weight": 1.0}]}}, "history": []},
+    )
+    publish(tmp_path, "peer", backtest("peer"))
+    response = client_for(tmp_path).get(
+        "/api/v1/backtest-comparisons",
+        params={"baseline_run_id": "broken", "candidate_run_id": "peer"},
+    )
+    assert response.status_code == 409

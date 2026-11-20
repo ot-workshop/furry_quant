@@ -275,16 +275,34 @@ def _benchmark_code(metadata: dict) -> Any:
     return code
 
 
-def _side(document: dict, identifier: str) -> dict[str, Any]:
-    summary = _summary(document)
-    metadata = document.get("metadata") or {}
+def _validate_document(document: dict) -> None:
+    """Reject a stored document whose nested fields are the wrong shape.
+
+    Runs on the original archive, before any missing evidence is filled in, so a
+    broken field cannot be masked by a successful related-archive lookup.
+    """
+
+    metadata = document.get("metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata is not an object")
     provenance = metadata.get("provenance")
     if provenance is not None and not isinstance(provenance, dict):
         raise ValueError("metadata.provenance is not an object")
+    summary = document.get("summary")
+    if not isinstance(summary, dict):
+        raise ValueError("summary is not an object")
+    metrics = summary.get("metrics") or {}
+    if not isinstance(metrics, dict):
+        raise ValueError("summary.metrics is not an object")
     for key in ("total_return", "benchmark_return", "excess_return", "max_drawdown"):
-        value = summary["metrics"].get(key)
+        value = metrics.get(key)
         if isinstance(value, float) and not math.isfinite(value):
             raise ValueError(f"metric {key} is not finite")
+
+
+def _side(document: dict, identifier: str) -> dict[str, Any]:
+    summary = _summary(document)
+    metadata = document.get("metadata") or {}
     benchmark = metadata.get("benchmark") or {}
     return {
         "id": identifier,
@@ -736,6 +754,10 @@ def comparison_router(store) -> APIRouter:
                 exists = False
             detail = "回测结果文件损坏或格式异常，请重新运行该配置" if exists else "回测结果不存在"
             raise HTTPException(409 if exists else 404, detail) from None
+        try:
+            _validate_document(document)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise HTTPException(409, "回测结果格式异常（嵌套字段类型不符），无法比较") from None
         return document
 
     @router.get("/backtest-comparisons")
