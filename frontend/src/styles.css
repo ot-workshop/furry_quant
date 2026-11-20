@@ -331,13 +331,16 @@ body {
   }
   .cmp-row,
   .cmp-row-field {
-    grid-template-columns: minmax(0, 1fr);
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
   }
   .cmp-key {
     white-space: normal;
   }
   .cmp-status {
-    grid-column: 1;
+    grid-column: auto;
   }
   /* The evidence card header stacks so the switch cannot squeeze the title
      into one character per line. */
