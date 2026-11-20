@@ -260,6 +260,70 @@ body {
   align-items: start;
 }
 
+/* ---------------------------------------------- backtest comparison view */
+
+.cmp-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.cmp-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: var(--ant-border-radius-lg);
+  min-width: 0;
+}
+
+.cmp-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.9fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  padding-block: 2px;
+}
+
+.cmp-row-field {
+  grid-template-columns: minmax(88px, 0.9fr) minmax(0, 1.4fr) minmax(
+      0,
+      1.4fr
+    ) auto;
+}
+
+.cmp-key {
+  color: var(--ant-color-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cmp-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.cmp-side {
+  color: var(--ant-color-text-tertiary);
+  font-size: 11px;
+  margin-inline-end: 2px;
+}
+
+.cmp-status {
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .cmp-row-field {
+    grid-template-columns: minmax(72px, 0.9fr) minmax(0, 1fr);
+  }
+  .cmp-row-field .cmp-status {
+    grid-column: 2;
+  }
+}
+
 .aside-sticky {
   position: sticky;
   top: 72px;

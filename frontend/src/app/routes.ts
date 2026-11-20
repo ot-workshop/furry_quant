@@ -8,6 +8,7 @@ export type Section =
   | "factors"
   | "evaluations"
   | "experiments"
+  | "compare"
   | "data";
 
 export interface Route {
@@ -25,6 +26,7 @@ const SECTIONS: Record<string, Section> = {
   factors: "factors",
   evaluations: "evaluations",
   experiments: "experiments",
+  compare: "compare",
   data: "data",
 };
 
@@ -114,5 +116,6 @@ export const paths = {
   newExperiment: (selection?: string) =>
     `/experiments/new${selection ? `?selection=${encode(selection)}` : ""}`,
   experiment: (id: string) => `/experiments/${encode(id)}`,
+  compare: () => "/compare",
   data: (tab?: string) => `/data${tab ? `?tab=${encode(tab)}` : ""}`,
 };
