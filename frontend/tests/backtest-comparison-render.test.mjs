@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { JSDOM } from "jsdom";
 import { load } from "./helpers/load.mjs";
 
@@ -46,6 +46,24 @@ globalThis.ResizeObserver = class {
   disconnect() {}
 };
 dom.window.ResizeObserver = globalThis.ResizeObserver;
+// antd's selects open a MessageChannel and never close it; keep the real channel
+// and close both ports when this file finishes so the worker can drain.
+const trackedChannels = [];
+class TrackedMessageChannel extends globalThis.MessageChannel {
+  constructor() {
+    super();
+    trackedChannels.push(this);
+  }
+}
+globalThis.MessageChannel = TrackedMessageChannel;
+dom.window.MessageChannel = TrackedMessageChannel;
+after(() => {
+  for (const channel of trackedChannels) {
+    channel.port1.close();
+    channel.port2.close();
+  }
+  trackedChannels.length = 0;
+});
 dom.window.scrollTo = () => {};
 globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0);
 globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
@@ -207,11 +225,21 @@ async function choose(selectIndex, optionText) {
   await waitFor(() =>
     assert.ok(document.querySelector(".ant-select-dropdown:not(.ant-select-dropdown-hidden)")),
   );
-  const option = [...document.querySelectorAll(".ant-select-item-option")].find((node) =>
+  const dropdown = document.querySelector(
+    ".ant-select-dropdown:not(.ant-select-dropdown-hidden)",
+  );
+  const option = [...dropdown.querySelectorAll(".ant-select-item-option")].find((node) =>
     node.textContent.includes(optionText),
   );
   assert.ok(option, `option ${optionText} is listed`);
   await act(async () => option.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await waitFor(() =>
+    assert.equal(
+      document.querySelector(".ant-select-dropdown:not(.ant-select-dropdown-hidden)"),
+      null,
+      "the dropdown closes after choosing",
+    ),
+  );
 }
 
 test("the comparison page shows the evidence, keeps unknown apart from equal and swaps sides", async () => {

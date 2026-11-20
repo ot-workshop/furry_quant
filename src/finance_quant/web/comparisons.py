@@ -269,9 +269,7 @@ def _number(value: Any) -> float | None:
     return float(value)
 
 
-def _metric(
-    key: str, label: str, unit: str, baseline: Any, candidate: Any, comparable: bool
-) -> dict[str, Any]:
+def _metric(key: str, label: str, unit: str, baseline: Any, candidate: Any, comparable: bool) -> dict[str, Any]:
     left, right = _number(baseline), _number(candidate)
     delta = None
     if left is not None and right is not None:
@@ -420,18 +418,18 @@ def _relation(side_a: dict, side_b: dict) -> dict[str, Any]:
         "derived_run_id": derived["id"],
         "source_run_id": source["id"],
         "benchmark_delta_pp": (
-            (benchmark_delta - source_benchmark) * 100 if None not in (benchmark_delta, source_benchmark) else None
+            (benchmark_delta - source_benchmark) * 100
+            if benchmark_delta is not None and source_benchmark is not None
+            else None
         ),
         "excess_delta_pp": (
-            (excess_delta - source_excess) * 100 if None not in (excess_delta, source_excess) else None
+            (excess_delta - source_excess) * 100 if excess_delta is not None and source_excess is not None else None
         ),
         "explanation": explanation,
     }
 
 
-def compare_documents(
-    baseline_id: str, candidate_id: str, baseline: dict, candidate: dict
-) -> dict[str, Any]:
+def compare_documents(baseline_id: str, candidate_id: str, baseline: dict, candidate: dict) -> dict[str, Any]:
     side_a = _side(baseline, baseline_id)
     side_b = _side(candidate, candidate_id)
     comparability = _comparability(side_a, side_b)
