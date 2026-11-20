@@ -446,14 +446,7 @@ body {
 }
 
 .table-scroll-hint {
-  display: none;
   font-size: 12px;
-}
-
-@media (max-width: 767px) {
-  .table-scroll-hint {
-    display: block;
-  }
 }
 
 .notes .ant-collapse-header {
