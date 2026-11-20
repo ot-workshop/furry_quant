@@ -1,4 +1,10 @@
-import type { MouseEvent, ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import {
   Alert,
   Button,
@@ -124,6 +130,69 @@ export function Section({
     >
       {children}
     </Card>
+  );
+}
+
+/**
+ * A locally scrollable table region: the page keeps the viewport width, the
+ * table keeps readable columns, and keyboard users can reach the last column.
+ */
+export function TableScroll({
+  label,
+  children,
+  hint = true,
+}: {
+  label: string;
+  children: ReactNode;
+  hint?: boolean;
+}) {
+  const region = useRef<HTMLDivElement | null>(null);
+  const [scrollable, setScrollable] = useState(false);
+
+  useEffect(() => {
+    const node = region.current;
+    if (!node) return;
+    const update = () => setScrollable(node.scrollWidth > node.clientWidth + 1);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    // A page change can keep the wrapper's height while the inner table gets
+    // wider or narrower, so watch the table itself and any DOM replacement.
+    const inner = node.querySelector("table");
+    if (inner) observer.observe(inner);
+    const mutations =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver(update);
+    mutations?.observe(node, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style", "class"],
+    });
+    return () => {
+      observer.disconnect();
+      mutations?.disconnect();
+    };
+  }, [children]);
+
+  return (
+    <div className="table-scroll-host">
+      <div
+        ref={region}
+        className="table-scroll"
+        tabIndex={0}
+        role="region"
+        aria-label={label}
+      >
+        {children}
+      </div>
+      {hint && scrollable ? (
+        <Typography.Text type="secondary" className="table-scroll-hint">
+          左右滑动或聚焦后用方向键查看更多列
+        </Typography.Text>
+      ) : null}
+    </div>
   );
 }
 

@@ -22,7 +22,14 @@ import {
   tradeSideLabel,
 } from "../utils/format";
 import { AnnualReturnsChart } from "./charts";
-import { EmptyState, Notes, Resource, Section, Signed } from "./ui";
+import {
+  EmptyState,
+  Notes,
+  Resource,
+  Section,
+  Signed,
+  TableScroll,
+} from "./ui";
 
 const PAGE = 50;
 
@@ -57,47 +64,60 @@ export function PerformancePanel({ detail }: { detail: BacktestDetail }) {
   const method = performance?.methodology;
   return (
     <div className="grid-2">
-      <Section title="绩效指标" description="基于扣除费用后的账户净值">
-        <Table
-          size="small"
-          pagination={false}
-          rowKey="key"
-          dataSource={rows}
-          columns={[
-            { title: "指标", dataIndex: "label" },
-            {
-              title: "策略",
-              align: "right",
-              render: (_, row) =>
-                typeof row.strategy === "string" ? (
-                  row.strategy
-                ) : SIGNED_METRICS.has(row.key) ? (
-                  <Signed
-                    value={row.strategy}
-                    format={(v) => formatMetricValue(row.key, v)}
-                  />
-                ) : (
-                  <span className="numeric">
-                    {formatMetricValue(row.key, row.strategy as number | null)}
-                  </span>
-                ),
-            },
-            {
-              title: detail.benchmark_name
-                ? `基准（${detail.benchmark_name}）`
-                : "基准",
-              align: "right",
-              render: (_, row) =>
-                typeof row.benchmark === "string" ? (
-                  row.benchmark
-                ) : (
-                  <span className="numeric">
-                    {formatMetricValue(row.key, row.benchmark as number | null)}
-                  </span>
-                ),
-            },
-          ]}
-        />
+      <Section
+        title="绩效指标"
+        description={
+          detail.benchmark_name
+            ? `基于扣除费用后的账户净值 · 基准：${detail.benchmark_name}`
+            : "基于扣除费用后的账户净值"
+        }
+      >
+        <TableScroll label="绩效指标表">
+          <Table
+            size="small"
+            pagination={false}
+            rowKey="key"
+            dataSource={rows}
+            columns={[
+              { title: "指标", dataIndex: "label" },
+              {
+                title: "策略",
+                align: "right",
+                render: (_, row) =>
+                  typeof row.strategy === "string" ? (
+                    row.strategy
+                  ) : SIGNED_METRICS.has(row.key) ? (
+                    <Signed
+                      value={row.strategy}
+                      format={(v) => formatMetricValue(row.key, v)}
+                    />
+                  ) : (
+                    <span className="numeric">
+                      {formatMetricValue(
+                        row.key,
+                        row.strategy as number | null,
+                      )}
+                    </span>
+                  ),
+              },
+              {
+                title: "基准",
+                align: "right",
+                render: (_, row) =>
+                  typeof row.benchmark === "string" ? (
+                    row.benchmark
+                  ) : (
+                    <span className="numeric">
+                      {formatMetricValue(
+                        row.key,
+                        row.benchmark as number | null,
+                      )}
+                    </span>
+                  ),
+              },
+            ]}
+          />
+        </TableScroll>
         <Notes
           items={[
             method
