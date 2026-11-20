@@ -214,13 +214,8 @@ export default function BacktestDetailPage({
           </Button>
         }
       />
-      <Card>
-        <div
-          className="grid-3"
-          style={{
-            gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-          }}
-        >
+      <Card className="kpi-card">
+        <div className="kpi-grid">
           {KPIS.map((key) => {
             const value = data.metrics?.[key];
             const signed =

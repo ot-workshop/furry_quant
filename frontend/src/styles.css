@@ -189,6 +189,39 @@ body {
   }
 }
 
+/* ------------------------------------------------------- responsive shell */
+
+@media (max-width: 767px) {
+  .app-header {
+    padding-inline: 12px;
+  }
+}
+
+.app-nav-drawer .ant-drawer-header {
+  padding-block: 12px;
+}
+
+/* Result summary: two columns on small screens keep the tab bar above the fold. */
+.kpi-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+@media (max-width: 720px) {
+  .kpi-grid {
+    gap: 10px 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .kpi-card .ant-card-body {
+    padding: 12px;
+  }
+}
+
+.kpi-grid .ant-statistic-content {
+  overflow-wrap: anywhere;
+}
+
 .with-aside {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
