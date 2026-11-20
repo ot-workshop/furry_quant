@@ -347,31 +347,37 @@ function Coverage({
         }
       >
         {label ? (
-          <Table
-            size="small"
-            rowKey="date"
-            dataSource={label.coverage}
-            pagination={{ pageSize: 10, hideOnSinglePage: true, size: "small" }}
-            columns={[
-              { title: "日期", dataIndex: "date" },
-              {
-                title: "有效 / 已评分",
-                align: "right",
-                render: (_, row) => `${row.valid_labels} / ${row.scored}`,
-              },
-              {
-                title: "排除原因",
-                render: (_, row) =>
-                  Object.entries(row.exclusions)
-                    .filter(([, count]) => count > 0)
-                    .map(
-                      ([reason, count]) =>
-                        `${EXCLUSIONS[reason] ?? reason} ${count}`,
-                    )
-                    .join("；") || "—",
-              },
-            ]}
-          />
+          <TableScroll label="收益标签覆盖表">
+            <Table
+              size="small"
+              rowKey="date"
+              dataSource={label.coverage}
+              pagination={{
+                pageSize: 10,
+                hideOnSinglePage: true,
+                size: "small",
+              }}
+              columns={[
+                { title: "日期", dataIndex: "date" },
+                {
+                  title: "有效 / 已评分",
+                  align: "right",
+                  render: (_, row) => `${row.valid_labels} / ${row.scored}`,
+                },
+                {
+                  title: "排除原因",
+                  render: (_, row) =>
+                    Object.entries(row.exclusions)
+                      .filter(([, count]) => count > 0)
+                      .map(
+                        ([reason, count]) =>
+                          `${EXCLUSIONS[reason] ?? reason} ${count}`,
+                      )
+                      .join("；") || "—",
+                },
+              ]}
+            />
+          </TableScroll>
         ) : (
           <EmptyState title="没有该持有期的标签" />
         )}
