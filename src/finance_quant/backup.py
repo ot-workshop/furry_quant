@@ -137,13 +137,102 @@ def verify(directory):
     return manifest
 
 
+def _mount_point(path, mountinfo=None):
+    """Find a mount at path itself; unrelated mounts under the same parent are irrelevant."""
+    try:
+        here, above = path.stat(), path.parent.stat()
+    except OSError:
+        return None
+    try:
+        text = mountinfo if mountinfo is not None else Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except OSError:
+        # Without the mount table a device change is the only local hint.
+        return str(path) if here.st_dev != above.st_dev else None
+    target = os.path.realpath(path)
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) > 4 and os.path.realpath(fields[4].replace("\\040", " ")) == target:
+            return target
+    return None
+
+
+def _validate_restore_target(root):
+    """Reject unusable targets before any directory is created, removed or written."""
+    parent = root.parent
+    if root == Path(root.anchor):
+        raise ValueError("恢复目录不能是文件系统根目录")
+    if root.is_symlink():
+        raise ValueError("恢复目标不能是符号链接")
+    if root.exists():
+        # Name the real reason first: a mounted target is a mount point even when /app itself is not writable.
+        if _mount_point(root) is not None:
+            raise ValueError(
+                f"恢复目标 {root} 是挂载点本身；请挂载可写的宿主父目录，并选择其下的普通子目录（例如 /restores/recovered）"
+            )
+        if not root.is_dir():
+            raise ValueError("恢复目标必须是目录")
+        if any(root.iterdir()):
+            raise ValueError("恢复只允许空目录，不会覆盖现有数据")
+    # The parent may not exist yet (the web backup job restores into RESTORE_ROOT/<name>);
+    # require the nearest existing ancestor to be creatable instead.
+    anchor = _existing_ancestor(parent)
+    if not anchor.is_dir() or not os.access(anchor, os.W_OK | os.X_OK):
+        raise ValueError(f"恢复目标父目录 {anchor} 不可写，请换用可写父目录下的普通子目录")
+
+
+def _existing_ancestor(path):
+    current = path
+    while not current.exists():
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return current
+
+
+def _replace_for_restore(root):
+    """Prove the checked empty target can be removed and replaced, then make a fresh placeholder."""
+    if not root.exists():
+        return
+    try:
+        root.rmdir()
+        root.mkdir()
+    except OSError as error:
+        raise ValueError(f"恢复目标 {root} 不可移除（{error}）；请换用可写父目录下的普通子目录") from error
+
+
+def _create_staging(root):
+    """Create the private staging directory that publishes onto root at the end."""
+    staging = Path(str(root) + ".restore-" + uuid.uuid4().hex)
+    try:
+        staging.mkdir()
+    except OSError as error:
+        raise ValueError(f"恢复目标 {root} 不可发布（{error}）；请换用可写父目录下的普通子目录") from error
+    return staging
+
+
+def _release_created_target(root, created_target):
+    """Drop only the empty target directory this call created; never a directory that gained content."""
+    if not created_target:
+        return
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+
+
 def restore(directory, *, root, engine):
-    directory, root = Path(directory).resolve(), Path(root).resolve()
+    original, directory = Path(root), Path(directory).resolve()
     manifest = verify(directory)
-    if root == Path(root.anchor) or directory.is_relative_to(root) or root.is_relative_to(directory):
-        raise ValueError("恢复目录与备份目录须相互独立，且不能是磁盘根目录")
-    if root.exists() and any(root.iterdir()):
-        raise ValueError("恢复只允许空目录，不会覆盖现有数据")
+    root = original.resolve()
+    if original.is_symlink():
+        raise ValueError("恢复目标不能是符号链接")
+    if root == Path(root.anchor):
+        raise ValueError("恢复目录不能是文件系统根目录")
+    if directory.is_relative_to(root) or root.is_relative_to(directory):
+        raise ValueError("恢复目录与备份目录须相互独立")
+    # Read-only target checks run before the lock so an unusable target never reaches the database.
+    _validate_restore_target(root)
     with offline_lock(engine):
         with engine.connect() as connection:
             identity = connection.execute(text("SELECT current_database(), current_schema()")).one()
@@ -158,46 +247,75 @@ def restore(directory, *, root, engine):
             ).scalar_one()
             if count:
                 raise ValueError("恢复只允许空数据库；已迁移或已有数据的数据库不能作为目标")
-        staging = root.parent / ("." + root.name + ".restore-" + uuid.uuid4().hex)
-        staging.mkdir(parents=True)
-        with tarfile.open(directory / "storage.tar") as archive:
-            for member in archive:
-                target = staging.joinpath(*_safe_name(member.name).parts)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                source = archive.extractfile(member)
-                assert source is not None
-                with source, target.open("wb") as output:
-                    shutil.copyfileobj(source, output)
-        # No --clean: a restore can never erase existing database objects.
-        pg_command(
-            "pg_restore",
-            [
-                "--exit-on-error",
-                "--no-owner",
-                "--no-privileges",
-                "--dbname",
-                engine.url.database,
-                directory / "database.dump",
-            ],
-            engine.url,
-        )
-
-        with engine.begin() as connection:
-            # Restoring must not unexpectedly execute a preserved queue on worker startup.
-            connection.execute(
-                update(research_task)
-                .where(research_task.c.status.in_(["running", "queued"]))
-                .values(
-                    status="interrupted",
-                    stage="finished",
-                    message="从备份恢复，请确认后重新运行",
-                    error="备份恢复后暂停原队列",
-                    finished_at=datetime.now(timezone.utc),
-                )
+        # Only an empty, checked target is replaced, and only after the database was proven empty.
+        # Re-check inside the lock: the target may have changed while this restore waited for it.
+        _validate_restore_target(root)
+        try:
+            root.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise ValueError(
+                f"恢复目标父目录 {root.parent} 不可创建（{error}）；请换用可写父目录下的普通子目录"
+            ) from error
+        _replace_for_restore(root)
+        created_target = False
+        if not root.exists():
+            try:
+                root.mkdir()
+                created_target = True
+            except OSError as error:
+                raise ValueError(f"恢复目标 {root} 不可创建（{error}）；请换用可写父目录下的普通子目录") from error
+        try:
+            staging = _create_staging(root)
+        except BaseException:
+            _release_created_target(root, created_target)
+            raise
+        database_written = False
+        try:
+            with tarfile.open(directory / "storage.tar") as archive:
+                for member in archive:
+                    target = staging.joinpath(*_safe_name(member.name).parts)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    source = archive.extractfile(member)
+                    assert source is not None
+                    with source, target.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+            # No --clean: a restore can never erase existing database objects.
+            database_written = True
+            pg_command(
+                "pg_restore",
+                [
+                    "--exit-on-error",
+                    "--no-owner",
+                    "--no-privileges",
+                    "--dbname",
+                    engine.url.database,
+                    directory / "database.dump",
+                ],
+                engine.url,
             )
-        if root.exists():
-            root.rmdir()  # Checked empty; never recursively remove a target.
-        staging.rename(root)
+
+            with engine.begin() as connection:
+                # Restoring must not unexpectedly execute a preserved queue on worker startup.
+                connection.execute(
+                    update(research_task)
+                    .where(research_task.c.status.in_(["running", "queued"]))
+                    .values(
+                        status="interrupted",
+                        stage="finished",
+                        message="从备份恢复，请确认后重新运行",
+                        error="备份恢复后暂停原队列",
+                        finished_at=datetime.now(timezone.utc),
+                    )
+                )
+            root.rmdir()  # Private empty placeholder created by this restore.
+            staging.rename(root)
+        except BaseException:
+            # Before any database write both staging and an empty target created here are ours to drop.
+            if not database_written:
+                shutil.rmtree(staging, ignore_errors=True)
+                _release_created_target(root, created_target)
+            raise
+        # Keep the schedule switch inside the lock: a worker must never read the restored plan as enabled.
         schedule = root / manifest["layout"]["data"] / "updates/schedule.json"
         if schedule.exists():
             document = json.loads(schedule.read_text(encoding="utf-8"))
@@ -223,11 +341,14 @@ def main():
             if not os.environ.get("POSTGRES_HOST"):
                 parser.error("请显式配置目标数据库，不会自动读取开发环境配置")
             engine = create_engine(database_url(), hide_parameters=True)
-            root = storage_root()
             if args.action == "create":
-                manifest = create(args.directory, root=root, engine=engine)
+                manifest = create(args.directory, root=storage_root(), engine=engine)
             else:
-                manifest = restore(args.directory, root=root, engine=engine)
+                # The CLI must hand over the configured path as written, so symlinked targets stay visible.
+                configured = os.environ.get("STORAGE_ROOT")
+                manifest = restore(
+                    args.directory, root=Path(configured) if configured else storage_root(), engine=engine
+                )
             engine.dispose()
         print(
             json.dumps(

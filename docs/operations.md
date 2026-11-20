@@ -199,16 +199,26 @@ BACKUP_ROOT=/home/用户名/finance-quant/backups
 HTTP_PORT=8001
 ```
 
-恢复环境使用独立的部署目录、项目名、数据库目录和业务目录；备份目录可以指向原归档位置。恢复目标必须是全新空数据库和空存储目录；不要先运行 migrate。恢复命令会在任何数据库写入前检查实际数据库身份、空库、空目录及完整归档校验：
+恢复环境使用独立的部署目录、项目名、数据库目录和业务目录；备份目录可以指向原归档位置。恢复目标必须是全新空数据库和空存储目录；不要先运行 migrate。CLI 恢复的目标是**可写宿主父目录下的独立子目录**，不要把 `/app/storage` 这类挂载点本身作为恢复目标，也不要提高容器用户权限。先在恢复项目的 `.env` 中给 `RESTORE_ROOT` 指定专用宿主父目录（例如宿主上的 `/home/用户名/finance-quant-restore-check/restores`，容器内为 `/restores`），目标子目录（例如 `recovered`）可以尚不存在：
 
 ```sh
 docker compose up -d db
-docker compose run --rm maintenance python -m finance_quant.backup restore /backups/backup-20261112
-docker compose run --rm maintenance python -m finance_quant.server check
+docker compose --profile tools run --rm -e STORAGE_ROOT=/restores/recovered \
+  maintenance python -m finance_quant.backup restore /backups/backup-20261112
+```
+
+恢复进程按固定顺序执行：先校验归档完整性，再对恢复目标做只读检查（父目录可写、目标不是挂载点、不是符号链接、不存在或为空），这些检查失败时不会打开数据库、不会删除或创建任何目录；检查通过后才建立离线锁、确认实际数据库身份和目标库为空，随后才移除已存在的空目标并由当前用户重建、创建私有暂存目录，最后解包文件并执行 `pg_restore`。挂载点、父目录不可写、非空目标、无法移除的已有空目录或数据库非空都会在写库前拒绝，已有空目录无法移除时保持原样。不要用 `--user 0:0` 恢复，否则文件归 root，后续服务用户无法写入。
+
+恢复成功后保留同一项目和数据库，把项目 `.env` 的 `STORAGE_ROOT` 改为宿主的 `<恢复父目录>/recovered`，使该目录挂载为 `/app/storage`，再启动服务并检查同一运行：
+
+```sh
+docker compose --profile tools run --rm maintenance python -m finance_quant.server check
 docker compose up -d api worker
 ```
 
-恢复不会执行清库或覆盖已有文件。原排队、运行中任务改为中断状态，自动更新计划关闭，确认数据后再手动续传或开启计划。已完成任务、数据版本及结果保留。恢复失败时保留临时目录便于排查，不会清理原环境。自定义目录布局可在备份 manifest 的 layout 中查看，并在恢复环境配置相同的相对布局。
+`server check` 只检查表结构和服务可用；恢复是否完整还要从 API 读回同一 `run_id` 和 `dataset_id`，并核对冻结输入与结果文件。
+
+恢复不会执行清库或覆盖已有文件。原排队、运行中任务改为中断状态，自动更新计划关闭，确认数据后再手动续传或开启计划。已完成任务、数据版本及结果保留。发布前检查失败不会写入数据库或目标目录；已有空目标无法移除时保持原样，不同级其他挂载不会阻断合法子目录。不会清理原环境。自定义目录布局可在备份 manifest 的 layout 中查看，并在恢复环境配置相同的相对布局。
 
 ## 统一数据更新
 
