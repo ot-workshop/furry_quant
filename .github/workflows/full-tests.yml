@@ -106,6 +106,8 @@ jobs:
           --basetemp /tmp/finance-quant-tests
           -o cache_dir=/tmp/finance-quant-pytest-cache
 
+      # Cover all 16 non-backup PostgreSQL integration cases; the 2 backup/restore
+      # cases in test_backup_updates.py run in the backup-restore Compose job.
       - name: Run PostgreSQL integration tests (fail if any skipped)
         env:
           POSTGRES_HOST: 127.0.0.1
