@@ -196,19 +196,39 @@ docker compose logs --tail=100 db storage-init migrate api worker
 ```sh
 set -euo pipefail
 test "$(grep -c '^APP_IMAGE=' "$prod_env")" -eq 1
+umask 077
+release_state_base="$HOME/.local/state/finance-quant/releases"
+mkdir -p -- "$release_state_base"
+chmod 700 "$release_state_base"
+release_state="$(mktemp -d "$release_state_base/release.XXXXXX")"
+cp -- "$prod_file" "$release_state/compose.before.yaml"
+cp -- "$prod_env" "$release_state/env.before"
+sed -i "s|^APP_IMAGE=.*|APP_IMAGE=$current_image|" "$release_state/env.before"
+chmod 600 "$release_state/env.before"
+printf '%s\n' "$docker_context" "$docker_config" "$prod_dir" "$prod_project" "$prod_file" "$prod_env" \
+  "$prod_storage" "$prod_backups" "$prod_restores" "$prod_postgres" "$expected_db" "$expected_user" \
+  "$current_image" "$current_id" > "$release_state/targets.txt"
+prod_compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT version_num FROM alembic_version"' > "$release_state/schema.before"
+test -s "$release_state/schema.before"
+(cd "$release_state" && sha256sum compose.before.yaml env.before targets.txt schema.before > checksums.sha256)
+printf '发布前恢复记录=%s\n' "$release_state"
 dkr pull "$release_image"  # 拉取失败时尚未停服务。
 backup_dir="/backups/predeploy-$(date -u +%Y%m%dT%H%M%SZ)"
 prod_compose stop -t 90 api worker
 prod_compose --profile tools run --rm maintenance python -m finance_quant.backup create "$backup_dir"
 prod_compose --profile tools run --rm maintenance python -m finance_quant.backup verify "$backup_dir"
+printf '%s\n' "$backup_dir" > "$release_state/backup.txt"
 # 校验成功后仍保持停写；此间不能重新启动旧 API/worker。
 sed -i "s|^APP_IMAGE=.*|APP_IMAGE=$release_image|" "$prod_env"
 prod_compose config --quiet
+: > "$release_state/migration-attempted"
 prod_compose up -d --pull never --wait --wait-timeout 180 api worker
 prod_compose ps -a
 ```
 
 数据库保持运行。worker 收到停止信号后停止领取新任务，并给当前子进程保留退出时间。归档校验完成到新应用启动之间持续停写，使回滚点覆盖最后一次旧版本写入。新镜像的迁移依赖自动执行；`--wait` 等待应用健康，`--pull never` 使用事先已核镜像，避免在切换时隐式访问 Docker Hub。所需数据库镜像也须已在准入阶段准备好。
+
+恢复记录在停写前保存原 Compose、固定旧 digest 的配置、实际目标及 schema。目录位于本机用户私有 state，放在仓库和应用数据目录之外；`env.before` 含本机凭据，不能贴到消息、PR、日志或附件，也不进入应用数据备份。保留记录至本批部署与回滚窗口结束，故障时据打印的实际路径进入下节，不依赖损坏的新配置或在线应用。
 
 备份、校验或切换失败时，本脚本不会自动重开旧服务；记录失败发生在修改 APP_IMAGE/执行迁移之前还是之后，由负责人核实兼容性后恢复服务或进入[回滚](#回滚)。
 
@@ -255,15 +275,70 @@ mv -- "$prod_dir/docker-compose.yaml.new" "$prod_file"
 
 ## 回滚
 
-先判断数据和 schema 是否仍兼容旧版本。无迁移或已独立验证向后兼容时，经负责人决定，先按[发布准入](#发布准入与版本核对)重新初始化并核当前服务目标；`current_image` 是当前运行版本，`rollback_image` 是部署前已验旧 digest。沿同一组固定 context/项目/文件/env 执行；拉取或停止失败立即退出，不改 APP_IMAGE 或继续切换。Compose 内容需要恢复时先按技术方案准备并重新核验目标，不能临时换另一组文件跳过核验。
+发布失败后，API/worker 可能已停止或只启动一部分，**不要重跑要求健康应用在线的发布预检**。使用本次发布前保存的恢复记录，允许应用容器缺席或镜像混合；必须核固定 Docker 目标、仍在线的数据库及业务挂载，且没有正在执行的 migrate。下列故障态入口不读取损坏的新 `.env` 或新 Compose：
 
 ```sh
 set -euo pipefail
-rollback_image='ghcr.io/旧命名空间/应用@sha256:<部署前已验digest>'
-dkr pull "$rollback_image"
-prod_compose stop -t 90 worker api
-sed -i "s|^APP_IMAGE=.*|APP_IMAGE=$rollback_image|" "$prod_env"
+release_state="$HOME/.local/state/finance-quant/releases/release.<本次记录>"
+(cd "$release_state" && sha256sum --check --status checksums.sha256)
+mapfile -t saved < "$release_state/targets.txt"
+test "${#saved[@]}" -eq 14
+docker_context="${saved[0]}"; docker_config="${saved[1]}"
+prod_dir="${saved[2]}"; prod_project="${saved[3]}"; prod_file="${saved[4]}"; prod_env="${saved[5]}"
+prod_storage="${saved[6]}"; prod_backups="${saved[7]}"; prod_restores="${saved[8]}"; prod_postgres="${saved[9]}"
+expected_db="${saved[10]}"; expected_user="${saved[11]}"; current_image="${saved[12]}"; current_id="${saved[13]}"
+dkr() { env -i PATH="$PATH" HOME="$HOME" docker --config "$docker_config" --context "$docker_context" "$@"; }
+prod_compose() {
+  dkr compose -p "$prod_project" --project-directory "$prod_dir" --env-file "$prod_env" -f "$prod_file" "$@"
+}
+saved_compose() {
+  dkr compose -p "$prod_project" --project-directory "$prod_dir" --env-file "$release_state/env.before" -f "$release_state/compose.before.yaml" "$@"
+}
+mount_source() { dkr inspect "$1" --format "{{range .Mounts}}{{if eq .Destination \"$2\"}}{{.Source}}{{end}}{{end}}"; }
+saved_compose config --quiet
+test -z "$(dkr ps -q --filter "label=com.docker.compose.project=$prod_project" --filter label=com.docker.compose.service=migrate)"
+db_id="$(saved_compose ps -q db)"
+test -n "$db_id"
+test "$(mount_source "$db_id" /var/lib/postgresql)" = "$prod_postgres"
+for service in api worker; do
+  app_ids="$(dkr ps -a -q --filter "label=com.docker.compose.project=$prod_project" --filter "label=com.docker.compose.service=$service")"
+  for app_id in $app_ids; do
+    test "$(mount_source "$app_id" /app/storage)" = "$prod_storage"
+    test "$(mount_source "$app_id" /backups)" = "$prod_backups"
+    test "$(mount_source "$app_id" /restores)" = "$prod_restores"
+  done
+done
+actual_identity="$(saved_compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT current_database(), current_user"')"
+test "$actual_identity" = "$expected_db|$expected_user"
+schema_now="$(saved_compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT version_num FROM alembic_version"')"
+printf '发布前schema=%s；当前schema=%s；旧镜像=%s\n' "$(cat "$release_state/schema.before")" "$schema_now" "$current_image"
+```
+
+由 CTO 与发布负责人根据**实际失败阶段和迁移状态**记录回退结论。`schema` 相同不能证明部分迁移未改结构或数据；发生过迁移尝试时尤其不能仅据版本号相等切回。只有确认当前结构/数据可由旧镜像读取，才在恢复记录内保存 `image-rollback-reviewed.txt`，包含 `mode=image`、`schema=<当前实际版本>`、`image=<记录内旧digest>` 和非空 `decision=<本次兼容结论及依据>`。否则按下一段独立备份恢复，不能创建空文件绕过判断。
+
+以下是**已确认可直接回镜像**的切换；继续沿刚核的故障态函数执行，应用已停不会阻断，部分已启动的应用会先停止。数据库版本必须回到发布前值，且恢复后再次确认 Compose 实际解析到旧 digest，才允许启动：
+
+```sh
+set -euo pipefail
+test "$schema_now" = "$(cat "$release_state/schema.before")"
+decision="$release_state/image-rollback-reviewed.txt"
+grep -Fx 'mode=image' "$decision" >/dev/null
+grep -Fx "schema=$schema_now" "$decision" >/dev/null
+grep -Fx "image=$current_image" "$decision" >/dev/null
+grep -E '^decision=.+' "$decision" >/dev/null
+dkr pull "$current_image"
+test "$(dkr image inspect "$current_image" --format '{{.Id}}')" = "$current_id"
+saved_compose stop -t 90 worker api
+cp -- "$release_state/compose.before.yaml" "$prod_file"
+cp -- "$release_state/env.before" "$prod_env"
+chmod 600 "$prod_env"
+cmp -s "$release_state/compose.before.yaml" "$prod_file"
+cmp -s "$release_state/env.before" "$prod_env"
 prod_compose config --quiet
+compose_image() {
+  prod_compose --profile tools config --format json | dkr run --rm -i --network none --entrypoint python "$current_image" -c 'import json, sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "$1"
+}
+for service in api worker migrate maintenance; do test "$(compose_image "$service")" = "$current_image"; done
 prod_compose up -d --pull never --wait --wait-timeout 180 api worker
 ```
 

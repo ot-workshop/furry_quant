@@ -100,7 +100,7 @@ python3 scripts/check_compose_startup.py --image finance-quant:startup-check
 以下是每次涉及研究或比较流程时的验收步骤，执行结果另附，不表示本文已经完成浏览器验收。
 
 1. 固定候选提交或镜像 digest，启动独立 API、一个 worker 和测试数据库。项目名、端口、数据库及全部存储路径与生产分离；原生 API 采用构建后的前端同源托管，具体启动见下方“隔离 UI 地址”。不能沿用默认 Vite 代理后只修改测试 API 端口。
-2. 使用可重新生成的小型数据夹具或已授权的测试数据副本；记录数据版本、日期、预热、股票池、因子、财务/行业/基准绑定。合成数据只验流程，不宣称投资有效性。
+2. 使用可重新生成的小型研究夹具；授权副本只复制研究必需的静态版本与输入，不复制数据库、任务队列、`updates/`、下载计划或默认 `.env`。记录数据版本、日期、预热、股票池、因子、财务/行业/基准绑定。合成数据只验流程，不宣称投资有效性；本演练不启用自动更新或外部下载。
 3. 从 `/research/new` 经真实 UI 提交研究，确认任务由排队走到完成，打开对应回测、因子评分和评估。核回测 KPI 与 API `metrics`、日期筛选、持仓、费用和图表；保存路由、运行 ID、请求/响应及截图。
 4. 从 `/experiments/new` 分别验证受影响的分段比较或收益来源对照。至少两种合法候选，检查分段边界、选优依据、详情跳转与覆盖；相关改动须覆盖固定池/动态池。不能只手工请求 API 就宣称 UI 提交流程通过。
 5. 财务说明改动覆盖无需财务、需要但未绑定、已绑定未认证、历史证据不足；区分真实 0 与 null。旧结果详情/JSON 下载可更正说明，报告与冻结文件不改；按测试范围记录读取前后哈希。
@@ -109,7 +109,7 @@ python3 scripts/check_compose_startup.py --image finance-quant:startup-check
 
 ### 隔离 UI 地址
 
-原生测试使用独立 PostgreSQL，示例只接受 `127.0.0.1:18123` 的 `finance_quant_ui_test`，不复用开发/生产库。安装锁定依赖后，从空白文件准备仓库根目录 `.env.ui-test`；专用密码只在本机填写：
+原生测试使用没有默认 `.env` 的干净检出、全新独立 PostgreSQL 与最小研究夹具；示例只接受 `127.0.0.1:18123` 的 `finance_quant_ui_test`，不复制开发/生产数据库。安装锁定依赖后，从空白文件准备仓库根目录 `.env.ui-test`；专用密码只在本机填写。启动器会拒绝默认 `.env` 和副本中的更新计划，避免 worker 在 `enqueue_due` 中自动排队下载；相关文件只能在本次隔离副本中处理，不能修改生产源文件：
 
 ```dotenv
 POSTGRES_HOST=127.0.0.1
@@ -138,6 +138,7 @@ clean_ui() {
 if [ "$role" = migrate ]; then clean_ui npm --prefix frontend run build; fi
 clean_ui uv run --no-sync python - "$role" "$PWD/.env.ui-test" <<'PY'
 import os
+import subprocess
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
@@ -146,6 +147,8 @@ from finance_quant import paths
 from finance_quant.persistence.database import database_url
 
 role, env_file = sys.argv[1:]
+if Path(".env").exists() or Path(".env").is_symlink():
+    raise SystemExit("UI 演练必须使用没有默认 .env 的干净检出")
 if not Path(env_file).is_file():
     raise SystemExit("缺少独立 UI 配置")
 load_dotenv(env_file, override=False)
@@ -161,6 +164,11 @@ if paths.storage_root() != root:
 for location in (paths.data_root(), paths.runs_root(), paths.quota_database()):
     if not location.is_relative_to(root):
         raise SystemExit("数据路径越出隔离存储根")
+schedule = paths.data_root() / "updates/schedule.json"
+if schedule.exists() or schedule.is_symlink():
+    raise SystemExit("隔离副本含更新计划；未启动 worker，也未触发排队")
+if os.environ.get("TUSHARE_TOKEN") or os.environ.get("TUSHARE_HTTP_URL"):
+    raise SystemExit("本演练不加载外部行情下载配置")
 for key in ("FINANCE_QUANT_INDUSTRY_ROOT", "FINANCE_QUANT_BENCHMARK_ROOT"):
     if os.environ.get(key) and not Path(os.environ[key]).resolve().is_relative_to(root):
         raise SystemExit("行业或基准路径越出隔离存储根")
@@ -183,7 +191,7 @@ print("已核隔离目标：", url.host, url.port, actual_db, root, flush=True)
 args = [sys.executable, "-m", "finance_quant.server", role]
 if role == "api":
     args += ["--host", "127.0.0.1", "--port", "18122"]
-os.execv(sys.executable, args)
+raise SystemExit(subprocess.run(args, check=False).returncode)
 PY
 ```
 
@@ -196,7 +204,7 @@ bash .agent-work/ui-test.sh check
 bash .agent-work/ui-test.sh api
 ```
 
-另一个终端只执行 `bash .agent-work/ui-test.sh worker`，同样经过干净环境和实际目标核验。浏览器只打开该 API 托管的 <http://127.0.0.1:18122>。首次提交前，从这个地址核 `/api/v1/health`、已登记测试数据及浏览器 Network 的实际请求地址，确认全部指向隔离实例。
+启动器会等待子进程并向调用者传播退出码，Linux 与 Windows 都不能把子进程失败当作成功。另一个终端只执行 `bash .agent-work/ui-test.sh worker`，同样经过干净环境、计划缺席与实际目标核验；不在演练中通过 UI 新建下载或自动计划。浏览器只打开该 API 托管的 <http://127.0.0.1:18122>。首次提交前，从这个地址核 `/api/v1/health`、已登记测试数据及浏览器 Network 的实际请求地址，确认全部指向隔离实例。
 
 README 的默认 Vite 将 `/api` 代理到 `127.0.0.1:8000`，可能连接现有实例或 SSH 隧道；本步骤不使用这个入口。独立 Compose 同样绑定回环高位端口、配完整 ALLOWED_ORIGINS，并打开该端口同源页面。UI 提交成功、API 结果复核与完整比较流程分别记录，不把只打开比较入口写成比较通过。
 
