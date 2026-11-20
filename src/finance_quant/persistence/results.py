@@ -124,22 +124,32 @@ class PgResultStore(FileResultStore):
         return result
 
     def project(self, category, run_id):
-        """Narrow read: the stored summary/metadata/payload only.
+        """Narrow read: explicit columns, no detail tables, no full payload.
 
-        One row from ``research_run``; equity, trades and Parquet tables are not
-        touched, so comparing two large runs stays a bounded read.
+        Only the summary, metadata, dataset binding and the stored performance
+        version are selected; equity, trades and Parquet tables are never touched.
         """
 
+        self.path(category, run_id)
+        statement = select(
+            research_run.c.summary,
+            research_run.c.metadata,
+            research_run.c.dataset_id,
+            research_run.c.payload.op("->")("performance").op("->>")("version").label("performance_version"),
+        ).where(research_run.c.id == run_id, research_run.c.category == category)
         with self.engine.connect() as connection:
-            row = self._record(category, run_id, connection)
-            result = copy.deepcopy(row["payload"])
-            result["metadata"] = copy.deepcopy(row["metadata"])
-            if row["dataset_id"]:
-                result["metadata"]["dataset_id"] = row["dataset_id"]
-            if category == "backtests":
-                result["summary"] = copy.deepcopy(row["summary"])
-        result.pop("tables", None)
-        return result
+            row = connection.execute(statement).mappings().first()
+        if row is None:
+            raise FileNotFoundError("结果不存在")
+        metadata = copy.deepcopy(row["metadata"])
+        if row["dataset_id"]:
+            metadata["dataset_id"] = row["dataset_id"]
+        document: dict = {"metadata": metadata}
+        if category == "backtests":
+            document["summary"] = copy.deepcopy(row["summary"])
+        if row["performance_version"]:
+            document["performance"] = {"version": row["performance_version"]}
+        return document
 
     def list(self, category):
         self.path(category, "listing-validation")

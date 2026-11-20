@@ -239,9 +239,16 @@ export default function BacktestComparisonPage() {
         return order[left.status] - order[right.status];
       })
     : [];
-  const visible = onlyChanged
-    ? dimensions.filter((dimension) => dimension.status !== "same")
-    : dimensions;
+  const visible = dimensions
+    .map((dimension) =>
+      onlyChanged
+        ? {
+            ...dimension,
+            fields: dimension.fields.filter((field) => field.status !== "same"),
+          }
+        : dimension,
+    )
+    .filter((dimension) => !onlyChanged || dimension.fields.length > 0);
 
   return (
     <>
@@ -348,6 +355,7 @@ export default function BacktestComparisonPage() {
                         checked={onlyChanged}
                         onChange={setOnlyChanged}
                         size="small"
+                        aria-label="只看不同与未知条目"
                       />
                     </Flex>
                   }

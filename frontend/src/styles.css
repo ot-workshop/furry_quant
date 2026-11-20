@@ -323,6 +323,18 @@ body {
   }
 }
 
+/* Narrowest phone / 200% zoom: one column, so long ids and evidence text never
+   push the page wider than the viewport. */
+@media (max-width: 360px) {
+  .cmp-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cmp-row,
+  .cmp-row-field {
+    grid-template-columns: minmax(60px, 0.8fr) minmax(0, 1fr);
+  }
+}
+
 .aside-sticky {
   position: sticky;
   top: 72px;

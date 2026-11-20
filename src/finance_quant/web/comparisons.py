@@ -142,7 +142,14 @@ def _dimensions(baseline: dict, candidate: dict) -> list[dict[str, Any]]:
     backtest_rules = pair(("metadata.provenance.backtest",))
     market_rules = pair(("metadata.market_rule_version",))
     costs = pair(("metadata.execution_costs",))
-    benchmark_code = pair(("metadata.benchmark_provenance.code", "metadata.benchmark.code"))
+    benchmark_code = pair(
+        (
+            "metadata.benchmark_provenance.code",
+            "metadata.benchmark.code",
+            "metadata.provenance.benchmark",
+            "metadata.config.benchmark",
+        )
+    )
     benchmark_name = pair(("metadata.benchmark_name",))
     benchmark_return_type = pair(("metadata.benchmark.return_type",))
     benchmark_series = pair(
@@ -243,7 +250,13 @@ def _side(document: dict, identifier: str) -> dict[str, Any]:
         "end_date": summary.get("end_date"),
         "created_at": summary.get("created_at"),
         "benchmark": {
-            "code": _first(metadata, "benchmark_provenance.code", "benchmark.code"),
+            "code": _first(
+                metadata,
+                "benchmark_provenance.code",
+                "benchmark.code",
+                "provenance.benchmark",
+                "config.benchmark",
+            ),
             "name": metadata.get("benchmark_name"),
             "return_type": benchmark.get("return_type"),
             "series_sha256": _first(
@@ -343,12 +356,29 @@ def _relation(
     """Same-execution detection; a cause is claimed only when every gate passes."""
 
     left, right = side_a["execution_run_id"], side_b["execution_run_id"]
+    points_right = bool(left) and left == side_b["id"]
+    points_left = bool(right) and right == side_a["id"]
+    if (points_right and right) or (points_left and left):
+        # Two pointers that contradict each other (a cycle or a one-sided back
+        # reference) cannot prove that either result derives from the other.
+        return {
+            "status": "conflict",
+            "execution_pointer": left or right,
+            "evidence": [
+                {
+                    "label": "执行来源指针相互矛盾",
+                    "baseline": left,
+                    "candidate": right,
+                }
+            ],
+            "explanation": None,
+        }
     derived: dict[str, Any] | None
     source: dict[str, Any] | None
     pointer: Any = None
-    if left and left == side_b["id"]:
+    if points_right:
         derived, source, pointer = side_a, side_b, left
-    elif right and right == side_a["id"]:
+    elif points_left:
         derived, source, pointer = side_b, side_a, right
     else:
         derived, source = None, None
@@ -557,27 +587,51 @@ def _recipe(document: dict) -> Any:
     return None
 
 
+DETAIL_KEYS = ("equity", "trades", "positions", "orders", "tables")
+
+
+def project_document(store, category: str, run_id: str) -> dict[str, Any]:
+    """One read of a stored document without its detail series.
+
+    PostgreSQL stores implement ``project`` (explicit columns, excluded from the
+    computation fingerprint). The file store only exposes its path, so the
+    projection happens here instead of changing ``storage.py``.
+    """
+
+    project = getattr(store, "project", None)
+    if callable(project):
+        return project(category, run_id)
+    document = json.loads(store.path(category, run_id).read_text(encoding="utf-8"))
+    for key in DETAIL_KEYS:
+        document.pop(key, None)
+    return document
+
+
 def attach_factor_recipe(document: dict, store) -> dict:
     """Fill a missing factor recipe from the frozen factor run it points at.
 
     Fixed-pool backtests do not always repeat the recipe in their own provenance;
-    the frozen ``factor_run_id`` is the authoritative record. Missing or broken
-    factor runs leave the field unknown rather than guessing.
+    the frozen ``factor_run_id`` is the authoritative record, and its stored
+    neutralization travels with the recipe. Missing or broken factor runs leave
+    the fields unknown rather than guessing.
     """
 
     metadata = document.get("metadata") or {}
     provenance = metadata.get("provenance") or {}
-    if provenance.get("factors"):
-        return document
     factor_run_id = provenance.get("factor_run_id") or metadata.get("factor_run_id")
     if not factor_run_id:
         return document
-    try:
-        factor_run = store.project("factors", factor_run_id)
-    except (FileNotFoundError, OSError, ValueError):
+    if provenance.get("factors") and provenance.get("neutralization"):
         return document
-    recipe = _recipe(factor_run)
-    if recipe is None:
+    try:
+        factor_run = project_document(store, "factors", factor_run_id)
+    except (FileNotFoundError, OSError, ValueError, KeyError, TypeError):
+        return document
+    factor_metadata = factor_run.get("metadata") or {}
+    recipe = _recipe(factor_run) or provenance.get("factors")
+    neutralization = provenance.get("neutralization") or factor_metadata.get("neutralization")
+    filled = {key: value for key, value in (("factors", recipe), ("neutralization", neutralization)) if value}
+    if not filled:
         return document
     return {
         **document,
@@ -585,7 +639,7 @@ def attach_factor_recipe(document: dict, store) -> dict:
             **metadata,
             "provenance": {
                 **provenance,
-                "factors": recipe,
+                **filled,
                 "factor_recipe_source": factor_run_id,
             },
         },
@@ -600,10 +654,10 @@ def comparison_router(store) -> APIRouter:
 
         document: dict[str, Any] | None
         try:
-            document = store.project("backtests", run_id)
+            document = project_document(store, "backtests", run_id)
         except FileNotFoundError:
             raise HTTPException(404, f"回测结果不存在：{run_id}") from None
-        except (OSError, ValueError):
+        except (OSError, ValueError, KeyError, TypeError):
             document = None
         if (
             not isinstance(document, dict)
@@ -612,7 +666,7 @@ def comparison_router(store) -> APIRouter:
         ):
             try:
                 exists = store.exists("backtests", run_id)
-            except (FileNotFoundError, ValueError):
+            except (FileNotFoundError, OSError, ValueError, KeyError, TypeError):
                 exists = False
             detail = "回测结果文件损坏或格式异常，请重新运行该配置" if exists else "回测结果不存在"
             raise HTTPException(409 if exists else 404, detail) from None

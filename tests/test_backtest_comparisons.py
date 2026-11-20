@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from finance_quant.persistence.results import PgResultStore
 from finance_quant.storage import ResultStore
-from finance_quant.web.comparisons import comparison_router
+from finance_quant.web.comparisons import comparison_router, project_document
 from support.fakes import make_app
 
 TOTAL = -0.16201678769416406
@@ -320,7 +320,7 @@ def test_comparison_reads_one_narrow_projection_and_never_writes(tmp_path):
             raise AssertionError("comparison must not load the stored detail document")
 
     store = NoDetailReads(tmp_path)
-    projection = store.project("backtests", "a")
+    projection = project_document(store, "backtests", "a")
     for key in ("equity", "trades", "positions", "tables"):
         assert key not in projection
     assert projection["summary"] == copy.deepcopy(document["summary"])
@@ -424,10 +424,10 @@ def test_postgres_projection_reads_one_row_and_no_detail_table(tmp_path):
             statements.append(str(statement))
             return FakeResult(
                 {
-                    "payload": {"performance": {"version": "v3"}},
                     "metadata": {"engine": "qlib"},
                     "summary": {"metrics": {"total_return": 0.1}},
                     "dataset_id": "historical-x",
+                    "performance_version": "v3",
                 }
             )
 
@@ -446,9 +446,14 @@ def test_postgres_projection_reads_one_row_and_no_detail_table(tmp_path):
 
     assert projection["summary"] == {"metrics": {"total_return": 0.1}}
     assert projection["metadata"]["dataset_id"] == "historical-x"
+    assert projection["performance"] == {"version": "v3"}
     assert len(statements) == 1, "one projection is one statement"
     sql = statements[0].lower()
     assert "research_run" in sql
+    # Explicit column projection: no wildcard, no detail tables.
+    assert "select" in sql and "*" not in sql.split("from")[0]
+    for column in ("summary", "metadata", "dataset_id", "performance"):
+        assert column in sql
     for table in ("run_equity", "run_trade", "run_metrics", "run_artifact"):
         assert table not in sql, f"{table} must not be read by the projection"
 
@@ -493,3 +498,101 @@ def test_a_fixed_pool_backtest_borrows_the_recipe_of_its_frozen_factor_run(tmp_p
     recipe = next(field for field in factors["fields"] if field["label"] == "因子与权重")
     assert recipe["status"] == "same"
     assert "momentum" in recipe["baseline"]
+
+
+def test_contradicting_execution_pointers_cannot_claim_a_cause(tmp_path):
+    # A says it came from B, but B says it came from someone else.
+    publish(tmp_path, "b-run", backtest("b-run", provenance={"execution_run_id": "other-run"}))
+    publish(tmp_path, "a-report", report_of("a-report", "b-run", PRICE_BENCHMARK))
+    client = client_for(tmp_path)
+    crossed = client.get(
+        "/api/v1/backtest-comparisons",
+        params={"baseline_run_id": "a-report", "candidate_run_id": "b-run"},
+    ).json()
+    assert crossed["relation"]["status"] == "conflict"
+    assert crossed["relation"]["explanation"] is None
+
+    # Circular: each side points at the other.
+    publish(tmp_path, "a", report_of("a", "b", PRICE_BENCHMARK))
+    publish(tmp_path, "b", report_of("b", "a", TOTAL_RETURN_BENCHMARK))
+    circular = client.get(
+        "/api/v1/backtest-comparisons", params={"baseline_run_id": "a", "candidate_run_id": "b"}
+    ).json()
+    assert circular["relation"]["status"] == "conflict"
+    assert circular["relation"]["explanation"] is None
+
+
+def test_legacy_benchmark_code_is_read_from_the_older_metadata_paths(tmp_path):
+    publish(tmp_path, "legacy", backtest("legacy", metadata={"provenance": {"benchmark": "000300.SH"}}))
+    publish(tmp_path, "modern", backtest("modern", metadata={"config": {"benchmark": "000300.SH"}}))
+    body = (
+        client_for(tmp_path)
+        .get("/api/v1/backtest-comparisons", params={"baseline_run_id": "legacy", "candidate_run_id": "modern"})
+        .json()
+    )
+    benchmark = {item["key"]: item for item in body["dimensions"]}["benchmark"]
+    code = next(field for field in benchmark["fields"] if field["label"] == "基准代码")
+    assert code["status"] == "same"
+    assert code["baseline"] == "000300.SH" and code["candidate"] == "000300.SH"
+
+
+def test_fixed_pool_recipe_keeps_the_stored_neutralization(tmp_path):
+    publish(
+        tmp_path,
+        "fixed-backtest",
+        backtest("fixed-backtest", provenance={"factor_run_id": "fixed-factors", "factors": None}),
+    )
+    ResultStore(tmp_path).publish(
+        "factors",
+        "fixed-factors",
+        {
+            "metadata": {
+                "id": "fixed-factors",
+                "factor_config": {"factors": [{"name": "momentum", "weight": 1.0, "window": 20}]},
+                "neutralization": {"mode": "industry", "industry_level": "L1"},
+            },
+            "history": [],
+        },
+    )
+    publish(
+        tmp_path,
+        "peer",
+        backtest(
+            "peer",
+            provenance={
+                "factors": [{"name": "momentum", "weight": 1.0, "window": 20}],
+                "neutralization": {"mode": "industry", "industry_level": "L1"},
+            },
+        ),
+    )
+    body = (
+        client_for(tmp_path)
+        .get(
+            "/api/v1/backtest-comparisons",
+            params={"baseline_run_id": "fixed-backtest", "candidate_run_id": "peer"},
+        )
+        .json()
+    )
+    factors = {item["key"]: item for item in body["dimensions"]}["factors"]
+    neutralization = next(field for field in factors["fields"] if field["label"] == "中性化")
+    assert neutralization["status"] == "same"
+    assert "industry" in neutralization["baseline"]
+
+
+def test_a_broken_factor_run_leaves_the_recipe_unknown_instead_of_failing(tmp_path):
+    publish(
+        tmp_path,
+        "fixed-backtest",
+        backtest("fixed-backtest", provenance={"factor_run_id": "broken-factors", "factors": None}),
+    )
+    broken = tmp_path / "factors" / "broken-factors"
+    broken.mkdir(parents=True)
+    (broken / "result.json").write_text("not json", encoding="utf-8")
+    publish(tmp_path, "peer", backtest("peer"))
+    response = client_for(tmp_path).get(
+        "/api/v1/backtest-comparisons",
+        params={"baseline_run_id": "fixed-backtest", "candidate_run_id": "peer"},
+    )
+    assert response.status_code == 200
+    factors = {item["key"]: item for item in response.json()["dimensions"]}["factors"]
+    assert all(field["status"] != "same" for field in factors["fields"])

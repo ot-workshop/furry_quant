@@ -119,18 +119,6 @@ class ResultStore:
             hydrate_tables(self, category, run_id, result)
         return result
 
-    def project(self, category: str, run_id: str) -> dict[str, Any]:
-        """Read one document without its detail series.
-
-        Comparisons only need the stored summary, metadata and provenance; the
-        equity, trade, position and table payloads stay on disk.
-        """
-
-        result = json.loads(self.path(category, run_id).read_text(encoding="utf-8"))
-        for key in ("equity", "trades", "positions", "orders", "tables"):
-            result.pop(key, None)
-        return result
-
     def list(self, category: str) -> list[dict[str, Any]]:
         directory = self.root / category
         if not directory.exists():
