@@ -191,7 +191,9 @@ docker compose logs --tail=100 db storage-init migrate api worker
 
 ## 更新镜像
 
-先完成[发布准入与版本核对](#发布准入与版本核对)，确认没有运行中的任务；在同一专用 Bash 终端沿已核 `dkr` / `prod_compose` 函数继续。以下是发布专用停写步骤，不用后文会恢复旧服务的例行备份替代。任一步失败立即退出，保留现场并由负责人处理；新开终端必须重新初始化及核验目标。
+首版流程仅适用于**现有 Compose 结构、数据库镜像、迁移定义、数据布局及运行身份兼容的应用镜像更新**。对照线上版本与最终完整候选提交的 Compose、Dockerfile、迁移及路径/检查实现，确认既有数据库已满足候选所需 schema，目录已按候选实际非 root 身份就绪，才可跳过执行 migrate/storage-init。首次部署或任一条件不满足时走单独验证的准备/迁移流程；不能先覆盖线上 Compose 再记录旧配置。
+
+先完成[发布准入与版本核对](#发布准入与版本核对)，确认没有运行中的任务；在同一专用 Bash 终端沿已核函数继续。以下是发布专用停写步骤，不用例行备份替代。任一步失败立即退出，保留现场并由负责人处理；新开终端重新初始化及核验目标。
 
 ```sh
 set -euo pipefail
@@ -202,7 +204,8 @@ mkdir -p -- "$release_state_base"
 chmod 700 "$release_state_base"
 release_state="$(mktemp -d "$release_state_base/release.XXXXXX")"
 cp -- "$prod_file" "$release_state/compose.before.yaml"
-cp -- "$prod_env" "$release_state/env.before"
+cp -- "$prod_env" "$release_state/env.original"
+cp -- "$release_state/env.original" "$release_state/env.before"
 sed -i "s|^APP_IMAGE=.*|APP_IMAGE=$current_image|" "$release_state/env.before"
 chmod 600 "$release_state/env.before"
 printf '%s\n' "$docker_context" "$docker_config" "$prod_dir" "$prod_project" "$prod_file" "$prod_env" \
@@ -210,34 +213,88 @@ printf '%s\n' "$docker_context" "$docker_config" "$prod_dir" "$prod_project" "$p
   "$current_image" "$current_id" > "$release_state/targets.txt"
 prod_compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT version_num FROM alembic_version"' > "$release_state/schema.before"
 test -s "$release_state/schema.before"
-(cd "$release_state" && sha256sum compose.before.yaml env.before targets.txt schema.before > checksums.sha256)
+db_image_before="$(dkr inspect "$db_id" --format '{{.Image}}')"
+test -n "$db_image_before"
+printf '%s\n' "$db_image_before" > "$release_state/database-image.before"
+(cd "$release_state" && sha256sum compose.before.yaml env.original env.before targets.txt schema.before database-image.before > checksums.sha256)
 printf '发布前恢复记录=%s\n' "$release_state"
 dkr pull "$release_image"  # 拉取失败时尚未停服务。
+cmp -s "$prod_file" "$release_state/compose.before.yaml"
+cmp -s "$prod_env" "$release_state/env.original"
+active_migrations="$(dkr ps -q --filter "label=com.docker.compose.project=$prod_project" --filter label=com.docker.compose.service=migrate)"
+test -z "$active_migrations"
+before_compose() {
+  dkr compose -p "$prod_project" --project-directory "$prod_dir" --env-file "$release_state/env.before" -f "$release_state/compose.before.yaml" "$@"
+}
 backup_dir="/backups/predeploy-$(date -u +%Y%m%dT%H%M%SZ)"
-prod_compose stop -t 90 api worker
-prod_compose --profile tools run --rm maintenance python -m finance_quant.backup create "$backup_dir"
-prod_compose --profile tools run --rm maintenance python -m finance_quant.backup verify "$backup_dir"
+before_compose stop -t 90 api worker
+before_compose --profile tools run --rm --no-deps maintenance python -m finance_quant.backup create "$backup_dir"
+before_compose --profile tools run --rm --no-deps maintenance python -m finance_quant.backup verify "$backup_dir"
 printf '%s\n' "$backup_dir" > "$release_state/backup.txt"
 # 校验成功后仍保持停写；此间不能重新启动旧 API/worker。
+cmp -s "$prod_file" "$release_state/compose.before.yaml"
+cmp -s "$prod_env" "$release_state/env.original"
 sed -i "s|^APP_IMAGE=.*|APP_IMAGE=$release_image|" "$prod_env"
 prod_compose config --quiet
-: > "$release_state/migration-attempted"
-prod_compose up -d --pull never --wait --wait-timeout 180 api worker
+parsed_db="$(compose_image db)"
+parsed_db_id="$(dkr image inspect "$parsed_db" --format '{{.Id}}')"
+online_db_id="$(dkr inspect "$db_id" --format '{{.Image}}')"
+test "$parsed_db_id" = "$db_image_before"
+test "$online_db_id" = "$db_image_before"
+prod_compose --profile tools run --rm --no-deps maintenance python -m finance_quant.server check
+# 沿相同候选镜像、默认用户及实际挂载验证，不加 --user 或启动依赖。
+prod_compose --profile tools run --rm --no-deps -T maintenance python - <<'PY_PATH_PROBE'
+import os
+import tempfile
+from pathlib import Path
+from finance_quant import paths
+
+assert os.geteuid() != 0, "候选必须以实际非 root 身份检查"
+root, runs, data = paths.storage_root(), paths.runs_root(), paths.data_root()
+quota = paths.quota_database()
+required = (root, runs, runs / "tasks", data, quota.parent, root / "logs",
+            Path(os.environ["BACKUP_ROOT"]), Path(os.environ["RESTORE_ROOT"]))
+for directory in dict.fromkeys(required):
+    assert directory.is_dir(), f"所需目录未就绪: {directory}"
+    # 创建唯一临时文件、写入并同步，退出时删除；既有目录不等于可写。
+    with tempfile.TemporaryFile(prefix=".release-write-probe-", dir=directory) as handle:
+        handle.write(b"candidate-write-probe")
+        handle.flush()
+        os.fsync(handle.fileno())
+if quota.exists():
+    descriptor = os.open(quota, os.O_RDWR)  # 只核既有文件可读写，不改内容。
+    os.close(descriptor)
+print(f"候选路径写入检查通过: uid={os.geteuid()} gid={os.getegid()}")
+PY_PATH_PROBE
+active_migrations="$(dkr ps -q --filter "label=com.docker.compose.project=$prod_project" --filter label=com.docker.compose.service=migrate)"
+test -z "$active_migrations"
+actual_identity="$(prod_compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT current_database(), current_user"')"
+test "$actual_identity" = "$expected_db|$expected_user"
+actual_postgres_mount="$(mount_source "$db_id" /var/lib/postgresql)"
+test "$actual_postgres_mount" = "$prod_postgres"
+db_health="$(dkr inspect "$db_id" --format '{{.State.Health.Status}}')"
+test "$db_health" = healthy
+schema_ready="$(prod_compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT version_num FROM alembic_version"')"
+test "$schema_ready" = "$(cat "$release_state/schema.before")"
+: > "$release_state/switch-attempted"
+prod_compose up -d --no-deps --pull never --wait --wait-timeout 180 api worker
 prod_compose ps -a
 ```
 
-数据库保持运行。worker 收到停止信号后停止领取新任务，并给当前子进程保留退出时间。归档校验完成到新应用启动之间持续停写，使回滚点覆盖最后一次旧版本写入。新镜像的迁移依赖自动执行；`--wait` 等待应用健康，`--pull never` 使用事先已核镜像，避免在切换时隐式访问 Docker Hub。所需数据库镜像也须已在准入阶段准备好。
+数据库保持运行。停写与备份使用保存的旧配置；归档校验到新应用启动之间不恢复旧服务。候选检查 schema 与存储路径，不执行 migrate/storage-init。server check 可能创建缺失的运行目录，不能称为只读；其 mkdir(exist_ok=True) 也不能证明既有目录可写。探针以候选默认非 root 身份在所需目录创建、写入、同步并删除临时文件，会改变文件系统元数据；进程或主机异常时检查临时残留。先在独立环境验证这些副作用，生产仅在已批准停写窗口执行。候选 schema 检查失败（即使 revision 未变）或路径不可写均在应用启动前退出。
+
+`--no-deps` 避免维护命令和应用启动协调或重建 DB 等依赖；仍须核解析数据库镜像与在线 DB 的实际 ID 一致。`--wait` 等待应用健康，`--pull never` 使用已核镜像。
 
 恢复记录在停写前保存原 Compose、固定旧 digest 的配置、实际目标及 schema。目录位于本机用户私有 state，放在仓库和应用数据目录之外；`env.before` 含本机凭据，不能贴到消息、PR、日志或附件，也不进入应用数据备份。保留记录至本批部署与回滚窗口结束，故障时据打印的实际路径进入下节，不依赖损坏的新配置或在线应用。
 
-备份、校验或切换失败时，本脚本不会自动重开旧服务；记录失败发生在修改 APP_IMAGE/执行迁移之前还是之后，由负责人核实兼容性后恢复服务或进入[回滚](#回滚)。
+备份、校验或切换失败时，本脚本不会自动重开旧服务；记录失败发生在修改 APP_IMAGE 或启动应用之前还是之后，由负责人核实兼容性后恢复服务或进入[回滚](#回滚)。
 
 ### 部署后核验
 
 ```sh
 prod_compose ps -a
 curl -fsS http://127.0.0.1:8000/api/v1/health
-prod_compose --profile tools run --rm maintenance python -m finance_quant.server check
+prod_compose --profile tools run --rm --no-deps maintenance python -m finance_quant.server check
 prod_compose exec -T api python -c 'from finance_quant.provenance import source_provenance; print(source_provenance())'
 prod_compose exec -T worker python -c 'from finance_quant.provenance import source_provenance; print(source_provenance())'
 ```
@@ -256,22 +313,9 @@ prod_compose exec -T worker python -c 'from finance_quant.provenance import sour
 
 续传后展开记录，检查剩余待处理股票及自动处理明细。存在来源冲突或缺少历史证据时，任务仍可能显示部分完成；不要通过删除股票或清空数据来绕过复核。
 
-## 更新 Compose
+## Compose 结构变化
 
-普通应用版本只需要更换 `APP_IMAGE`。当服务、volume、端口或环境变量结构发生变化时，再从本地仓库复制新版文件：
-
-```powershell
-scp docker-compose.yaml 用户名@服务器:/data/finance-quant/docker-compose.yaml.new
-```
-
-服务器先校验新文件，再替换：
-
-```sh
-dkr compose -p "$prod_project" --project-directory "$prod_dir" --env-file "$prod_env" -f "$prod_dir/docker-compose.yaml.new" config --quiet
-mv -- "$prod_dir/docker-compose.yaml.new" "$prod_file"
-```
-
-私有仓库不提供匿名 raw 下载。若必须从 GitHub API 下载，需要单独的仓库 Contents 只读凭据；该凭据与 GHCR 的 `read:packages` Token 权限不同。
+上述兼容镜像更新不替换线上 Compose。服务、数据库镜像、volume、端口或环境变量结构变化须转到单独方案：先保存实际旧文件与配置，再在隔离环境核新旧启动、数据/迁移和故障恢复，形成对应切换步骤后执行。可以准备候选文件，但不能按独立 `mv` 步骤先覆盖线上文件，再进入本节的旧配置记录。
 
 ## 回滚
 
@@ -295,22 +339,38 @@ saved_compose() {
   dkr compose -p "$prod_project" --project-directory "$prod_dir" --env-file "$release_state/env.before" -f "$release_state/compose.before.yaml" "$@"
 }
 mount_source() { dkr inspect "$1" --format "{{range .Mounts}}{{if eq .Destination \"$2\"}}{{.Source}}{{end}}{{end}}"; }
-saved_compose config --quiet
-test -z "$(dkr ps -q --filter "label=com.docker.compose.project=$prod_project" --filter label=com.docker.compose.service=migrate)"
-db_id="$(saved_compose ps -q db)"
-test -n "$db_id"
-test "$(mount_source "$db_id" /var/lib/postgresql)" = "$prod_postgres"
-for service in api worker; do
-  app_ids="$(dkr ps -a -q --filter "label=com.docker.compose.project=$prod_project" --filter "label=com.docker.compose.service=$service")"
-  for app_id in $app_ids; do
-    test "$(mount_source "$app_id" /app/storage)" = "$prod_storage"
-    test "$(mount_source "$app_id" /backups)" = "$prod_backups"
-    test "$(mount_source "$app_id" /restores)" = "$prod_restores"
+assert_read_equals() {
+  local expected_output actual_output
+  expected_output="$1"; shift
+  actual_output="$("$@")" || return $?
+  test "$actual_output" = "$expected_output"
+}
+verify_fault_target() {
+  local active_migrations app_ids app_id service expected_db_image
+  active_migrations="$(dkr ps -q --filter "label=com.docker.compose.project=$prod_project" --filter label=com.docker.compose.service=migrate)" || return $?
+  test -z "$active_migrations" || return 1
+  db_id="$(saved_compose ps -q db)" || return $?
+  test -n "$db_id" || return 1
+  expected_db_image="$(cat "$release_state/database-image.before")" || return $?
+  test -n "$expected_db_image" || return 1
+  assert_read_equals healthy dkr inspect "$db_id" --format '{{.State.Health.Status}}' || return $?
+  assert_read_equals "$expected_db_image" dkr inspect "$db_id" --format '{{.Image}}' || return $?
+  assert_read_equals "$prod_postgres" mount_source "$db_id" /var/lib/postgresql || return $?
+  for service in api worker; do
+    app_ids="$(dkr ps -a -q --filter "label=com.docker.compose.project=$prod_project" --filter "label=com.docker.compose.service=$service")" || return $?
+    for app_id in $app_ids; do
+      assert_read_equals "$prod_storage" mount_source "$app_id" /app/storage || return $?
+      assert_read_equals "$prod_backups" mount_source "$app_id" /backups || return $?
+      assert_read_equals "$prod_restores" mount_source "$app_id" /restores || return $?
+    done
   done
-done
-actual_identity="$(saved_compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT current_database(), current_user"')"
-test "$actual_identity" = "$expected_db|$expected_user"
-schema_now="$(saved_compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT version_num FROM alembic_version"')"
+  actual_identity="$(saved_compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT current_database(), current_user"')" || return $?
+  test "$actual_identity" = "$expected_db|$expected_user" || return 1
+  schema_now="$(saved_compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT version_num FROM alembic_version"')" || return $?
+  test -n "$schema_now"
+}
+saved_compose config --quiet
+verify_fault_target
 printf '发布前schema=%s；当前schema=%s；旧镜像=%s\n' "$(cat "$release_state/schema.before")" "$schema_now" "$current_image"
 ```
 
@@ -320,15 +380,24 @@ printf '发布前schema=%s；当前schema=%s；旧镜像=%s\n' "$(cat "$release_
 
 ```sh
 set -euo pipefail
-test "$schema_now" = "$(cat "$release_state/schema.before")"
 decision="$release_state/image-rollback-reviewed.txt"
 grep -Fx 'mode=image' "$decision" >/dev/null
-grep -Fx "schema=$schema_now" "$decision" >/dev/null
 grep -Fx "image=$current_image" "$decision" >/dev/null
 grep -E '^decision=.+' "$decision" >/dev/null
-dkr pull "$current_image"
-test "$(dkr image inspect "$current_image" --format '{{.Id}}')" = "$current_id"
+if cached_id="$(dkr image inspect "$current_image" --format '{{.Id}}' 2> "$release_state/image-inspect.stderr")"; then
+  test "$cached_id" = "$current_id"
+else
+  # 只有明确缺图时获取；引擎或权限错误不能当作缺缓存。
+  grep -Fq 'No such image' "$release_state/image-inspect.stderr"
+  dkr pull "$current_image"
+  cached_id="$(dkr image inspect "$current_image" --format '{{.Id}}')"
+  test "$cached_id" = "$current_id"
+fi
 saved_compose stop -t 90 worker api
+# 人工判断之后、替换配置之前，重新读取实际状态并匹配本次判断。
+verify_fault_target
+test "$schema_now" = "$(cat "$release_state/schema.before")"
+grep -Fx "schema=$schema_now" "$decision" >/dev/null
 cp -- "$release_state/compose.before.yaml" "$prod_file"
 cp -- "$release_state/env.before" "$prod_env"
 chmod 600 "$prod_env"
@@ -338,9 +407,20 @@ prod_compose config --quiet
 compose_image() {
   prod_compose --profile tools config --format json | dkr run --rm -i --network none --entrypoint python "$current_image" -c 'import json, sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "$1"
 }
-for service in api worker migrate maintenance; do test "$(compose_image "$service")" = "$current_image"; done
-prod_compose up -d --pull never --wait --wait-timeout 180 api worker
+for service in api worker migrate maintenance; do
+  parsed_image="$(compose_image "$service")"
+  test "$parsed_image" = "$current_image"
+done
+parsed_db="$(compose_image db)"
+parsed_db_id="$(dkr image inspect "$parsed_db" --format '{{.Id}}')"
+online_db_id="$(dkr inspect "$db_id" --format '{{.Image}}')"
+test "$parsed_db_id" = "$(cat "$release_state/database-image.before")"
+test "$online_db_id" = "$parsed_db_id"
+assert_read_equals "$prod_postgres" mount_source "$db_id" /var/lib/postgresql
+prod_compose up -d --no-deps --pull never --wait --wait-timeout 180 api worker
 ```
+
+旧应用的精确 digest 与 ID 命中本机时不访问仓库；缺失才获取，其他缓存核验错误立即停止。审批期间的迁移、库身份、schema 或 DB 镜像变化会在替换前被拒绝。解析出的数据库标签若已指向别的本地镜像，也不能继续；`--no-deps` 额外保证本步骤不协调或重建数据库依赖。
 
 镜像回滚不会自动回滚数据库。存在迁移而未证明向后兼容时，不只切旧镜像；使用部署前已校验备份，按[恢复](#恢复)在独立空数据库和空存储中恢复、验证，再由负责人切换访问。不要先 migrate 空目标，也不要在现有业务目录上覆盖恢复。迁移应采用向前兼容的扩展/收缩方式；删除列、修改字段类型等破坏性操作拆分到后续版本。
 
