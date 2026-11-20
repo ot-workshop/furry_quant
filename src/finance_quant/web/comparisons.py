@@ -354,17 +354,26 @@ def _relation(
         derived, source = None, None
 
     if derived is None or source is None:
-        status = "independent" if (left or right) else UNKNOWN
+        shared = left and right and left == right
+        status = "sibling" if shared else ("independent" if (left or right) else UNKNOWN)
+        evidence = [
+            {
+                "label": "执行来源指针",
+                "baseline": left,
+                "candidate": right,
+            }
+        ]
+        if shared:
+            evidence.append(
+                {
+                    "label": "两侧派生自同一个执行结果",
+                    "value": left,
+                }
+            )
         return {
             "status": status,
             "execution_pointer": left or right,
-            "evidence": [
-                {
-                    "label": "执行来源指针",
-                    "baseline": left,
-                    "candidate": right,
-                }
-            ],
+            "evidence": evidence,
             "explanation": None,
         }
 
@@ -445,9 +454,9 @@ def _relation(
         excess_pp = (excess_b - excess_a) * 100
         if abs(benchmark_pp + excess_pp) <= 1e-6:
             explanation = (
-                f"两次结果来自同一执行结果，策略总收益完全相同；只有评价基准不同，"
-                f"已存基准收益差 {benchmark_pp:+.4f} 个百分点（B − A），报表超额收益随之变化 "
-                f"{excess_pp:+.4f} 个百分点。这不代表策略交易发生变化。"
+                f"两次结果来自同一执行结果，策略总收益一致；报表差可由已存基准收益差解释："
+                f"{benchmark_pp:+.4f} 个百分点（B − A），报表超额收益随之变化 "
+                f"{excess_pp:+.4f} 个百分点。这不是策略交易变化的因果证明。"
             )
             evidence.append(
                 {
@@ -504,6 +513,8 @@ def compare_documents(baseline_id: str, candidate_id: str, baseline: dict, candi
     unknown = [item["label"] for item in dimensions if item["status"] == UNKNOWN]
     if relation["status"] == "same_execution":
         conclusion = "两次结果来自同一执行结果，报表差可由已存基准收益差解释"
+    elif relation["status"] == "sibling":
+        conclusion = "两次结果都派生自同一个执行结果，差异需按各自基准逐项核对"
     elif changed and unknown:
         conclusion = f"发现多项差异（{len(changed)} 项不同、{len(unknown)} 项未知），不据此判断单一原因"
     elif changed:
@@ -526,6 +537,58 @@ def compare_documents(baseline_id: str, candidate_id: str, baseline: dict, candi
             "最早评分差异或最早成交差异的定位：首版不扫描全量净值与成交明细",
             "旧价格基准的序列版本：旧结果未保存来源版本时保持未知",
         ],
+    }
+
+
+RECIPE_PATHS = (
+    "metadata.factors",
+    "metadata.factor_config.factors",
+    "metadata.factor_config",
+    "metadata.request.factors",
+    "metadata.specs",
+)
+
+
+def _recipe(document: dict) -> Any:
+    for path in RECIPE_PATHS:
+        value = _value(document, path)
+        if isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
+            return value
+    return None
+
+
+def attach_factor_recipe(document: dict, store) -> dict:
+    """Fill a missing factor recipe from the frozen factor run it points at.
+
+    Fixed-pool backtests do not always repeat the recipe in their own provenance;
+    the frozen ``factor_run_id`` is the authoritative record. Missing or broken
+    factor runs leave the field unknown rather than guessing.
+    """
+
+    metadata = document.get("metadata") or {}
+    provenance = metadata.get("provenance") or {}
+    if provenance.get("factors"):
+        return document
+    factor_run_id = provenance.get("factor_run_id") or metadata.get("factor_run_id")
+    if not factor_run_id:
+        return document
+    try:
+        factor_run = store.project("factors", factor_run_id)
+    except (FileNotFoundError, OSError, ValueError):
+        return document
+    recipe = _recipe(factor_run)
+    if recipe is None:
+        return document
+    return {
+        **document,
+        "metadata": {
+            **metadata,
+            "provenance": {
+                **provenance,
+                "factors": recipe,
+                "factor_recipe_source": factor_run_id,
+            },
+        },
     }
 
 
@@ -559,8 +622,8 @@ def comparison_router(store) -> APIRouter:
     def compare(baseline_run_id: str, candidate_run_id: str):
         if baseline_run_id == candidate_run_id:
             raise HTTPException(422, "请选择两条不同的回测")
-        baseline = load(baseline_run_id)
-        candidate = load(candidate_run_id)
+        baseline = attach_factor_recipe(load(baseline_run_id), store)
+        candidate = attach_factor_recipe(load(candidate_run_id), store)
         return compare_documents(baseline_run_id, candidate_run_id, baseline, candidate)
 
     return router

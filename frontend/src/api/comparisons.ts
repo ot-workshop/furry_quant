@@ -50,7 +50,7 @@ export interface ComparisonMetric {
 }
 
 export interface ComparisonRelation {
-  status: "same_execution" | "conflict" | "independent" | "unknown";
+  status: "same_execution" | "conflict" | "independent" | "sibling" | "unknown";
   execution_pointer: string | null;
   evidence: Array<{
     label: string;

@@ -5,6 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from finance_quant.persistence.results import PgResultStore
 from finance_quant.storage import ResultStore
 from finance_quant.web.comparisons import comparison_router
 from support.fakes import make_app
@@ -139,7 +140,7 @@ def test_same_execution_explains_the_reported_excess_gap_only(tmp_path):
     assert body["relation"]["benchmark_delta_pp"] == pytest.approx(-4.942033994448147, abs=1e-9)
     assert body["relation"]["excess_delta_pp"] == pytest.approx(4.942033994448147, abs=1e-9)
     assert "-4.9420" in body["relation"]["explanation"]
-    assert "不代表策略交易发生变化" in body["relation"]["explanation"]
+    assert "不是策略交易变化的因果证明" in body["relation"]["explanation"]
 
 
 def test_swapping_the_sides_flips_the_direction_but_keeps_the_evidence(tmp_path):
@@ -344,3 +345,151 @@ def test_a_damaged_document_is_reported_as_unreadable_rather_than_missing(tmp_pa
         "/api/v1/backtest-comparisons", params={"baseline_run_id": "good", "candidate_run_id": "broken"}
     )
     assert response.status_code == 409
+
+
+def report_of(run_id, source_id, benchmark):
+    """A derived report of ``source_id`` with its own benchmark."""
+
+    return backtest(
+        run_id,
+        benchmark=benchmark,
+        provenance={"execution_run_id": source_id},
+        metadata={
+            "execution_run_id": source_id,
+            "benchmark_provenance": {"code": "X", "execution_run_id": source_id},
+        },
+    )
+
+
+def test_two_reports_of_one_execution_are_siblings_not_a_cause(tmp_path):
+    publish(tmp_path, "market-qlib-src", backtest("market-qlib-src"))
+    publish(tmp_path, "report-a", report_of("report-a", "market-qlib-src", TOTAL_RETURN_BENCHMARK))
+    publish(tmp_path, "report-b", report_of("report-b", "market-qlib-src", 0.05))
+    body = (
+        client_for(tmp_path)
+        .get(
+            "/api/v1/backtest-comparisons",
+            params={"baseline_run_id": "report-a", "candidate_run_id": "report-b"},
+        )
+        .json()
+    )
+    assert body["relation"]["status"] == "sibling"
+    assert body["relation"]["explanation"] is None
+    assert body["conclusion_states_cause"] is False
+    assert "同一个执行结果" in body["conclusion"]
+    assert body["relation"]["execution_pointer"] == "market-qlib-src"
+
+
+def test_total_return_must_match_within_the_stated_tolerance(tmp_path):
+    publish(tmp_path, "market-qlib-src", backtest("market-qlib-src"))
+    publish(tmp_path, "benchmark-report", derived_from(total=TOTAL + 1e-13))
+    near = (
+        client_for(tmp_path)
+        .get(
+            "/api/v1/backtest-comparisons",
+            params={"baseline_run_id": "benchmark-report", "candidate_run_id": "market-qlib-src"},
+        )
+        .json()
+    )
+    assert near["relation"]["status"] == "same_execution"
+
+    publish(tmp_path, "drifted", derived_from(total=TOTAL + 1e-6))
+    far = (
+        client_for(tmp_path)
+        .get(
+            "/api/v1/backtest-comparisons",
+            params={"baseline_run_id": "drifted", "candidate_run_id": "market-qlib-src"},
+        )
+        .json()
+    )
+    assert far["relation"]["status"] == "conflict"
+    assert far["relation"]["explanation"] is None
+
+
+def test_postgres_projection_reads_one_row_and_no_detail_table(tmp_path):
+    statements = []
+
+    class FakeResult:
+        def __init__(self, row):
+            self._row = row
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self._row
+
+    class FakeConnection:
+        def execute(self, statement, *args, **kwargs):
+            statements.append(str(statement))
+            return FakeResult(
+                {
+                    "payload": {"performance": {"version": "v3"}},
+                    "metadata": {"engine": "qlib"},
+                    "summary": {"metrics": {"total_return": 0.1}},
+                    "dataset_id": "historical-x",
+                }
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    store = PgResultStore(root=tmp_path, engine=FakeEngine(), storage_root=tmp_path)
+    projection = store.project("backtests", "run-1")
+
+    assert projection["summary"] == {"metrics": {"total_return": 0.1}}
+    assert projection["metadata"]["dataset_id"] == "historical-x"
+    assert len(statements) == 1, "one projection is one statement"
+    sql = statements[0].lower()
+    assert "research_run" in sql
+    for table in ("run_equity", "run_trade", "run_metrics", "run_artifact"):
+        assert table not in sql, f"{table} must not be read by the projection"
+
+
+def test_a_fixed_pool_backtest_borrows_the_recipe_of_its_frozen_factor_run(tmp_path):
+    publish(
+        tmp_path,
+        "fixed-backtest",
+        backtest(
+            "fixed-backtest",
+            provenance={"factor_run_id": "fixed-factors", "factors": None},
+        ),
+    )
+    ResultStore(tmp_path).publish(
+        "factors",
+        "fixed-factors",
+        {
+            "metadata": {
+                "id": "fixed-factors",
+                "factor_config": {"factors": [{"name": "momentum", "weight": 1.0, "window": 20}]},
+            },
+            "history": [],
+        },
+    )
+    publish(
+        tmp_path,
+        "with-recipe",
+        backtest(
+            "with-recipe",
+            provenance={"factors": [{"name": "momentum", "weight": 1.0, "window": 20}]},
+        ),
+    )
+    body = (
+        client_for(tmp_path)
+        .get(
+            "/api/v1/backtest-comparisons",
+            params={"baseline_run_id": "fixed-backtest", "candidate_run_id": "with-recipe"},
+        )
+        .json()
+    )
+    factors = {item["key"]: item for item in body["dimensions"]}["factors"]
+    recipe = next(field for field in factors["fields"] if field["label"] == "因子与权重")
+    assert recipe["status"] == "same"
+    assert "momentum" in recipe["baseline"]
