@@ -380,8 +380,9 @@ def test_two_reports_of_one_execution_are_siblings_not_a_cause(tmp_path):
     assert body["relation"]["execution_pointer"] == "market-qlib-src"
 
 
-def test_total_return_must_match_within_the_stated_tolerance(tmp_path):
+def test_total_return_must_match_exactly(tmp_path):
     publish(tmp_path, "market-qlib-src", backtest("market-qlib-src"))
+    # Even a 1e-13 difference means the two stored totals are not the same result.
     publish(tmp_path, "benchmark-report", derived_from(total=TOTAL + 1e-13))
     near = (
         client_for(tmp_path)
@@ -391,7 +392,8 @@ def test_total_return_must_match_within_the_stated_tolerance(tmp_path):
         )
         .json()
     )
-    assert near["relation"]["status"] == "same_execution"
+    assert near["relation"]["status"] == "conflict"
+    assert near["relation"]["explanation"] is None
 
     publish(tmp_path, "drifted", derived_from(total=TOTAL + 1e-6))
     far = (
@@ -596,3 +598,58 @@ def test_a_broken_factor_run_leaves_the_recipe_unknown_instead_of_failing(tmp_pa
     assert response.status_code == 200
     factors = {item["key"]: item for item in response.json()["dimensions"]}["factors"]
     assert all(field["status"] != "same" for field in factors["fields"])
+
+
+def test_nested_corruption_is_a_conflict_response_not_a_server_error(tmp_path):
+    publish(tmp_path, "good", backtest("good"))
+    bad_metrics = backtest("bad-metrics")
+    bad_metrics["summary"]["metrics"] = "corrupt"
+    publish(tmp_path, "bad-metrics", bad_metrics)
+    bad_benchmark = backtest("bad-benchmark")
+    bad_benchmark["metadata"]["benchmark"] = ["corrupt"]
+    publish(tmp_path, "bad-benchmark", bad_benchmark)
+    client = client_for(tmp_path)
+    for broken in ("bad-metrics", "bad-benchmark"):
+        response = client.get(
+            "/api/v1/backtest-comparisons",
+            params={"baseline_run_id": "good", "candidate_run_id": broken},
+        )
+        assert response.status_code == 409
+
+
+def test_conflicting_pointers_inside_one_result_block_the_cause(tmp_path):
+    publish(tmp_path, "source", backtest("source"))
+    publish(tmp_path, "peer", backtest("peer"))
+    contradictory = backtest(
+        "contradictory",
+        provenance={"execution_run_id": "source", "factor_run_id": None},
+        metadata={
+            "execution_run_id": "source",
+            "benchmark_provenance": {"code": "X", "execution_run_id": "peer"},
+        },
+    )
+    publish(tmp_path, "contradictory", contradictory)
+    body = (
+        client_for(tmp_path)
+        .get(
+            "/api/v1/backtest-comparisons",
+            params={"baseline_run_id": "contradictory", "candidate_run_id": "source"},
+        )
+        .json()
+    )
+    assert body["relation"]["status"] == "conflict"
+    assert body["relation"]["explanation"] is None
+
+
+def test_legacy_benchmark_mapping_is_read_as_a_code(tmp_path):
+    publish(tmp_path, "legacy", backtest("legacy", metadata={"provenance": {"benchmark": {"code": "000300.SH"}}}))
+    publish(tmp_path, "modern", backtest("modern", metadata={"config": {"benchmark": "000300.SH"}}))
+    body = (
+        client_for(tmp_path)
+        .get("/api/v1/backtest-comparisons", params={"baseline_run_id": "legacy", "candidate_run_id": "modern"})
+        .json()
+    )
+    benchmark = {item["key"]: item for item in body["dimensions"]}["benchmark"]
+    code = next(field for field in benchmark["fields"] if field["label"] == "基准代码")
+    assert code["baseline"] == "000300.SH"
+    assert code["status"] == "same"

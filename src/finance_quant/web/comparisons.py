@@ -23,7 +23,9 @@ SAME = "same"
 DIFFERENT = "different"
 UNKNOWN = "unknown"
 
-TOLERANCE = 1e-12
+# Total return is compared exactly (stored, unrounded); the excess formula keeps
+# its own tolerance so the two conditions are judged separately.
+FORMULA_TOLERANCE = 1e-9
 
 
 def _value(document: dict, path: str) -> Any:
@@ -142,13 +144,9 @@ def _dimensions(baseline: dict, candidate: dict) -> list[dict[str, Any]]:
     backtest_rules = pair(("metadata.provenance.backtest",))
     market_rules = pair(("metadata.market_rule_version",))
     costs = pair(("metadata.execution_costs",))
-    benchmark_code = pair(
-        (
-            "metadata.benchmark_provenance.code",
-            "metadata.benchmark.code",
-            "metadata.provenance.benchmark",
-            "metadata.config.benchmark",
-        )
+    benchmark_code = (
+        _benchmark_code(baseline.get("metadata") or {}),
+        _benchmark_code(candidate.get("metadata") or {}),
     )
     benchmark_name = pair(("metadata.benchmark_name",))
     benchmark_return_type = pair(("metadata.benchmark.return_type",))
@@ -238,6 +236,34 @@ def _summary(document: dict) -> dict[str, Any]:
     return {**summary, "metrics": metrics}
 
 
+def _pointers(metadata: dict) -> list[str]:
+    """Every distinct non-empty execution pointer stored on one side."""
+
+    values = [
+        _value(metadata, "execution_run_id"),
+        _value(metadata, "benchmark_provenance.execution_run_id"),
+        _value(metadata, "provenance.execution_run_id"),
+    ]
+    return sorted({value for value in values if isinstance(value, str) and value})
+
+
+def _benchmark_code(metadata: dict) -> Any:
+    """Benchmark code from modern or legacy paths; a mapping is read, not compared raw."""
+
+    value = _first(
+        metadata,
+        "benchmark_provenance.code",
+        "benchmark.code",
+        "provenance.benchmark",
+        "config.benchmark",
+    )
+    if isinstance(value, dict):
+        return value.get("code")
+    if isinstance(value, (list, tuple, set)):
+        return None
+    return value
+
+
 def _side(document: dict, identifier: str) -> dict[str, Any]:
     summary = _summary(document)
     metadata = document.get("metadata") or {}
@@ -250,13 +276,7 @@ def _side(document: dict, identifier: str) -> dict[str, Any]:
         "end_date": summary.get("end_date"),
         "created_at": summary.get("created_at"),
         "benchmark": {
-            "code": _first(
-                metadata,
-                "benchmark_provenance.code",
-                "benchmark.code",
-                "provenance.benchmark",
-                "config.benchmark",
-            ),
+            "code": _benchmark_code(metadata),
             "name": metadata.get("benchmark_name"),
             "return_type": benchmark.get("return_type"),
             "series_sha256": _first(
@@ -272,12 +292,8 @@ def _side(document: dict, identifier: str) -> dict[str, Any]:
             "excess_return": summary["metrics"].get("excess_return"),
             "max_drawdown": summary["metrics"].get("max_drawdown"),
         },
-        "execution_run_id": _first(
-            metadata,
-            "execution_run_id",
-            "benchmark_provenance.execution_run_id",
-            "provenance.execution_run_id",
-        ),
+        "execution_run_id": (_pointers(metadata) or [None])[0],  # type: ignore[list-item]
+        "execution_pointers": _pointers(metadata),
         "performance_version": _value(document, "performance.version") or _value(metadata, "performance.version"),
     }
 
@@ -356,6 +372,20 @@ def _relation(
     """Same-execution detection; a cause is claimed only when every gate passes."""
 
     left, right = side_a["execution_run_id"], side_b["execution_run_id"]
+    if len(side_a.get("execution_pointers") or []) > 1 or len(side_b.get("execution_pointers") or []) > 1:
+        # Conflicting pointers inside one stored result cannot identify its source.
+        return {
+            "status": "conflict",
+            "execution_pointer": left or right,
+            "evidence": [
+                {
+                    "label": "单份结果内执行来源指针互相矛盾",
+                    "baseline": side_a.get("execution_pointers"),
+                    "candidate": side_b.get("execution_pointers"),
+                }
+            ],
+            "explanation": None,
+        }
     points_right = bool(left) and left == side_b["id"]
     points_left = bool(right) and right == side_a["id"]
     if (points_right and right) or (points_left and left):
@@ -413,7 +443,7 @@ def _relation(
         {"label": "原执行结果", "value": source["id"]},
     ]
     total_a, total_b = _number(derived["metrics"]["total_return"]), _number(source["metrics"]["total_return"])
-    same_total = total_a is not None and total_b is not None and abs(total_a - total_b) <= TOLERANCE
+    same_total = total_a is not None and total_b is not None and total_a == total_b
     evidence.append(
         {
             "label": "策略总收益是否完全一致",
@@ -431,7 +461,7 @@ def _relation(
             total is not None
             and benchmark is not None
             and excess is not None
-            and abs(excess - (total - benchmark)) <= 1e-9
+            and abs(excess - (total - benchmark)) <= FORMULA_TOLERANCE
         )
         formula_ok = formula_ok and holds
         evidence.append(
@@ -484,9 +514,9 @@ def _relation(
         excess_pp = (excess_b - excess_a) * 100
         if abs(benchmark_pp + excess_pp) <= 1e-6:
             explanation = (
-                f"两次结果来自同一执行结果，策略总收益一致；报表差可由已存基准收益差解释："
-                f"{benchmark_pp:+.4f} 个百分点（B − A），报表超额收益随之变化 "
-                f"{excess_pp:+.4f} 个百分点。这不是策略交易变化的因果证明。"
+                f"基准收益 B − A：{benchmark_pp:+.4f} 个百分点；"
+                f"报表超额 B − A：{excess_pp:+.4f} 个百分点。"
+                f"两者互为相反数，是报表口径的算术差，不是策略交易变化的因果证明。"
             )
             evidence.append(
                 {
@@ -628,9 +658,17 @@ def attach_factor_recipe(document: dict, store) -> dict:
     except (FileNotFoundError, OSError, ValueError, KeyError, TypeError):
         return document
     factor_metadata = factor_run.get("metadata") or {}
-    recipe = _recipe(factor_run) or provenance.get("factors")
-    neutralization = provenance.get("neutralization") or factor_metadata.get("neutralization")
-    filled = {key: value for key, value in (("factors", recipe), ("neutralization", neutralization)) if value}
+    # Only fill what the result does not already record: a stored recipe or
+    # neutralization is never overwritten by the factor archive.
+    filled = {}
+    if not provenance.get("factors"):
+        recipe = _recipe(factor_run)
+        if recipe:
+            filled["factors"] = recipe
+    if not provenance.get("neutralization"):
+        neutralization = factor_metadata.get("neutralization")
+        if neutralization:
+            filled["neutralization"] = neutralization
     if not filled:
         return document
     return {
@@ -678,6 +716,11 @@ def comparison_router(store) -> APIRouter:
             raise HTTPException(422, "请选择两条不同的回测")
         baseline = attach_factor_recipe(load(baseline_run_id), store)
         candidate = attach_factor_recipe(load(candidate_run_id), store)
-        return compare_documents(baseline_run_id, candidate_run_id, baseline, candidate)
+        try:
+            return compare_documents(baseline_run_id, candidate_run_id, baseline, candidate)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            # A stored document whose nested fields are not the expected shapes is
+            # a corrupt archive, not a server fault.
+            raise HTTPException(409, "回测结果格式异常（嵌套字段类型不符），无法比较") from None
 
     return router

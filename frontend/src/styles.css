@@ -331,7 +331,13 @@ body {
   }
   .cmp-row,
   .cmp-row-field {
-    grid-template-columns: minmax(60px, 0.8fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cmp-key {
+    white-space: normal;
+  }
+  .cmp-status {
+    grid-column: 1;
   }
 }
 
