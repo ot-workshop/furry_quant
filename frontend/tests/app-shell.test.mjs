@@ -82,6 +82,26 @@ globalThis.ResizeObserver = class {
   disconnect() {}
 };
 dom.window.ResizeObserver = globalThis.ResizeObserver;
+// antd's menu opens a MessageChannel and never closes it; in jsdom that port is
+// the only thing keeping the test worker alive. The shell does not depend on the
+// channel, so hand it an inert one instead of forcing the whole runner to exit.
+class InertMessageChannel {
+  constructor() {
+    const port = {
+      onmessage: null,
+      onmessageerror: null,
+      postMessage() {},
+      close() {},
+      start() {},
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    this.port1 = port;
+    this.port2 = port;
+  }
+}
+globalThis.MessageChannel = InertMessageChannel;
+dom.window.MessageChannel = InertMessageChannel;
 dom.window.scrollTo = () => {};
 globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0);
 globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
@@ -230,6 +250,5 @@ test("the desktop shell keeps the sider and crosses the 768px breakpoint", async
   }
 });
 
-// antd's menu/drawer widgets keep an internal MessagePort open, so this worker
-// never drains its event loop on its own. `npm test` runs with
-// --test-force-exit, which ends the worker after every test has reported.
+// Every test reports on its own; the inert MessageChannel above keeps the worker
+// free of stray handles so `node --test` exits without a forced stop.

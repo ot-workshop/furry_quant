@@ -28,8 +28,17 @@ dom.window.matchMedia = () => ({
   addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
 });
 globalThis.ResizeObserver = class {
+  constructor(callback) {
+    this.callback = callback;
+    resizeObservers.push(this);
+  }
   observe() {} unobserve() {} disconnect() {}
 };
+const resizeObservers = [];
+globalThis.resizeObservers = resizeObservers;
+function fireResize() {
+  for (const observer of resizeObservers) observer.callback([]);
+}
 dom.window.ResizeObserver = globalThis.ResizeObserver;
 // jsdom has no layout: report the probe width for the chart host element so the
 // chart's own width-driven axis logic sees a realistic canvas.
@@ -225,6 +234,31 @@ test("real ECharts renders the anchor and updates it when only anchorDate change
     await waitFor(() => assert.ok(
       !document.querySelector(".chart svg").textContent.includes("期初基准点"),
     ));
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+test("a width change keeps the legend series the reader turned off", async () => {
+  probeWidth = 318;
+  const root = createRoot(document.getElementById("root"));
+  try {
+    await act(async () => root.render(provider(
+      React.createElement(charts.EquityChart, { items }),
+    )));
+    const chart = await waitFor(() => {
+      const instance = echarts.getInstanceByDom(document.querySelector(".chart"));
+      assert.ok(instance);
+      return instance;
+    });
+    await act(async () => chart.dispatchAction({ type: "legendUnSelect", name: "基准净值" }));
+    await waitFor(() => assert.equal(chart.getOption().legend[0].selected["基准净值"], false));
+    // A viewport change rebuilds the option from scratch (notMerge) — the choice
+    // the reader made must survive that rebuild.
+    probeWidth = 236;
+    await act(async () => fireResize());
+    await waitFor(() => assert.equal(chart.getOption().legend[0].selected["基准净值"], false));
+    assert.equal(chart.getOption().legend[0].selected["策略净值"], true);
   } finally {
     await act(async () => root.unmount());
   }

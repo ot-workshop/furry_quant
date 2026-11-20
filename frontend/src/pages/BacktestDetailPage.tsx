@@ -241,6 +241,7 @@ export default function BacktestDetailPage({
         </div>
       </Card>
       <Tabs
+        className="result-tabs"
         activeKey={items.some((item) => item.key === tab) ? tab : "overview"}
         onChange={go}
         items={items}

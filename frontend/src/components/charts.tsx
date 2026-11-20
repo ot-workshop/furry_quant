@@ -99,11 +99,17 @@ export function Chart({
   useEffect(() => {
     const instance = chart.current;
     if (!instance) return;
-    // Keep the user's zoom window when only colours change.
+    // Keep user state across option rebuilds (theme change, resize): the zoom
+    // window and any legend series the reader turned off.
+    const previous = instance.getOption();
     const zoom =
-      (instance.getOption()?.dataZoom as Array<{
+      (previous?.dataZoom as Array<{
         start?: number;
         end?: number;
+      }>) ?? [];
+    const legend =
+      (previous?.legend as Array<{
+        selected?: Record<string, boolean>;
       }>) ?? [];
     const next = { ...option };
     if (Array.isArray(next.dataZoom) && zoom.length) {
@@ -112,6 +118,17 @@ export function Chart({
         start: zoom[index]?.start ?? item.start,
         end: zoom[index]?.end ?? item.end,
       }));
+    }
+    if (Array.isArray(next.legend) && legend.length) {
+      next.legend = next.legend.map((item, index) => ({
+        ...item,
+        selected: { ...item.selected, ...legend[index]?.selected },
+      }));
+    } else if (next.legend && !Array.isArray(next.legend) && legend.length) {
+      next.legend = {
+        ...next.legend,
+        selected: { ...next.legend.selected, ...legend[0]?.selected },
+      };
     }
     instance.setOption(next, { notMerge: true });
   }, [option]);

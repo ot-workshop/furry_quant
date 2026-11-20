@@ -218,6 +218,19 @@ body {
   }
 }
 
+/* At 200% zoom the tab strip is wider than the page; clip it horizontally so the
+   document keeps one scroll axis and the overflow menu still reaches every tab. */
+@media (max-width: 767px) {
+  .result-tabs {
+    overflow-x: clip;
+  }
+  /* rc-tabs pins overflow:hidden inline; scrolling keeps a focused tab visible
+     when it is only partly inside the strip. */
+  .result-tabs .ant-tabs-nav-wrap {
+    overflow-x: auto !important;
+  }
+}
+
 .kpi-grid .ant-statistic-content {
   overflow-wrap: anywhere;
 }
