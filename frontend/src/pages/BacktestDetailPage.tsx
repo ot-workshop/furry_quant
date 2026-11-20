@@ -35,6 +35,7 @@ import {
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import type { BacktestDetail } from "../types";
+import { positionDates } from "./backtestDates";
 import {
   formatDateTime,
   formatMetricValue,
@@ -78,7 +79,7 @@ export default function BacktestDetailPage({
     );
 
   const data = detail.data;
-  const dates = equity.data?.items.map((row) => row.date) ?? [];
+  const dates = positionDates(equity.data?.items ?? [], data);
   const dynamic = [
     "HistoricalIndexTopkStrategy",
     "DynamicUniverseTopkStrategy",
@@ -100,7 +101,7 @@ export default function BacktestDetailPage({
         <Flex vertical gap={16}>
           <Section
             title="净值与回撤"
-            description="点击曲线上的某一天，可直接查看当日持仓"
+            description="期初基准点仅作起点，点击区间内日期查看当日持仓"
           >
             {equity.data === null ? (
               equity.error ? (
@@ -113,7 +114,14 @@ export default function BacktestDetailPage({
                 <EquityChart
                   items={equity.data.items}
                   group={id}
-                  onDateClick={openPositions}
+                  anchorDate={
+                    equity.data.items[0]?.date < data.start_date
+                      ? equity.data.items[0].date
+                      : null
+                  }
+                  onDateClick={(date) =>
+                    dates.includes(date) && openPositions(date)
+                  }
                 />
                 <DrawdownChart items={equity.data.items} group={id} />
               </>

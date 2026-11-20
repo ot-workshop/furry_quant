@@ -6,6 +6,7 @@ import {
   GridComponent,
   LegendComponent,
   MarkLineComponent,
+  MarkPointComponent,
   TooltipComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
@@ -27,6 +28,7 @@ echarts.use([
   LegendComponent,
   DataZoomComponent,
   MarkLineComponent,
+  MarkPointComponent,
   CanvasRenderer,
 ]);
 
@@ -159,10 +161,12 @@ const finite = (value: unknown) =>
 export function EquityChart({
   items,
   group,
+  anchorDate,
   onDateClick,
 }: {
   items: EquityPoint[];
   group?: string;
+  anchorDate?: string | null;
   onDateClick?: (date: string) => void;
   onDataClick?: (data: unknown) => void;
 }) {
@@ -171,8 +175,8 @@ export function EquityChart({
       height={360}
       group={group}
       onDateClick={onDateClick}
-      ariaLabel="策略净值与基准净值走势，点击某日查看当日持仓"
-      deps={[items]}
+      ariaLabel="策略净值与基准净值走势，期初基准点仅作起点，点击区间内日期查看持仓"
+      deps={[items, anchorDate]}
       build={(p) => ({
         ...base(p),
         color: [p.primary, p.benchmark, p.accent],
@@ -209,6 +213,22 @@ export function EquityChart({
             lineStyle: { width: 2.2 },
             areaStyle: { color: p.primarySoft },
             data: items.map((row) => finite(row.equity)),
+            ...(anchorDate
+              ? {
+                  markPoint: {
+                    symbol: "circle",
+                    symbolSize: 7,
+                    itemStyle: { color: p.primary },
+                    label: {
+                      formatter: "期初基准点",
+                      color: p.muted,
+                      fontSize: 10,
+                      position: "bottom",
+                    },
+                    data: [{ name: "期初基准点", coord: [anchorDate, 1] }],
+                  },
+                }
+              : {}),
           },
           {
             name: "基准净值",
