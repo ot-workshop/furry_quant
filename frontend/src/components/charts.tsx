@@ -504,8 +504,13 @@ export function FactorHistoryChart({
 
 export function GroupReturnsChart({
   groups,
+  reason,
+  onShowCoverage,
 }: {
   groups: Array<{ group: number; mean_return: number | null }>;
+  /** A cause the stored diagnostics prove; null keeps the generic wording. */
+  reason?: string | null;
+  onShowCoverage?: () => void;
 }) {
   const values = groups.map((row) =>
     typeof row.mean_return === "number" && Number.isFinite(row.mean_return)
@@ -579,7 +584,15 @@ export function GroupReturnsChart({
         <Typography.Text type="secondary" className="chart-note">
           {hasValues
             ? `有 ${missing} 组缺少有效收益，未按 0 显示。`
-            : `共 ${groups.length} 组均无有效收益，未按 0 显示。`}
+            : (reason ?? `共 ${groups.length} 组均无有效收益，未按 0 显示。`)}
+          {!hasValues && reason && onShowCoverage ? (
+            <>
+              {" "}
+              <Typography.Link onClick={onShowCoverage}>
+                查看覆盖信息
+              </Typography.Link>
+            </>
+          ) : null}
         </Typography.Text>
       )}
     </div>

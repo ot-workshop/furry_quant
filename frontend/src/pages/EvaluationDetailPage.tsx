@@ -32,6 +32,7 @@ import {
 import { useApiResource } from "../hooks/useApiResource";
 import type {
   EvaluationResult,
+  FactorDailyDiagnostic,
   FactorDiagnostic,
   ICStats,
   LabelDiagnostic,
@@ -60,11 +61,29 @@ export default function EvaluationDetailPage({ id }: { id: string }) {
   return <EvaluationView result={detail.data} />;
 }
 
+function groupEmptyReason(
+  daily: FactorDailyDiagnostic[],
+  minCrossSection: number | null | undefined,
+): string | null {
+  // Only report a cause the stored diagnostics actually prove; otherwise the
+  // chart keeps the generic wording.
+  if (!daily.length) return null;
+  if (daily.every((row) => row.ic_exclusion === "insufficient_cross_section"))
+    return minCrossSection
+      ? `逐日可评分股票数少于横截面门槛（${minCrossSection} 只），没有可用于分组的收益。`
+      : "逐日可评分股票数少于横截面门槛，没有可用于分组的收益。";
+  if (daily.every((row) => row.ic_exclusion === "constant_score"))
+    return "因子得分在每日截面上没有差异（constant_score），无法分组。";
+  return null;
+}
+
 function EvaluationView({ result }: { result: EvaluationResult }) {
   const { metadata, methodology } = result;
   const [horizon, setHorizon] = useState(
     String(metadata.evaluation.horizons[0] ?? ""),
   );
+  const [tab, setTab] = useState("factors");
+  const minCrossSection = metadata.evaluation.min_cross_section;
   const definitions = metadata.factor_definitions;
   const factors = Object.entries(result.factors);
 
@@ -113,6 +132,8 @@ function EvaluationView({ result }: { result: EvaluationResult }) {
         </Flex>
       </Card>
       <Tabs
+        activeKey={tab}
+        onChange={setTab}
         items={[
           {
             key: "factors",
@@ -169,7 +190,14 @@ function EvaluationView({ result }: { result: EvaluationResult }) {
                         description="Q1 为方向对齐后的低分组"
                       >
                         {diagnostic?.groups.length ? (
-                          <GroupReturnsChart groups={diagnostic.groups} />
+                          <GroupReturnsChart
+                            groups={diagnostic.groups}
+                            reason={groupEmptyReason(
+                              diagnostic.daily,
+                              minCrossSection,
+                            )}
+                            onShowCoverage={() => setTab("coverage")}
+                          />
                         ) : (
                           <EmptyState title="没有分组收益" />
                         )}

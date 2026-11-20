@@ -203,3 +203,44 @@ test("a chart with every group populated shows neither message", async () => {
     await act(async () => root.unmount());
   }
 });
+
+test("a proven reason replaces the generic note and links to coverage", async () => {
+  let shown = 0;
+  const root = createRoot(document.getElementById("root"));
+  await act(async () =>
+    root.render(
+      React.createElement(
+        ConfigProvider,
+        null,
+        React.createElement(
+          App,
+          null,
+          React.createElement(charts.GroupReturnsChart, {
+            groups: groups([null, null, null]),
+            reason:
+              "逐日可评分股票数少于横截面门槛（3 只），没有可用于分组的收益。",
+            onShowCoverage: () => {
+              shown += 1;
+            },
+          }),
+        ),
+      ),
+    ),
+  );
+  try {
+    await waitFor(() =>
+      assert.ok(
+        document.body.textContent.includes("逐日可评分股票数少于横截面门槛"),
+      ),
+    );
+    assert.ok(!document.body.textContent.includes("未按 0 显示。"));
+    const link = document.querySelector(".chart-note a");
+    assert.ok(link, "coverage link is rendered");
+    await act(async () =>
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+    );
+    assert.equal(shown, 1);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
