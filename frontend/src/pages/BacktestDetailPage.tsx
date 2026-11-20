@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type FocusEvent } from "react";
 import {
   Button,
   Card,
@@ -240,12 +240,33 @@ export default function BacktestDetailPage({
           })}
         </div>
       </Card>
-      <Tabs
-        className="result-tabs"
-        activeKey={items.some((item) => item.key === tab) ? tab : "overview"}
-        onChange={go}
-        items={items}
-      />
+      <div
+        className="result-tabs-host"
+        onFocus={(event: FocusEvent<HTMLDivElement>) => {
+          // Keep a keyboard-focused tab inside the scrollable strip: at 200%
+          // zoom the later tabs are otherwise focused off-screen.
+          const target = event.target as HTMLElement;
+          if (!target.classList.contains("ant-tabs-tab-btn")) return;
+          // rc-tabs also adjusts the strip while focus moves; run after it.
+          requestAnimationFrame(() => {
+            const strip = target.closest(".ant-tabs-nav-wrap");
+            if (!strip) return;
+            const tab = target.getBoundingClientRect();
+            const view = strip.getBoundingClientRect();
+            if (tab.left < view.left)
+              strip.scrollLeft -= view.left - tab.left + 8;
+            else if (tab.right > view.right)
+              strip.scrollLeft += tab.right - view.right + 8;
+          });
+        }}
+      >
+        <Tabs
+          className="result-tabs"
+          activeKey={items.some((item) => item.key === tab) ? tab : "overview"}
+          onChange={go}
+          items={items}
+        />
+      </div>
     </>
   );
 }
