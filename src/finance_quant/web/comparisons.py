@@ -61,19 +61,20 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
-def _field(label: str, baseline: Any, candidate: Any) -> dict[str, Any]:
-    if baseline is None and candidate is None:
-        status = UNKNOWN
-    elif baseline is None or candidate is None:
+def _field(label: str, baseline: Any, candidate: Any, *, display: tuple[Any, Any] | None = None) -> dict[str, Any]:
+    """Compare the stored values; only the shown text may be reformatted."""
+
+    if baseline is None or candidate is None:
         status = UNKNOWN
     elif _canonical(baseline) == _canonical(candidate):
         status = SAME
     else:
         status = DIFFERENT
+    shown_baseline, shown_candidate = display if display else (baseline, candidate)
     return {
         "label": label,
-        "baseline": _text(baseline),
-        "candidate": _text(candidate),
+        "baseline": _text(shown_baseline),
+        "candidate": _text(shown_candidate),
         "status": status,
     }
 
@@ -154,7 +155,12 @@ def _dimensions(baseline: dict, candidate: dict) -> list[dict[str, Any]]:
     benchmark_version = pair(("metadata.benchmark_provenance.version", "metadata.benchmark.snapshot.schema_version"))
 
     factor_fields = [
-        _field("因子与权重", _factor_text(factors[0]), _factor_text(factors[1])),
+        _field(
+            "因子与权重",
+            factors[0],
+            factors[1],
+            display=(_factor_text(factors[0]), _factor_text(factors[1])),
+        ),
         _field("中性化", neutralization[0], neutralization[1]),
     ]
     return [
@@ -271,8 +277,9 @@ def _number(value: Any) -> float | None:
 
 def _metric(key: str, label: str, unit: str, baseline: Any, candidate: Any, comparable: bool) -> dict[str, Any]:
     left, right = _number(baseline), _number(candidate)
+    shown = comparable and left is not None and right is not None
     delta = None
-    if left is not None and right is not None:
+    if shown and left is not None and right is not None:
         delta = (right - left) * 100 if unit == "percent" else right - left
     return {
         "key": key,
@@ -280,41 +287,60 @@ def _metric(key: str, label: str, unit: str, baseline: Any, candidate: Any, comp
         "unit": unit,
         "baseline": left,
         "candidate": right,
-        # Direction is always candidate − baseline ("B − A").
+        # Direction is always candidate − baseline ("B − A"); an incomparable pair
+        # keeps both stored values but never gets a delta.
         "delta": delta,
-        "comparable": comparable and left is not None and right is not None,
+        "comparable": shown,
     }
 
 
 def _comparability(side_a: dict, side_b: dict) -> dict[str, Any]:
+    """Interval and metric version must both be stored and equal before any delta is shown."""
+
     reasons = []
-    interval_same = (
-        (side_a["start_date"] == side_b["start_date"] and side_a["end_date"] == side_b["end_date"])
-        if side_a["start_date"] and side_b["start_date"]
-        else None
+    interval_a, interval_b = (
+        (side_a["start_date"], side_a["end_date"]),
+        (
+            side_b["start_date"],
+            side_b["end_date"],
+        ),
     )
-    if interval_same is False:
+    if not all(interval_a) or not all(interval_b):
+        interval = UNKNOWN
+        reasons.append("至少一侧缺少回测区间，收益类差值不可比")
+    elif interval_a != interval_b:
+        interval = DIFFERENT
         reasons.append("两次回测的区间不同，收益类差值不可直接比较")
-    version_a, version_b = side_a["performance_version"], side_b["performance_version"]
-    if version_a and version_b:
-        version_same = version_a == version_b
-        if not version_same:
-            reasons.append(f"绩效口径版本不同（{version_a} / {version_b}），差值不可比")
     else:
-        version_same = None
+        interval = SAME
+
+    version_a, version_b = side_a["performance_version"], side_b["performance_version"]
+    if not version_a or not version_b:
+        metric_version = UNKNOWN
         reasons.append("至少一侧缺少绩效口径版本，差值标为不可比")
+    elif version_a != version_b:
+        metric_version = DIFFERENT
+        reasons.append(f"绩效口径版本不同（{version_a} / {version_b}），差值不可比")
+    else:
+        metric_version = SAME
+
     return {
-        "comparable": interval_same is not False and version_same is not False,
-        "interval": "same" if interval_same else ("different" if interval_same is False else UNKNOWN),
-        "metric_version": "same" if version_same else ("different" if version_same is False else UNKNOWN),
+        "comparable": interval == SAME and metric_version == SAME,
+        "interval": interval,
+        "metric_version": metric_version,
         "reasons": reasons,
-        "baseline_interval": [side_a["start_date"], side_a["end_date"]],
-        "candidate_interval": [side_b["start_date"], side_b["end_date"]],
+        "baseline_interval": list(interval_a),
+        "candidate_interval": list(interval_b),
     }
 
 
-def _relation(side_a: dict, side_b: dict) -> dict[str, Any]:
-    """Same-execution detection with the arithmetic check the review required."""
+def _relation(
+    side_a: dict,
+    side_b: dict,
+    comparability: dict,
+    dimensions: list[dict],
+) -> dict[str, Any]:
+    """Same-execution detection; a cause is claimed only when every gate passes."""
 
     left, right = side_a["execution_run_id"], side_b["execution_run_id"]
     derived: dict[str, Any] | None
@@ -376,7 +402,27 @@ def _relation(side_a: dict, side_b: dict) -> dict[str, Any]:
             }
         )
 
-    if not same_total or not formula_ok:
+    conflict = not same_total or not formula_ok
+    evidence.append(
+        {
+            "label": "两侧区间与绩效口径是否可比",
+            "value": "可比" if comparability["comparable"] else "不可比",
+        }
+    )
+    changed = [
+        dimension["label"]
+        for dimension in dimensions
+        if dimension["key"] != "benchmark" and dimension["status"] == DIFFERENT
+    ]
+    if changed:
+        evidence.append(
+            {
+                "label": "评价基准之外仍变化的维度",
+                "value": "、".join(changed),
+            }
+        )
+
+    if conflict or not comparability["comparable"] or changed:
         return {
             "status": "conflict",
             "execution_pointer": pointer,
@@ -386,23 +432,21 @@ def _relation(side_a: dict, side_b: dict) -> dict[str, Any]:
             "explanation": None,
         }
 
-    benchmark_delta = _number(derived["metrics"]["benchmark_return"])
-    source_benchmark = _number(source["metrics"]["benchmark_return"])
-    excess_delta = _number(derived["metrics"]["excess_return"])
-    source_excess = _number(source["metrics"]["excess_return"])
+    benchmark_a = _number(side_a["metrics"]["benchmark_return"])
+    benchmark_b = _number(side_b["metrics"]["benchmark_return"])
+    excess_a = _number(side_a["metrics"]["excess_return"])
+    excess_b = _number(side_b["metrics"]["excess_return"])
     explanation = None
-    if (
-        benchmark_delta is not None
-        and source_benchmark is not None
-        and excess_delta is not None
-        and source_excess is not None
-    ):
-        benchmark_pp = (benchmark_delta - source_benchmark) * 100
-        excess_pp = (excess_delta - source_excess) * 100
+    benchmark_pp = excess_pp = None
+    if benchmark_a is not None and benchmark_b is not None and excess_a is not None and excess_b is not None:
+        # The relation reports the same B − A direction as every other number on
+        # the page, whichever side happens to be the derived report.
+        benchmark_pp = (benchmark_b - benchmark_a) * 100
+        excess_pp = (excess_b - excess_a) * 100
         if abs(benchmark_pp + excess_pp) <= 1e-6:
             explanation = (
                 f"两次结果来自同一执行结果，策略总收益完全相同；只有评价基准不同，"
-                f"已存基准收益差 {benchmark_pp:+.4f} 个百分点，报表超额收益随之变化 "
+                f"已存基准收益差 {benchmark_pp:+.4f} 个百分点（B − A），报表超额收益随之变化 "
                 f"{excess_pp:+.4f} 个百分点。这不代表策略交易发生变化。"
             )
             evidence.append(
@@ -417,14 +461,8 @@ def _relation(side_a: dict, side_b: dict) -> dict[str, Any]:
         "evidence": evidence,
         "derived_run_id": derived["id"],
         "source_run_id": source["id"],
-        "benchmark_delta_pp": (
-            (benchmark_delta - source_benchmark) * 100
-            if benchmark_delta is not None and source_benchmark is not None
-            else None
-        ),
-        "excess_delta_pp": (
-            (excess_delta - source_excess) * 100 if excess_delta is not None and source_excess is not None else None
-        ),
+        "benchmark_delta_pp": benchmark_pp,
+        "excess_delta_pp": excess_pp,
         "explanation": explanation,
     }
 
@@ -461,11 +499,11 @@ def compare_documents(baseline_id: str, candidate_id: str, baseline: dict, candi
         ),
     ]
     dimensions = _dimensions(baseline, candidate)
-    relation = _relation(side_a, side_b)
+    relation = _relation(side_a, side_b, comparability, dimensions)
     changed = [item["label"] for item in dimensions if item["status"] == DIFFERENT]
     unknown = [item["label"] for item in dimensions if item["status"] == UNKNOWN]
     if relation["status"] == "same_execution":
-        conclusion = "两次结果来自同一执行结果，只有评价基准不同"
+        conclusion = "两次结果来自同一执行结果，报表差可由已存基准收益差解释"
     elif changed and unknown:
         conclusion = f"发现多项差异（{len(changed)} 项不同、{len(unknown)} 项未知），不据此判断单一原因"
     elif changed:

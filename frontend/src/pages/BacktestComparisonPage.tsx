@@ -87,14 +87,19 @@ function ChoosePanel({
     start: item.start_date ?? "",
     end: item.end_date ?? "",
   }));
-  const filter = (input: string, option?: { name?: string; value?: string }) =>
-    `${option?.name ?? ""} ${option?.value ?? ""}`
+  const filter = (
+    input: string,
+    option?: { name?: string; value?: string; start?: string; end?: string },
+  ) =>
+    `${option?.name ?? ""} ${option?.value ?? ""} ${option?.start ?? ""} ${
+      option?.end ?? ""
+    }`
       .toLowerCase()
       .includes(input.toLowerCase());
   return (
     <Flex vertical gap={12}>
       <Flex gap={12} wrap align="flex-end">
-        <Flex vertical gap={4} style={{ minWidth: 260, flex: 1 }}>
+        <Flex vertical gap={4} style={{ minWidth: 0, flex: "1 1 240px" }}>
           <Typography.Text type="secondary">A · 对照（变化前）</Typography.Text>
           <Select
             showSearch
@@ -107,7 +112,7 @@ function ChoosePanel({
             aria-label="A 对照回测"
           />
         </Flex>
-        <Flex vertical gap={4} style={{ minWidth: 260, flex: 1 }}>
+        <Flex vertical gap={4} style={{ minWidth: 0, flex: "1 1 240px" }}>
           <Typography.Text type="secondary">B · 候选（变化后）</Typography.Text>
           <Select
             showSearch
@@ -259,6 +264,9 @@ export default function BacktestComparisonPage() {
               onChange={(next) => {
                 if ("baseline" in next) setBaseline(next.baseline ?? null);
                 if ("candidate" in next) setCandidate(next.candidate ?? null);
+                // A displayed result only ever describes the pair that was asked
+                // for; any change to the pickers drops it (and any old error).
+                setRequest(null);
               }}
               onCompare={() =>
                 baseline && candidate && setRequest({ baseline, candidate })
@@ -266,8 +274,13 @@ export default function BacktestComparisonPage() {
               onSwap={() => {
                 setBaseline(candidate);
                 setCandidate(baseline);
-                if (request)
-                  setRequest({ baseline: candidate!, candidate: baseline! });
+                // Keep what is on screen identical to what was requested: swap
+                // re-asks the other way round instead of re-labelling old numbers.
+                setRequest(
+                  candidate && baseline && candidate !== baseline
+                    ? { baseline: candidate, candidate: baseline }
+                    : null,
+                );
               }}
               loading={comparison.loading}
             />
@@ -290,6 +303,10 @@ export default function BacktestComparisonPage() {
                       title={data.conclusion}
                       description={data.relation.explanation ?? undefined}
                     />
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      当前结果：A {data.baseline.name}（{data.baseline.id}） ↔
+                      B {data.candidate.name}（{data.candidate.id}）
+                    </Typography.Text>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       比较区间{" "}
                       {data.comparability.baseline_interval.join(" ~ ")} ↔{" "}

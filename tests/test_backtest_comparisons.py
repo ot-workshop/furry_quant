@@ -1,4 +1,5 @@
 import copy
+import json
 
 import pytest
 from fastapi import FastAPI
@@ -125,7 +126,8 @@ def test_same_execution_explains_the_reported_excess_gap_only(tmp_path):
     assert body["relation"]["derived_run_id"] == "benchmark-report"
     assert body["relation"]["source_run_id"] == "market-qlib-src"
     assert body["conclusion_states_cause"] is True
-    assert "只有评价基准不同" in body["conclusion"]
+    assert "同一执行结果" in body["conclusion"]
+    assert "基准" in body["conclusion"]
 
     metrics = {item["key"]: item for item in body["metrics"]}
     assert metrics["total_return"]["delta"] == pytest.approx(0)
@@ -133,10 +135,10 @@ def test_same_execution_explains_the_reported_excess_gap_only(tmp_path):
     assert metrics["excess_return"]["delta"] == pytest.approx((TOTAL_RETURN_BENCHMARK - PRICE_BENCHMARK) * 100)
     # The stored arithmetic is what the explanation rests on, to the last digit.
     assert metrics["excess_return"]["candidate"] == pytest.approx(source["summary"]["metrics"]["excess_return"])
-    # The relation reports derived − source, whatever order A/B were chosen in.
-    assert body["relation"]["benchmark_delta_pp"] == pytest.approx(4.942033994448147, abs=1e-9)
-    assert body["relation"]["excess_delta_pp"] == pytest.approx(-4.942033994448147, abs=1e-9)
-    assert "4.9420" in body["relation"]["explanation"]
+    # The relation reports the same B − A direction as the metric table.
+    assert body["relation"]["benchmark_delta_pp"] == pytest.approx(-4.942033994448147, abs=1e-9)
+    assert body["relation"]["excess_delta_pp"] == pytest.approx(4.942033994448147, abs=1e-9)
+    assert "-4.9420" in body["relation"]["explanation"]
     assert "不代表策略交易发生变化" in body["relation"]["explanation"]
 
 
@@ -152,6 +154,38 @@ def test_swapping_the_sides_flips_the_direction_but_keeps_the_evidence(tmp_path)
     metrics = {item["key"]: item for item in forward["metrics"]}
     assert metrics["benchmark_return"]["delta"] == pytest.approx(4.942033994448147, abs=1e-9)
     assert metrics["excess_return"]["delta"] == pytest.approx(-4.942033994448147, abs=1e-9)
+    # The relation follows the same direction as the table after the swap.
+    assert forward["relation"]["benchmark_delta_pp"] == pytest.approx(4.942033994448147, abs=1e-9)
+    assert forward["relation"]["excess_delta_pp"] == pytest.approx(-4.942033994448147, abs=1e-9)
+    assert "+4.9420" in forward["relation"]["explanation"]
+
+
+def test_a_changed_code_hash_withdraws_the_single_cause(tmp_path):
+    publish(tmp_path, "market-qlib-src", backtest("market-qlib-src"))
+    publish(tmp_path, "benchmark-report", derived_from())
+    changed = backtest(
+        "benchmark-report",
+        benchmark=TOTAL_RETURN_BENCHMARK,
+        provenance={"execution_run_id": "market-qlib-src", "code_sha256": "ffffffff"},
+        metadata={
+            "execution_run_id": "market-qlib-src",
+            "benchmark_provenance": {"code": "H00300.CSI", "execution_run_id": "market-qlib-src"},
+        },
+    )
+    path = tmp_path / "backtests" / "benchmark-report" / "result.json"
+    path.write_text(json.dumps(changed), encoding="utf-8")
+    body = (
+        client_for(tmp_path)
+        .get(
+            "/api/v1/backtest-comparisons",
+            params={"baseline_run_id": "benchmark-report", "candidate_run_id": "market-qlib-src"},
+        )
+        .json()
+    )
+    assert {item["key"]: item for item in body["dimensions"]}["code"]["status"] == "different"
+    assert body["relation"]["status"] == "conflict"
+    assert body["conclusion_states_cause"] is False
+    assert body["relation"]["explanation"] is None
 
 
 def test_same_execution_claim_is_withdrawn_when_the_numbers_disagree(tmp_path):
@@ -246,6 +280,33 @@ def test_intervals_or_metric_versions_that_do_not_match_keep_values_but_flag_the
     for metric in body["metrics"]:
         assert metric["baseline"] is not None  # stored values stay visible
         assert metric["comparable"] is False
+        assert metric["delta"] is None  # never a comparable number
+
+
+def test_missing_interval_or_metric_version_also_withholds_the_delta(tmp_path):
+    publish(tmp_path, "known", backtest("known"))
+    publish(tmp_path, "no-interval", backtest("no-interval", start=None, end=None))
+    publish(tmp_path, "no-version", backtest("no-version", performance=None))
+    client = client_for(tmp_path)
+
+    missing_interval = client.get(
+        "/api/v1/backtest-comparisons",
+        params={"baseline_run_id": "known", "candidate_run_id": "no-interval"},
+    ).json()
+    assert missing_interval["comparability"]["interval"] == "unknown"
+    assert missing_interval["comparability"]["comparable"] is False
+    assert all(metric["delta"] is None for metric in missing_interval["metrics"])
+    assert missing_interval["metrics"][0]["baseline"] is not None
+
+    missing_version = client.get(
+        "/api/v1/backtest-comparisons",
+        params={"baseline_run_id": "known", "candidate_run_id": "no-version"},
+    ).json()
+    assert missing_version["comparability"]["metric_version"] == "unknown"
+    assert missing_version["comparability"]["comparable"] is False
+    assert all(metric["delta"] is None for metric in missing_version["metrics"])
+    assert missing_version["relation"]["status"] == "unknown"
+    assert missing_version["conclusion_states_cause"] is False
 
 
 def test_comparison_reads_one_narrow_projection_and_never_writes(tmp_path):
