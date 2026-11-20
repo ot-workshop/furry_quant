@@ -226,6 +226,11 @@ test -z "$active_migrations"
 before_compose() {
   dkr compose -p "$prod_project" --project-directory "$prod_dir" --env-file "$release_state/env.before" -f "$release_state/compose.before.yaml" "$@"
 }
+# 停写前确认保存配置能精确回到旧 digest，不以标签的当前镜像 ID 相同代替。
+for service in api worker migrate maintenance; do
+  saved_image="$(before_compose --profile tools config --format json | dkr run --rm -i --network none --entrypoint python "$current_image" -c 'import json, sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "$service")"
+  test "$saved_image" = "$current_image"
+done
 backup_dir="/backups/predeploy-$(date -u +%Y%m%dT%H%M%SZ)"
 before_compose stop -t 90 api worker
 before_compose --profile tools run --rm --no-deps maintenance python -m finance_quant.backup create "$backup_dir"
@@ -285,7 +290,7 @@ prod_compose up -d --no-deps --pull never --wait --wait-timeout 180 api worker
 prod_compose ps -a
 ```
 
-数据库保持运行。停写与备份使用保存的旧配置；归档校验到新应用启动之间不恢复旧服务。候选检查 schema 与存储路径，不执行 migrate/storage-init。server check 可能创建缺失的运行目录，不能称为只读；其 mkdir(exist_ok=True) 也不能证明既有目录可写。探针以候选默认非 root 身份在所需目录创建、写入、同步并删除临时文件，会改变文件系统元数据；进程或主机异常时检查临时残留。先在独立环境验证这些副作用，生产仅在已批准停写窗口执行。候选 schema 检查失败（即使 revision 未变）或路径不可写均在应用启动前退出。
+数据库保持运行。停写前先核保存的旧配置：应用服务必须实际解析为 `current_image` 的精确 digest；可变标签即使当前 ID 相同也不能通过，包含后置 `export APP_IMAGE` 等覆盖时以实际解析结果为准。停写与备份使用这份配置；归档校验到新应用启动之间不恢复旧服务。候选检查 schema 与存储路径，不执行 migrate/storage-init。server check 可能创建缺失的运行目录，不能称为只读；其 mkdir(exist_ok=True) 也不能证明既有目录可写。探针以候选默认非 root 身份在所需目录创建、写入、同步并删除临时文件，会改变文件系统元数据；进程或主机异常时检查临时残留。先在独立环境验证这些副作用，生产仅在已批准停写窗口执行。候选 schema 检查失败（即使 revision 未变）或路径不可写均在应用启动前退出。
 
 `--no-deps` 避免维护命令和应用启动协调或重建 DB 等依赖；仍须核解析数据库镜像与在线 DB 的实际 ID 一致。`--wait` 等待应用健康，`--pull never` 使用已核镜像。
 
