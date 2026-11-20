@@ -15,6 +15,8 @@ const AUDIT_STATUS: Record<string, { label: string; color: string }> = {
   unverified: { label: "未认证", color: "warning" },
   diagnostic_only: { label: "仅诊断", color: "default" },
   not_used: { label: "未使用", color: "default" },
+  missing_binding: { label: "未绑定", color: "warning" },
+  unknown: { label: "无法判断", color: "warning" },
   not_modeled: { label: "未建模", color: "warning" },
 };
 

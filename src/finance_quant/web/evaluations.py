@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from finance_quant.application.selection_context import selection_result
 from finance_quant.application.selection_experiments import selection_draft
+from finance_quant.data.temporal_audit import evaluation_financial_audit
 from finance_quant.research.evaluation_analysis import evaluation_analysis
 from finance_quant.research.factor_selection import SelectionParameters
 from finance_quant.research.report import evaluation_markdown
@@ -36,6 +37,9 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
     artifacts = ArtifactReader(store)
 
+    def read_evaluation(run_id):
+        return evaluation_financial_audit(artifacts.get("evaluations", run_id))
+
     @router.get("/evaluations")
     def evaluations():
         records, unavailable = store.list_metadata("evaluations")
@@ -49,7 +53,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
 
     @router.get("/evaluations/{run_id}")
     def evaluation(run_id: str):
-        return artifacts.get("evaluations", run_id)
+        return read_evaluation(run_id)
 
     @router.get("/evaluations/{run_id}/analysis")
     def analysis(
@@ -135,7 +139,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
     @router.get("/evaluations/{run_id}/download")
     def download_evaluation(run_id: str):
         return JSONResponse(
-            artifacts.get("evaluations", run_id),
+            read_evaluation(run_id),
             headers={"Content-Disposition": f'attachment; filename="{run_id}.json"'},
         )
 
