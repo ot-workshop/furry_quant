@@ -1,27 +1,87 @@
 name: Full test suite
 
 on:
-  workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   backup-restore:
+    name: backup-restore
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Record checked-out commit
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          CHECKED_SHA="$(git rev-parse HEAD)"
+          printf 'event=%s\n' "$EVENT_NAME"
+          printf 'ref=%s\n' "$GIT_REF"
+          printf 'checked_sha=%s\n' "$CHECKED_SHA"
+          printf 'github_sha=%s\n' "$GITHUB_SHA"
+          printf 'pr_head_sha=%s\n' "$PR_HEAD_SHA"
+          printf 'pr_base_sha=%s\n' "$PR_BASE_SHA"
+
       - name: Test shipped image and complete backup restore in isolated services
         run: docker compose -f docker-compose.test.yaml up --build --abort-on-container-exit --exit-code-from test
+
+      - name: Verify both PostgreSQL backup integration cases executed without skipping
+        run: |
+          docker compose -f docker-compose.test.yaml run --rm -T test python - <<'PY'
+          import subprocess, sys, xml.etree.ElementTree as ET
+          res = subprocess.run([
+              "python", "-m", "pytest", "-v", "-ra",
+              "tests/integration/test_backup_updates.py",
+              "--junitxml=/tmp/backup-integration.xml",
+              "--basetemp", "/tmp/fq-backup-tests",
+          ])
+          if res.returncode != 0:
+              sys.exit(res.returncode)
+          root = ET.parse("/tmp/backup-integration.xml").getroot()
+          suite = root.find("testsuite") if root.tag == "testsuites" else root
+          tests = int(suite.attrib.get("tests", 0))
+          skipped = int(suite.attrib.get("skipped", 0))
+          failures = int(suite.attrib.get("failures", 0))
+          errors = int(suite.attrib.get("errors", 0))
+          for case in suite.findall("testcase"):
+              status = "skipped" if case.find("skipped") is not None else "failed" if (case.find("failure") is not None or case.find("error") is not None) else "passed"
+              cname = case.attrib.get("classname")
+              tname = case.attrib.get("name")
+              print(f"  [{status}] {cname}::{tname}")
+          print(f"PostgreSQL backup integration summary: tests={tests}, skipped={skipped}, failures={failures}, errors={errors}")
+          assert tests == 2, f"Expected 2 backup integration cases, got {tests}"
+          assert skipped == 0, f"Required backup integration tests were skipped ({skipped})"
+          assert failures == 0 and errors == 0
+          PY
+
       - name: Remove test services
         if: always()
         run: docker compose -f docker-compose.test.yaml down --volumes
+
       - name: Build application image for Compose checks
         run: docker build --target application -t finance-quant:startup-check .
+
       - name: Verify automatic initialization and migrations in isolated projects
         run: python3 scripts/check_compose_startup.py --image finance-quant:startup-check
+
   test:
+    name: test
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -40,6 +100,22 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+
+      - name: Record checked-out commit
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          CHECKED_SHA="$(git rev-parse HEAD)"
+          printf 'event=%s\n' "$EVENT_NAME"
+          printf 'ref=%s\n' "$GIT_REF"
+          printf 'checked_sha=%s\n' "$CHECKED_SHA"
+          printf 'github_sha=%s\n' "$GITHUB_SHA"
+          printf 'pr_head_sha=%s\n' "$PR_HEAD_SHA"
+          printf 'pr_base_sha=%s\n' "$PR_BASE_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -67,13 +143,15 @@ jobs:
           POSTGRES_PASSWORD: test-only-password
         run: uv run alembic upgrade head
 
-      - name: Run backend tests
+      - name: Run backend unit tests
         run: >-
-          uv run pytest -q
+          uv run pytest -ra --ignore=tests/integration
           --basetemp /tmp/finance-quant-tests
           -o cache_dir=/tmp/finance-quant-pytest-cache
 
-      - name: Run PostgreSQL repository integration tests
+      # Cover all 16 non-backup PostgreSQL integration cases; the 2 backup/restore
+      # cases in test_backup_updates.py run in the backup-restore Compose job.
+      - name: Run PostgreSQL integration tests (fail if any skipped)
         env:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: "5432"
@@ -81,10 +159,27 @@ jobs:
           POSTGRES_USER: quant_test
           POSTGRES_PASSWORD: test-only-password
           FINANCE_QUANT_TEST_POSTGRES: "1"
-        run: >-
-          uv run pytest -q tests/integration/test_postgres_runtime.py tests/integration/test_market_universe_postgres.py
-          --basetemp /tmp/finance-quant-postgres-tests
-          -o cache_dir=/tmp/finance-quant-postgres-pytest-cache
+        run: |
+          uv run pytest -v -ra tests/integration --ignore=tests/integration/test_backup_updates.py \
+            --junitxml=/tmp/pg-integration.xml \
+            --basetemp /tmp/finance-quant-postgres-tests \
+            -o cache_dir=/tmp/finance-quant-postgres-pytest-cache
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("/tmp/pg-integration.xml").getroot()
+          suite = root.find("testsuite") if root.tag == "testsuites" else root
+          tests = int(suite.attrib.get("tests", 0))
+          skipped = int(suite.attrib.get("skipped", 0))
+          failures = int(suite.attrib.get("failures", 0))
+          errors = int(suite.attrib.get("errors", 0))
+          for case in suite.findall("testcase"):
+              status = "skipped" if case.find("skipped") is not None else "failed" if (case.find("failure") is not None or case.find("error") is not None) else "passed"
+              print(f"  [{status}] {case.attrib.get('classname')}::{case.attrib.get('name')}")
+          print(f"PostgreSQL integration summary: tests={tests}, skipped={skipped}, failures={failures}, errors={errors}")
+          assert tests >= 16, f"Expected at least 16 integration cases, got {tests}"
+          assert skipped == 0, f"Required PostgreSQL integration tests were skipped ({skipped})"
+          assert failures == 0 and errors == 0
+          PY
 
       - name: Set up Node.js
         uses: actions/setup-node@v6

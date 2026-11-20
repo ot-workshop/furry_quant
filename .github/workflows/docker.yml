@@ -12,14 +12,23 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: quqionfree/my_quant_project
 
 jobs:
   build:
+    name: build
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+
+      - name: Resolve lowercase repository image name
+        id: repo
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          CHECKED_SHA="$(git rev-parse HEAD)"
+          printf 'checked_sha=%s\n' "$CHECKED_SHA"
+          printf 'image=%s\n' "${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -72,9 +81,10 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.image }}
           tags: |
-            type=sha,prefix=sha-
+            type=sha,prefix=sha-,format=long
+            type=sha,prefix=sha-,format=short
             type=ref,event=tag
             type=raw,value=master,enable=${{ github.ref == 'refs/heads/master' }}
             type=raw,value=manual-${{ github.run_number }},enable=${{ github.event_name == 'workflow_dispatch' }}
@@ -95,4 +105,10 @@ jobs:
           sbom: true
 
       - name: Report immutable image
-        run: echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}"
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ steps.repo.outputs.image }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          printf 'tags=%s\n' "$IMAGE_TAGS"
+          printf '%s@%s\n' "$IMAGE_REF" "$IMAGE_DIGEST"
