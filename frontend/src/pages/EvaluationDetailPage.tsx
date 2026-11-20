@@ -32,6 +32,7 @@ import {
 import { useApiResource } from "../hooks/useApiResource";
 import type {
   EvaluationResult,
+  FactorDailyDiagnostic,
   FactorDiagnostic,
   ICStats,
   LabelDiagnostic,
@@ -60,11 +61,52 @@ export default function EvaluationDetailPage({ id }: { id: string }) {
   return <EvaluationView result={detail.data} />;
 }
 
+export function groupEmptyReason(
+  daily: FactorDailyDiagnostic[] | null | undefined,
+  signalDates: number | null | undefined,
+  minCrossSection: number | null | undefined,
+): string | null {
+  // Only report a cause that the whole stored series proves: the daily records
+  // must be an array, every row must carry a date, and the dates must cover the
+  // summary's signal dates exactly once. Anything less keeps the generic note.
+  if (!Array.isArray(daily) || daily.length === 0) return null;
+  const dates = daily.map((row) =>
+    typeof row?.date === "string" ? row.date.trim() : "",
+  );
+  // A blank or whitespace-only date is not a stored day.
+  if (dates.some((date) => date.length === 0)) return null;
+  const uniqueDates = new Set(dates);
+  if (uniqueDates.size !== daily.length) return null;
+  // Without a usable signal-date count the series cannot be shown complete.
+  if (typeof signalDates !== "number" || signalDates <= 0) return null;
+  if (uniqueDates.size !== signalDates) return null;
+  if (daily.every((row) => row.ic_exclusion === "insufficient_cross_section"))
+    return minCrossSection
+      ? `同时具备有效评分和未来收益标签的样本数低于横截面门槛（${minCrossSection} 只），没有可用于分组的收益。`
+      : "同时具备有效评分和未来收益标签的样本数低于横截面门槛，没有可用于分组的收益。";
+  if (daily.every((row) => row.ic_exclusion === "constant_score"))
+    return "有收益标签的配对样本中因子得分没有差异（constant_score），无法分组。";
+  return null;
+}
+
 function EvaluationView({ result }: { result: EvaluationResult }) {
   const { metadata, methodology } = result;
   const [horizon, setHorizon] = useState(
     String(metadata.evaluation.horizons[0] ?? ""),
   );
+  const [tab, setTab] = useState("factors");
+  // Switching from the chart's coverage link also moves focus onto the shown tab,
+  // so a keyboard user lands on the panel they just opened.
+  const showCoverage = () => {
+    setTab("coverage");
+    requestAnimationFrame(() => {
+      const active = document.querySelector<HTMLElement>(
+        ".ant-tabs-tab-active .ant-tabs-tab-btn",
+      );
+      active?.focus();
+    });
+  };
+  const minCrossSection = metadata.evaluation.min_cross_section;
   const definitions = metadata.factor_definitions;
   const factors = Object.entries(result.factors);
 
@@ -113,6 +155,8 @@ function EvaluationView({ result }: { result: EvaluationResult }) {
         </Flex>
       </Card>
       <Tabs
+        activeKey={tab}
+        onChange={setTab}
         items={[
           {
             key: "factors",
@@ -169,7 +213,15 @@ function EvaluationView({ result }: { result: EvaluationResult }) {
                         description="Q1 为方向对齐后的低分组"
                       >
                         {diagnostic?.groups.length ? (
-                          <GroupReturnsChart groups={diagnostic.groups} />
+                          <GroupReturnsChart
+                            groups={diagnostic.groups}
+                            reason={groupEmptyReason(
+                              diagnostic.daily,
+                              diagnostic.summary.signal_dates,
+                              minCrossSection,
+                            )}
+                            onShowCoverage={showCoverage}
+                          />
                         ) : (
                           <EmptyState title="没有分组收益" />
                         )}
