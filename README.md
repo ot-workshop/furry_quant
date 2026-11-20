@@ -256,10 +256,10 @@ ssh -N -L 8000:127.0.0.1:8000 USER@SERVER
 ```dotenv
 HTTP_BIND_HOST=0.0.0.0
 HTTP_PORT=8000
-ALLOWED_ORIGINS=http://10.88.0.61:8000,http://127.0.0.1:8000,http://localhost:8000
+ALLOWED_ORIGINS=http://SERVER_ADDRESS:8000,http://127.0.0.1:8000,http://localhost:8000
 ```
 
-执行 `docker compose up -d` 应用配置后，从其他电脑打开 `http://10.88.0.61:8000`。`0.0.0.0` 表示监听所有网卡，浏览器使用服务器实际 IP 或域名。网页与 API 共用该端口，配置的来源同时用于研究、下载和数据管理操作的提交校验。
+先将示例中的 `SERVER_ADDRESS` 替换为自己的服务器 IP 或域名，再执行 `docker compose up -d` 应用配置，从其他电脑打开相应地址。`0.0.0.0` 表示监听所有网卡。网页与 API 共用该端口，配置的来源同时用于研究、下载和数据管理操作的提交校验。
 
 验证数据库结构与存储连接：
 

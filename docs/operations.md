@@ -7,7 +7,7 @@
 | 用途 | 约定 |
 | --- | --- |
 | 新发布目标 | `ghcr.io/ot-workshop/furry_quant:sha-<完整40位提交>`，运行时固定 `ghcr.io/ot-workshop/furry_quant@sha256:<digest>`。 |
-| 旧环境 | 旧命名空间 `ghcr.io/quqionfree/my_quant_project` 与短 SHA 仍可能出现在运行环境及旧配置；当前 workflow 使用新命名空间，不能据此假定新镜像已发布。 |
+| 旧环境 | 既有部署可能使用其他镜像命名空间或短 SHA；当前 workflow 的命名约定不能证明旧部署已更新，也不能证明新镜像已发布。 |
 | 回滚来源 | 保留部署前实际验证过的旧镜像 digest，包括旧命名空间产物，不因更名删除。 |
 
 新命名空间的私有包推送、目标机授权拉取和对应源码必须用首个真实产物验证。`manifest unknown`、匿名拒绝、workflow 配置为 active 或没有 Actions 记录，都不能证明目标镜像可部署；记录实际成功 pull 的 digest。`:master` 是移动标签，短 SHA 可用于查找，均不替代完整提交与 digest 的核对。
@@ -16,22 +16,22 @@
 
 ## 发布准入与版本核对
 
-由 CEO 固定发布提交，CTO 审核技术条件，牛马执行部署，量化测试做部署后冒烟。开始前必须具备：
+由发布维护者固定提交，技术评审者审核条件，运维执行部署，测试做部署后冒烟。开始前必须具备：
 
-- 该版本必要检查通过、CTO 审批与 CEO 合并结论；合并提交或组合版本与被验版本对应。新提交不能沿用旧头结果。
+- 该版本必要检查通过、独立技术审批与最终合并结论；合并提交或组合版本与被验版本对应。新提交不能沿用旧头结果。
 - 对应发布 run 成功，应用镜像存在且目标机能拉取；记录 digest、完整源提交、部署前镜像和数据库迁移版本。
 - 正确版本的 Compose 文件、配置与目录；部署前一致备份 create/verify 成功、回滚目标及恢复方法可用。
 - 测试与部署窗口、失败责任人和证据目录明确，未完成任务已处理。目标机不能访问 Docker Hub 时不在其上构建，先确认所需数据库镜像已存在或有可用授权来源。
 
 ### 固定 Docker 与 Compose 目标
 
-以下发布、回滚与恢复示例使用 Bash。先在专用终端初始化函数：固定已核 Docker context/配置目录、项目、Compose 文件和 env 文件，不继承 COMPOSE_FILE、DOCKER_HOST、APP_IMAGE 或数据路径等外部覆盖。示例值按当前部署登记替换；初始化后若改变任一目标，重新核验，不能接续上次窗口。
+以下发布、回滚与恢复示例使用 Bash。先在专用终端初始化函数：固定已核 Docker context/配置目录、项目、Compose 文件和 env 文件，不继承 COMPOSE_FILE、DOCKER_HOST、APP_IMAGE 或数据路径等外部覆盖。`/srv/example/`、`SERVER_ADDRESS` 和尖括号内容均为占位示例，按实际部署登记替换，先确认相应父目录存在；初始化后若改变任一目标，重新核验，不能接续上次窗口。
 
 ```sh
 set -euo pipefail
 docker_context=default
 docker_config="$HOME/.docker"
-prod_dir=/data/finance-quant
+prod_dir=/srv/example/finance-quant
 prod_project=finance-quant
 prod_file="$prod_dir/docker-compose.yaml"
 prod_env="$prod_dir/.env"
@@ -116,7 +116,7 @@ dkr run --rm --entrypoint python "$release_image" -c 'from finance_quant.provena
 
 镜像标签的 revision 应对应发布完整提交；缺少或冲突时核对构建证据，不猜测。可在同一提交的干净源码目录执行 `uv run python -c "from finance_quant.provenance import source_provenance; print(source_provenance())"`，对照 `code_sha256`、依赖锁哈希和 Python 版本。`code_sha256` 只覆盖计算层，排除了网页、持久化和部分进程入口，不能单独证明完整应用或前端相同；完整身份还需提交、构建 run 与镜像 digest。
 
-记录当前运行 api/worker 的 image ID 与 digest，确认二者使用同一目标产物。只输出所需字段，不把完整环境或 Docker 配置打印到日志。现场的 `/root/deploy_verify.sh` 若经部署负责人核对，可作为特定主机的辅助工具；它不在仓库中，不能成为通用操作前提，`preflight` 的 pull 也会写本机镜像缓存。
+记录当前运行 api/worker 的 image ID 与 digest，确认二者使用同一目标产物。只输出所需字段，不把完整环境或 Docker 配置打印到日志。拉取操作会写本机镜像缓存。
 
 ## 目录与配置
 
@@ -153,7 +153,7 @@ PostgreSQL 使用 `POSTGRES_DATA_ROOT` 主机目录，默认 `./postgres`，目�
 
 ## 私有镜像认证
 
-创建 classic personal access token，只授予 `read:packages`。对应 GitHub 账户需要拥有私有仓库的读取权限。
+创建 classic personal access token，只授予 `read:packages`。对应 GitHub 账户需要具备目标镜像包的读取权限；源码仓库公开不代表镜像包也公开。
 
 ```sh
 read -s GHCR_TOKEN
@@ -236,6 +236,10 @@ cmp -s "$prod_file" "$release_state/compose.before.yaml"
 cmp -s "$prod_env" "$release_state/env.original"
 sed -i "s|^APP_IMAGE=.*|APP_IMAGE=$release_image|" "$prod_env"
 prod_compose config --quiet
+for service in api worker maintenance; do
+  parsed_image="$(compose_image "$service")"
+  test "$parsed_image" = "$release_image"
+done
 parsed_db="$(compose_image db)"
 parsed_db_id="$(dkr image inspect "$parsed_db" --format '{{.Id}}')"
 online_db_id="$(dkr inspect "$db_id" --format '{{.Image}}')"
@@ -301,9 +305,9 @@ prod_compose exec -T worker python -c 'from finance_quant.provenance import sour
 
 端口按实际配置替换。核对 api/worker 容器 image ID 与目标镜像、计算与依赖哈希，以及 health 的数据库 revision；健康检查的 revision 是数据库迁移版本，不是 Git 提交。
 
-量化测试在约定窗口执行线上冒烟：原有回测/评估/评分数量与部署前对照、`/api/v1/data-status` 的原数据版本未意外变化、既有回测 KPI 与 API 一致、研究/比较入口正常。财务兼容修复须打开 `/evaluations/<原运行ID>` 并对照详情 API 与 JSON 下载，不能仅检查评估列表；无原始观测的 IC/分组收益仍为空，冻结文件不变。新增临时研究在隔离环境完成，生产写入另按明确验收范围执行。页面无法访问时记录未验项，不以 HTTP 或组件测试冒充浏览器验收。
+测试负责人在约定窗口执行线上冒烟：原有回测/评估/评分数量与部署前对照、`/api/v1/data-status` 的原数据版本未意外变化、既有回测 KPI 与 API 一致、研究/比较入口正常。财务兼容修复须打开 `/evaluations/<原运行ID>` 并对照详情 API 与 JSON 下载，不能仅检查评估列表；无原始观测的 IC/分组收益仍为空，冻结文件不变。新增临时研究在隔离环境完成，生产写入另按明确验收范围执行。页面无法访问时记录未验项，不以 HTTP 或组件测试冒充浏览器验收。
 
-将部署提交、发布 run、镜像 digest、备份校验、迁移、版本核对与冒烟结论写入发布记录。检查失败时由执行人保留日志，CEO 与 CTO 判断继续修复或回滚，不能只重启后宣称通过。
+将部署提交、发布 run、镜像 digest、备份校验、迁移、版本核对与冒烟结论写入发布记录。检查失败时由执行人保留日志，发布维护者与技术评审者判断继续修复或回滚，不能只重启后宣称通过。
 
 ### 更新后继续未完成下载
 
@@ -374,7 +378,7 @@ verify_fault_target
 printf '发布前schema=%s；当前schema=%s；旧镜像=%s\n' "$(cat "$release_state/schema.before")" "$schema_now" "$current_image"
 ```
 
-由 CTO 与发布负责人根据**实际失败阶段和迁移状态**记录回退结论。`schema` 相同不能证明部分迁移未改结构或数据；发生过迁移尝试时尤其不能仅据版本号相等切回。只有确认当前结构/数据可由旧镜像读取，才在恢复记录内保存 `image-rollback-reviewed.txt`，包含 `mode=image`、`schema=<当前实际版本>`、`image=<记录内旧digest>` 和非空 `decision=<本次兼容结论及依据>`。否则按下一段独立备份恢复，不能创建空文件绕过判断。
+由技术评审者与发布负责人根据**实际失败阶段和迁移状态**记录回退结论。`schema` 相同不能证明部分迁移未改结构或数据；发生过迁移尝试时尤其不能仅据版本号相等切回。只有确认当前结构/数据可由旧镜像读取，才在恢复记录内保存 `image-rollback-reviewed.txt`，包含 `mode=image`、`schema=<当前实际版本>`、`image=<记录内旧digest>` 和非空 `decision=<本次兼容结论及依据>`。否则按下一段独立备份恢复，不能创建空文件绕过判断。
 
 以下是**已确认可直接回镜像**的切换；继续沿刚核的故障态函数执行，应用已停不会阻断，部分已启动的应用会先停止。数据库版本必须回到发布前值，且恢复后再次确认 Compose 实际解析到旧 digest，才允许启动：
 
@@ -454,7 +458,7 @@ ssh -N -L 8000:127.0.0.1:8000 用户名@服务器地址
 
 浏览器打开 <http://127.0.0.1:8000>。隧道只影响浏览器访问，不影响后台任务。
 
-直接通过局域网访问时，将 `HTTP_BIND_HOST` 设置为服务器地址，并在 `ALLOWED_ORIGINS` 中加入完整网页地址。例如 `HTTP_BIND_HOST=0.0.0.0`（监听所有网卡）、`ALLOWED_ORIGINS=http://10.88.0.61:8000`，执行 `docker compose up -d` 后即可从其他电脑访问。监听地址决定端口是否对外可达，来源配置决定网页能否提交研究和数据管理操作；两项应配套设置。
+直接通过局域网访问时，将 `HTTP_BIND_HOST` 设置为服务器地址，并在 `ALLOWED_ORIGINS` 中加入完整网页地址。例如 `HTTP_BIND_HOST=0.0.0.0`（监听所有网卡）、`ALLOWED_ORIGINS=http://SERVER_ADDRESS:8000`，执行 `docker compose up -d` 后即可从其他电脑访问。监听地址决定端口是否对外可达，来源配置决定网页能否提交研究和数据管理操作；两项应配套设置。
 
 ## 备份
 
@@ -505,12 +509,12 @@ uv run python -m finance_quant.backup verify D:/quant-backups/backup-20261112
 
 ```sh
 set -eu
-verified_archive='/data/finance-quant/backups/<已校验归档>'
+verified_archive='/srv/example/finance-quant/backups/<已校验归档>'
 verified_compose='/已核旧版本/docker-compose.yaml'
 test -d "$verified_archive"
 test ! -L "$verified_archive"
 test -f "$verified_compose"
-drill_root="$(mktemp -d /data/fq-restore.XXXXXX)"
+drill_root="$(mktemp -d /srv/example/fq-restore.XXXXXX)"
 drill_project="$(basename "$drill_root" | tr '[:upper:]' '[:lower:]' | tr '.' '-')"
 mkdir "$drill_root/postgres" "$drill_root/storage" "$drill_root/backups" "$drill_root/restores"
 cp -- "$verified_compose" "$drill_root/docker-compose.yaml"
@@ -597,7 +601,7 @@ du -sh storage backups
 
 不得手动删除 `datasets/` 或 `runs/` 中仍被 PostgreSQL 登记的文件。Docker 构建缓存可清理，但数据库 volume、正式镜像和备份必须先确认引用关系。
 
-临时演练只清理登记过的项目、数据库、目录和镜像；先保存日志/哈希，再停服务、断开连接后清理。保留回滚 digest、部署前备份及失败现场直到负责人确认验收完成。清理失败要列出残留与责任人，不执行全机清理以掩盖问题。发布与回滚执行人负责资源闭环，量化测试报告冒烟结论，量化文档记录实际版本与变化。
+临时演练只清理登记过的项目、数据库、目录和镜像；先保存日志/哈希，再停服务、断开连接后清理。保留回滚 digest、部署前备份及失败现场直到负责人确认验收完成。清理失败要列出残留与责任人，不执行全机清理以掩盖问题。发布与回滚执行人负责资源闭环，测试报告冒烟结论，文档维护者记录实际版本与变化。
 
 ## 试运行环境重建
 
