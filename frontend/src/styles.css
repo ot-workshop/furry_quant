@@ -226,8 +226,12 @@ body {
   }
   /* rc-tabs pins overflow:hidden inline; scrolling keeps a focused tab visible
      when it is only partly inside the strip. */
+  .result-tabs .ant-tabs-nav {
+    min-inline-size: 0;
+  }
   .result-tabs .ant-tabs-nav-wrap {
-    overflow-x: auto !important;
+    overflow: clip !important;
+    min-inline-size: 0;
   }
   /* Draw the focus ring inside the tab so the scrolling strip cannot clip it.
      rc-tabs' own focus style outranks a plain class, hence the explicit
