@@ -222,6 +222,36 @@ def test_missing_exit_date_zero_all_empty_and_missing_calendar_guards(tmp_path):
     assert res_no_cal["status"] == "missing_frozen_calendar"
     assert res_no_cal["rank_ic"]["ci_low"] is None
 
+    # Unsaved factor fields & partial dates in availability_by_date must stay None (unknown), never zero
+    partial_factor_doc = {
+        "metadata": {
+            "id": "factors-partial",
+            "name": "部分旧因子批次",
+            "is_synthetic": True,
+            "created_at": "2026-11-20T00:00:00Z",
+            "scheme": "equal",
+            "as_of": dates[0],
+            "weights": {"value": 1.0},
+            "availability_by_date": {
+                dates[0]: {"universe": 4, "eligible": 4, "factors": {"value": {}}},
+            },
+        },
+        "history": [],
+    }
+    store.publish("factors", "factors-partial", partial_factor_doc)
+    partial_eval, _ = _make_evaluation([None] * 25, factor="value", horizon=1, factor_run_id="factors-partial")
+    res_partial = evaluation_evidence(store, partial_eval, horizon=1, factor="value", cutoff=dates[-1])
+    raw_p = res_partial["raw_availability"]
+    assert raw_p["available"] is True
+    assert raw_p["coverage_status"] == "partial"
+    assert raw_p["matched_signal_dates"] == 1
+    assert raw_p["total_signal_dates"] == 25
+    assert raw_p["universe_stock_days"] == 4
+    assert raw_p["eligible_stock_days"] == 4
+    assert raw_p["raw_valid_stock_days"] is None
+    assert raw_p["raw_missing_stock_days"] is None
+    assert raw_p["imputed_stock_days"] is None
+
 
 def test_http_evidence_route_read_only_and_requires_cutoff_when_end_missing(tmp_path):
     runs, data = tmp_path / "runs", tmp_path / "data"

@@ -245,6 +245,13 @@ export function FactorEvidencePanel({
                     children: `${data.counts.lag_pairs} 对（k=1..${data.lag.lag}）`,
                   },
                   {
+                    key: "rawCovRange",
+                    label: "可用性记录覆盖",
+                    children: raw?.available
+                      ? `${raw.matched_signal_dates ?? "—"} / ${raw.total_signal_dates ?? data.counts.signal_dates} 交易日（${raw.coverage_status === "complete" ? "完整" : "仅部分日期或字段完整度不足，以下为已匹配范围"}）`
+                      : `未知（${raw?.reason ?? "原因未提供"}）`,
+                  },
+                  {
                     key: "rawObs",
                     label:
                       factor === "composite"
@@ -252,8 +259,10 @@ export function FactorEvidencePanel({
                         : "真实原始观测",
                     children: raw?.available
                       ? factor === "composite"
-                        ? `${raw.eligible_stock_days ?? "—"} / ${raw.universe_stock_days ?? "—"} 只·日`
-                        : `${raw.raw_valid_stock_days ?? "—"} 只·日（缺失 ${raw.raw_missing_stock_days ?? "—"}）`
+                        ? `${raw.eligible_stock_days ?? "未知"} / ${raw.universe_stock_days ?? "未知"} 只·日`
+                        : raw.raw_valid_stock_days !== null
+                          ? `${raw.raw_valid_stock_days} 只·日（缺失 ${raw.raw_missing_stock_days ?? "未知"}）`
+                          : "未知（旧结果未保存原始观测字段）"
                       : `未知（${raw?.reason ?? "原因未提供"}）`,
                   },
                   {
@@ -262,7 +271,7 @@ export function FactorEvidencePanel({
                     children: raw?.available
                       ? raw.imputed_stock_days !== null
                         ? `${raw.imputed_stock_days} 只·日（不进入单因子 IC）`
-                        : "0 只·日（无填补规则）"
+                        : "未知（未保存填补字段）"
                       : "未知",
                   },
                   {
@@ -303,21 +312,21 @@ export function FactorEvidencePanel({
                     {
                       title: "真实观测（只·日）",
                       align: "right",
-                      dataIndex: "raw_valid_stock_days",
+                      render: (_, row) => row.raw_valid_stock_days ?? "未知",
                     },
                     {
                       title: "缺失（只·日）",
                       align: "right",
-                      dataIndex: "raw_missing_stock_days",
+                      render: (_, row) => row.raw_missing_stock_days ?? "未知",
                     },
                     {
                       title: "填补评分（只·日）",
                       align: "right",
-                      render: (_, row) => row.imputed_stock_days ?? 0,
+                      render: (_, row) => row.imputed_stock_days ?? "未知",
                     },
                     {
                       title: "缺失处理",
-                      render: (_, row) => row.missing_policy ?? "strict",
+                      render: (_, row) => row.missing_policy ?? "未知",
                     },
                   ]}
                 />
@@ -369,9 +378,18 @@ export function FactorEvidencePanel({
                   {
                     key: "interval",
                     label: "95% 区间（下界 ~ 上界）",
-                    children: computable
-                      ? `[${signedText(data.rank_ic.ci_low, 6)}, ${signedText(data.rank_ic.ci_high, 6)}]`
-                      : "—",
+                    children: computable ? (
+                      <Flex gap={4} wrap>
+                        <span style={{ whiteSpace: "nowrap" }}>
+                          [{signedText(data.rank_ic.ci_low, 6)},
+                        </span>
+                        <span style={{ whiteSpace: "nowrap" }}>
+                          {signedText(data.rank_ic.ci_high, 6)}]
+                        </span>
+                      </Flex>
+                    ) : (
+                      "—"
+                    ),
                   },
                   {
                     key: "se",

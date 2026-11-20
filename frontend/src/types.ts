@@ -781,9 +781,11 @@ export interface EvaluationEvidence {
   } | null;
   raw_availability: {
     available: boolean;
+    coverage_status?: "complete" | "partial" | "unavailable";
     reason?: string;
     factor_run_id?: string;
     matched_signal_dates?: number;
+    total_signal_dates?: number;
     universe_stock_days: number | null;
     eligible_stock_days: number | null;
     raw_valid_stock_days: number | null;
@@ -794,8 +796,9 @@ export interface EvaluationEvidence {
     missing_policy: string | null;
     component_imputations: Array<{
       factor: string;
-      raw_valid_stock_days: number;
-      raw_missing_stock_days: number;
+      matched_signal_dates?: number;
+      raw_valid_stock_days: number | null;
+      raw_missing_stock_days: number | null;
       imputed_stock_days: number | null;
       not_applicable_scored_stock_days: number | null;
       missing_policy: string | null;

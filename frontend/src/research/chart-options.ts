@@ -217,6 +217,7 @@ export function horizontalIntervalOption(
       max,
       axisLabel: {
         color: palette.muted,
+        hideOverlap: true,
         formatter: (value: number) => value.toFixed(3),
       },
       splitLine: { lineStyle: { color: palette.split } },

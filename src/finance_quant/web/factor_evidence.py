@@ -81,6 +81,34 @@ def _validate_inputs(
     return eff_start, eff_end, eff_cutoff, eff_lag
 
 
+def _unavailable_availability(reason: str, total_signal_dates: int) -> dict:
+    return {
+        "available": False,
+        "coverage_status": "unavailable",
+        "reason": reason,
+        "matched_signal_dates": 0,
+        "total_signal_dates": total_signal_dates,
+        "universe_stock_days": None,
+        "eligible_stock_days": None,
+        "raw_valid_stock_days": None,
+        "raw_missing_stock_days": None,
+        "imputed_stock_days": None,
+        "not_applicable_stock_days": None,
+        "not_applicable_scored_stock_days": None,
+        "missing_policy": None,
+        "component_imputations": [],
+    }
+
+
+def _opt_int(entry: dict, key: str) -> int | None:
+    value = entry.get(key)
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
 def _project_raw_availability(
     store,
     result: dict,
@@ -88,64 +116,36 @@ def _project_raw_availability(
     factor: str,
     dates: list[str],
 ) -> dict:
+    total_days = len(dates)
     metadata = result.get("metadata", {})
     factor_run_id = metadata.get("factor_run_id")
     if not isinstance(factor_run_id, str) or not factor_run_id:
-        return {
-            "available": False,
-            "reason": "未关联冻结因子批次（旧结果或缺少 factor_run_id）",
-            "universe_stock_days": None,
-            "eligible_stock_days": None,
-            "raw_valid_stock_days": None,
-            "raw_missing_stock_days": None,
-            "imputed_stock_days": None,
-            "not_applicable_stock_days": None,
-            "not_applicable_scored_stock_days": None,
-            "missing_policy": None,
-            "component_imputations": [],
-        }
+        return _unavailable_availability("未关联冻结因子批次（旧结果或缺少 factor_run_id）", total_days)
     try:
         factor_doc = store.get("factors", factor_run_id, hydrate=False)
     except (FileNotFoundError, ValueError):
-        return {
-            "available": False,
-            "reason": "关联因子批次不可读取，原始观测与填补数未知",
-            "universe_stock_days": None,
-            "eligible_stock_days": None,
-            "raw_valid_stock_days": None,
-            "raw_missing_stock_days": None,
-            "imputed_stock_days": None,
-            "not_applicable_stock_days": None,
-            "not_applicable_scored_stock_days": None,
-            "missing_policy": None,
-            "component_imputations": [],
-        }
+        return _unavailable_availability("关联因子批次不可读取，原始观测与填补数未知", total_days)
     availability = factor_doc.get("metadata", {}).get("availability_by_date")
     if not isinstance(availability, dict) or not availability:
-        return {
-            "available": False,
-            "reason": "因子批次未保存逐日可用性明细（旧结果不回填）",
-            "universe_stock_days": None,
-            "eligible_stock_days": None,
-            "raw_valid_stock_days": None,
-            "raw_missing_stock_days": None,
-            "imputed_stock_days": None,
-            "not_applicable_stock_days": None,
-            "not_applicable_scored_stock_days": None,
-            "missing_policy": None,
-            "component_imputations": [],
-        }
+        return _unavailable_availability("因子批次未保存逐日可用性明细（旧结果不回填）", total_days)
 
     matched_days = 0
     universe_total = 0
+    universe_complete = True
     eligible_total = 0
+    eligible_complete = True
+
+    factor_matched_days = 0
     raw_valid = 0
+    valid_complete = True
     raw_missing = 0
+    missing_complete = True
     imputed_total = 0
-    has_imputed = False
+    imputed_complete = True
     not_applicable_total = 0
+    not_applicable_complete = True
     not_applicable_scored_total = 0
-    has_not_applicable = False
+    not_applicable_scored_complete = True
     missing_policy: str | None = None
     component_acc: dict[str, dict] = {}
 
@@ -154,23 +154,54 @@ def _project_raw_availability(
         if not isinstance(day_info, dict):
             continue
         matched_days += 1
-        universe_total += int(day_info.get("universe", 0))
-        eligible_total += int(day_info.get("eligible", 0))
+        u_val = _opt_int(day_info, "universe")
+        e_val = _opt_int(day_info, "eligible")
+        if u_val is None:
+            universe_complete = False
+        else:
+            universe_total += u_val
+        if e_val is None:
+            eligible_complete = False
+        else:
+            eligible_total += e_val
+
         factors_map = day_info.get("factors", {})
         if not isinstance(factors_map, dict):
+            valid_complete = False
+            missing_complete = False
+            imputed_complete = False
+            not_applicable_complete = False
+            not_applicable_scored_complete = False
             continue
         if factor != "composite":
             entry = factors_map.get(factor)
             if isinstance(entry, dict):
-                raw_valid += int(entry.get("valid", 0))
-                raw_missing += int(entry.get("missing", 0))
-                if "imputed" in entry:
-                    has_imputed = True
-                    imputed_total += int(entry.get("imputed", 0))
-                if "not_applicable" in entry:
-                    has_not_applicable = True
-                    not_applicable_total += int(entry.get("not_applicable", 0))
-                    not_applicable_scored_total += int(entry.get("not_applicable_scored", 0))
+                factor_matched_days += 1
+                v = _opt_int(entry, "valid")
+                m = _opt_int(entry, "missing")
+                imp = _opt_int(entry, "imputed")
+                na = _opt_int(entry, "not_applicable")
+                nas = _opt_int(entry, "not_applicable_scored")
+                if v is None:
+                    valid_complete = False
+                else:
+                    raw_valid += v
+                if m is None:
+                    missing_complete = False
+                else:
+                    raw_missing += m
+                if imp is None:
+                    imputed_complete = False
+                else:
+                    imputed_total += imp
+                if na is None:
+                    not_applicable_complete = False
+                else:
+                    not_applicable_total += na
+                if nas is None:
+                    not_applicable_scored_complete = False
+                else:
+                    not_applicable_scored_total += nas
                 if entry.get("missing_policy"):
                     missing_policy = str(entry["missing_policy"])
         else:
@@ -181,54 +212,132 @@ def _project_raw_availability(
                     key,
                     {
                         "factor": key,
-                        "raw_valid_stock_days": 0,
-                        "raw_missing_stock_days": 0,
-                        "imputed_stock_days": 0 if "imputed" in entry else None,
-                        "not_applicable_scored_stock_days": 0 if "not_applicable_scored" in entry else None,
-                        "missing_policy": entry.get("missing_policy"),
+                        "matched_days": 0,
+                        "raw_valid_sum": 0,
+                        "valid_complete": True,
+                        "raw_missing_sum": 0,
+                        "missing_complete": True,
+                        "imputed_sum": 0,
+                        "imputed_complete": True,
+                        "na_sum": 0,
+                        "na_complete": True,
+                        "na_scored_sum": 0,
+                        "na_scored_complete": True,
+                        "missing_policy": None,
                     },
                 )
-                bucket["raw_valid_stock_days"] += int(entry.get("valid", 0))
-                bucket["raw_missing_stock_days"] += int(entry.get("missing", 0))
-                if "imputed" in entry:
-                    has_imputed = True
-                    imputed_total += int(entry.get("imputed", 0))
-                    bucket["imputed_stock_days"] = (bucket["imputed_stock_days"] or 0) + int(entry.get("imputed", 0))
-                if "not_applicable_scored" in entry:
-                    has_not_applicable = True
-                    not_applicable_scored_total += int(entry.get("not_applicable_scored", 0))
-                    bucket["not_applicable_scored_stock_days"] = (
-                        bucket["not_applicable_scored_stock_days"] or 0
-                    ) + int(entry.get("not_applicable_scored", 0))
+                bucket["matched_days"] += 1
+                v = _opt_int(entry, "valid")
+                m = _opt_int(entry, "missing")
+                imp = _opt_int(entry, "imputed")
+                na = _opt_int(entry, "not_applicable")
+                nas = _opt_int(entry, "not_applicable_scored")
+                if v is None:
+                    bucket["valid_complete"] = False
+                else:
+                    bucket["raw_valid_sum"] += v
+                if m is None:
+                    bucket["missing_complete"] = False
+                else:
+                    bucket["raw_missing_sum"] += m
+                if imp is None:
+                    bucket["imputed_complete"] = False
+                else:
+                    bucket["imputed_sum"] += imp
+                if na is None:
+                    bucket["na_complete"] = False
+                else:
+                    bucket["na_sum"] += na
+                if nas is None:
+                    bucket["na_scored_complete"] = False
+                else:
+                    bucket["na_scored_sum"] += nas
+                if entry.get("missing_policy"):
+                    bucket["missing_policy"] = str(entry["missing_policy"])
 
     if matched_days == 0:
+        return _unavailable_availability("所选信号区间在关联因子批次中没有可用性记录", total_days)
+
+    if factor == "composite":
+        component_rows = [
+            {
+                "factor": b["factor"],
+                "matched_signal_dates": b["matched_days"],
+                "raw_valid_stock_days": b["raw_valid_sum"] if b["valid_complete"] else None,
+                "raw_missing_stock_days": b["raw_missing_sum"] if b["missing_complete"] else None,
+                "imputed_stock_days": b["imputed_sum"] if b["imputed_complete"] else None,
+                "not_applicable_scored_stock_days": b["na_scored_sum"] if b["na_scored_complete"] else None,
+                "missing_policy": b["missing_policy"],
+            }
+            for b in component_acc.values()
+        ]
+        all_comp_imputed = bool(component_acc) and all(
+            b["imputed_complete"] and b["matched_days"] == matched_days for b in component_acc.values()
+        )
+        all_comp_na = bool(component_acc) and all(
+            b["na_complete"] and b["matched_days"] == matched_days for b in component_acc.values()
+        )
+        all_comp_na_scored = bool(component_acc) and all(
+            b["na_scored_complete"] and b["matched_days"] == matched_days for b in component_acc.values()
+        )
+        comp_imputed_total = sum(b["imputed_sum"] for b in component_acc.values()) if all_comp_imputed else None
+        comp_na_total = sum(b["na_sum"] for b in component_acc.values()) if all_comp_na else None
+        comp_na_scored_total = sum(b["na_scored_sum"] for b in component_acc.values()) if all_comp_na_scored else None
+        is_complete = (
+            total_days > 0
+            and matched_days == total_days
+            and universe_complete
+            and eligible_complete
+            and bool(component_acc)
+            and all(
+                b["matched_days"] == total_days and b["valid_complete"] and b["missing_complete"]
+                for b in component_acc.values()
+            )
+        )
         return {
-            "available": False,
-            "reason": "所选信号区间在关联因子批次中没有可用性记录",
-            "universe_stock_days": None,
-            "eligible_stock_days": None,
+            "available": True,
+            "coverage_status": "complete" if is_complete else "partial",
+            "factor_run_id": factor_run_id,
+            "matched_signal_dates": matched_days,
+            "total_signal_dates": total_days,
+            "universe_stock_days": universe_total if universe_complete else None,
+            "eligible_stock_days": eligible_total if eligible_complete else None,
             "raw_valid_stock_days": None,
             "raw_missing_stock_days": None,
-            "imputed_stock_days": None,
-            "not_applicable_stock_days": None,
-            "not_applicable_scored_stock_days": None,
+            "imputed_stock_days": comp_imputed_total,
+            "not_applicable_stock_days": comp_na_total,
+            "not_applicable_scored_stock_days": comp_na_scored_total,
             "missing_policy": None,
-            "component_imputations": [],
+            "component_imputations": component_rows,
         }
 
+    has_factor = factor_matched_days > 0
+    is_complete = (
+        total_days > 0
+        and matched_days == total_days
+        and factor_matched_days == total_days
+        and universe_complete
+        and eligible_complete
+        and valid_complete
+        and missing_complete
+    )
     return {
         "available": True,
+        "coverage_status": "complete" if is_complete else "partial",
         "factor_run_id": factor_run_id,
         "matched_signal_dates": matched_days,
-        "universe_stock_days": universe_total,
-        "eligible_stock_days": eligible_total,
-        "raw_valid_stock_days": None if factor == "composite" else raw_valid,
-        "raw_missing_stock_days": None if factor == "composite" else raw_missing,
-        "imputed_stock_days": imputed_total if has_imputed else None,
-        "not_applicable_stock_days": not_applicable_total if has_not_applicable else None,
-        "not_applicable_scored_stock_days": not_applicable_scored_total if has_not_applicable else None,
+        "total_signal_dates": total_days,
+        "universe_stock_days": universe_total if universe_complete else None,
+        "eligible_stock_days": eligible_total if eligible_complete else None,
+        "raw_valid_stock_days": raw_valid if (has_factor and valid_complete) else None,
+        "raw_missing_stock_days": raw_missing if (has_factor and missing_complete) else None,
+        "imputed_stock_days": imputed_total if (has_factor and imputed_complete) else None,
+        "not_applicable_stock_days": not_applicable_total if (has_factor and not_applicable_complete) else None,
+        "not_applicable_scored_stock_days": (
+            not_applicable_scored_total if (has_factor and not_applicable_scored_complete) else None
+        ),
         "missing_policy": missing_policy,
-        "component_imputations": list(component_acc.values()) if factor == "composite" else [],
+        "component_imputations": [],
     }
 
 
