@@ -453,7 +453,7 @@ function ExperimentView({ result }: { result: ExperimentResult }) {
             {
               key: "impact",
               label: "冲击成本",
-              children: formatPercent(shared.backtest.impact_cost ?? 0, 3),
+              children: formatPercent(shared.backtest.impact_cost, 3),
             },
             {
               key: "data",

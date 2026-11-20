@@ -159,10 +159,12 @@ const finite = (value: unknown) =>
 export function EquityChart({
   items,
   group,
+  anchorDate,
   onDateClick,
 }: {
   items: EquityPoint[];
   group?: string;
+  anchorDate?: string | null;
   onDateClick?: (date: string) => void;
   onDataClick?: (data: unknown) => void;
 }) {
@@ -209,6 +211,22 @@ export function EquityChart({
             lineStyle: { width: 2.2 },
             areaStyle: { color: p.primarySoft },
             data: items.map((row) => finite(row.equity)),
+            ...(anchorDate
+              ? {
+                  markPoint: {
+                    symbol: "circle",
+                    symbolSize: 7,
+                    itemStyle: { color: p.primary },
+                    label: {
+                      formatter: "期初基准点",
+                      color: p.muted,
+                      fontSize: 10,
+                      position: "bottom",
+                    },
+                    data: [{ name: "期初基准点", coord: [anchorDate, 1] }],
+                  },
+                }
+              : {}),
           },
           {
             name: "基准净值",

@@ -35,6 +35,7 @@ import {
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import type { BacktestDetail } from "../types";
+import { positionDates } from "./backtestDates";
 import {
   formatDateTime,
   formatMetricValue,
@@ -78,7 +79,7 @@ export default function BacktestDetailPage({
     );
 
   const data = detail.data;
-  const dates = equity.data?.items.map((row) => row.date) ?? [];
+  const dates = positionDates(equity.data?.items ?? [], data);
   const dynamic = [
     "HistoricalIndexTopkStrategy",
     "DynamicUniverseTopkStrategy",
@@ -113,7 +114,14 @@ export default function BacktestDetailPage({
                 <EquityChart
                   items={equity.data.items}
                   group={id}
-                  onDateClick={openPositions}
+                  anchorDate={
+                    equity.data.items[0]?.date < data.start_date
+                      ? equity.data.items[0].date
+                      : null
+                  }
+                  onDateClick={(date) =>
+                    dates.includes(date) && openPositions(date)
+                  }
                 />
                 <DrawdownChart items={equity.data.items} group={id} />
               </>
