@@ -715,3 +715,121 @@ export interface EvaluationAnalysis {
   };
   methodology: Record<string, string>;
 }
+
+export interface EvidenceExclusionItem {
+  code: string;
+  label: string;
+  count: number;
+}
+
+export interface EvaluationEvidence {
+  factor: string;
+  horizon: number;
+  status:
+    | "ready"
+    | "no_valid_observations"
+    | "insufficient_observations"
+    | "undefined_variance"
+    | "missing_frozen_calendar"
+    | "no_signal_dates"
+    | string;
+  status_label: string;
+  status_reason: string;
+  range: {
+    start: string | null;
+    end: string | null;
+    cutoff: string;
+    latest_exit_date: string | null;
+  };
+  lag: {
+    method: string;
+    lag: number;
+    default_lag: number;
+    is_shorter_than_default: boolean;
+    min_dates_required: number;
+    finite_sample_correction: string;
+    confidence_level: number;
+    z_critical: number;
+  };
+  counts: {
+    signal_dates: number | null;
+    valid_rank_ic_dates: number | null;
+    matured_dates: number | null;
+    unmatured_dates: number | null;
+    missing_exit_date_dates: number | null;
+    invalid_exit_date_dates?: number | null;
+    excluded_matured_dates: number | null;
+    missing_daily_rows: number | null;
+    lag_pairs: number | null;
+    paired_observations_on_valid_ic_days: number | null;
+    paired_observations?: {
+      total: number | null;
+      recorded_dates: number | null;
+      valid_ic_dates: number | null;
+      min: number | null;
+      max: number | null;
+    };
+  };
+  rank_ic: {
+    mean: number | null;
+    sample_std: number | null;
+    se: number | null;
+    ci_low: number | null;
+    ci_high: number | null;
+    variance: number | null;
+  };
+  exclusions: {
+    ic: EvidenceExclusionItem[];
+    labels: EvidenceExclusionItem[];
+  };
+  label_coverage: {
+    scope?: string;
+    evaluation_end?: string | null;
+    matched_signal_dates?: number;
+    total_signal_dates?: number;
+    scored_stock_days: number | null;
+    valid_stock_days: number | null;
+    excluded_stock_days: number | null;
+    exclusions_complete?: boolean;
+  } | null;
+  raw_availability: {
+    available: boolean;
+    coverage_status?: "complete" | "partial" | "unavailable";
+    reason?: string;
+    factor_run_id?: string;
+    matched_signal_dates?: number | null;
+    total_signal_dates?: number | null;
+    universe_stock_days: number | null;
+    eligible_stock_days: number | null;
+    raw_valid_stock_days: number | null;
+    raw_missing_stock_days: number | null;
+    imputed_stock_days: number | null;
+    not_applicable_stock_days: number | null;
+    not_applicable_scored_stock_days: number | null;
+    missing_policy: string | null;
+    component_imputations: Array<{
+      factor: string;
+      matched_signal_dates?: number;
+      total_signal_dates?: number;
+      raw_valid_stock_days: number | null;
+      raw_missing_stock_days: number | null;
+      imputed_stock_days: number | null;
+      not_applicable_stock_days?: number | null;
+      not_applicable_scored_stock_days: number | null;
+      missing_policy: string | null;
+    }>;
+  };
+  common_sample: {
+    available: boolean;
+    policy: string | null;
+    sha256: string | null;
+    label: string;
+  };
+  financials?: {
+    status?: string;
+    status_label?: string;
+    label?: string;
+    detail?: string;
+    [key: string]: unknown;
+  } | null;
+}

@@ -1,5 +1,6 @@
 import { RollingAnalysis } from "../evaluation/RollingAnalysis";
 import { CorrelationAnalysis } from "../evaluation/CorrelationAnalysis";
+import { FactorEvidencePanel } from "../evaluation/FactorEvidencePanel";
 import { useState } from "react";
 import {
   Button,
@@ -175,6 +176,11 @@ function EvaluationView({ result }: { result: EvaluationResult }) {
                 </div>
               </Flex>
             ),
+          },
+          {
+            key: "evidence",
+            label: "证据体检",
+            children: <FactorEvidencePanel result={result} horizon={horizon} />,
           },
           {
             key: "rolling",

@@ -26,7 +26,7 @@ export async function load(entries, { stubCharts = true, requireModule = localRe
         setup(builder) {
           builder.onResolve({ filter: /(?:components\/(?:research-)?charts|\.\/charts)$/ }, () => ({ path: "charts", namespace: "stub" }));
           builder.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
-            contents: ["EquityChart", "DrawdownChart", "AnnualReturnsChart", "FactorHistoryChart", "GroupReturnsChart", "Chart", "ICSeriesChart", "CorrelationHeatmap", "CorrelationHistoryChart"]
+            contents: ["EquityChart", "DrawdownChart", "AnnualReturnsChart", "FactorHistoryChart", "GroupReturnsChart", "Chart", "ICSeriesChart", "CorrelationHeatmap", "CorrelationHistoryChart", "HorizontalIntervalChart"]
               .map((name) => `export function ${name}(){ return null; }`)
               .join("\n"),
             loader: "js",

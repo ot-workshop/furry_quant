@@ -1,16 +1,18 @@
+import { Grid } from "antd";
 import * as echarts from "echarts/core";
-import { HeatmapChart } from "echarts/charts";
+import { HeatmapChart, ScatterChart } from "echarts/charts";
 import { VisualMapComponent } from "echarts/components";
 import { Chart } from "./charts";
 import {
   correlationChartOption,
   correlationHistoryOption,
+  horizontalIntervalOption,
   icChartOption,
   type ICChartMetric,
 } from "../research/chart-options";
 import type { CorrelationCell, RollingICPoint } from "../types";
 
-echarts.use([HeatmapChart, VisualMapComponent]);
+echarts.use([HeatmapChart, ScatterChart, VisualMapComponent]);
 
 export function ICSeriesChart({
   points,
@@ -68,6 +70,33 @@ export function CorrelationHistoryChart({
       ariaLabel="因子对每日秩相关"
       build={(palette) => correlationHistoryOption(points, palette)}
       deps={[points]}
+    />
+  );
+}
+
+export function HorizontalIntervalChart({
+  mean,
+  ciLow,
+  ciHigh,
+  ariaLabel,
+}: {
+  mean: number;
+  ciLow: number;
+  ciHigh: number;
+  ariaLabel: string;
+}) {
+  const screens = Grid.useBreakpoint();
+  const compact =
+    screens.sm === false ||
+    (typeof window !== "undefined" && window.innerWidth < 576);
+  return (
+    <Chart
+      height={120}
+      ariaLabel={ariaLabel}
+      build={(palette) =>
+        horizontalIntervalOption(mean, ciLow, ciHigh, palette, compact)
+      }
+      deps={[mean, ciLow, ciHigh, compact]}
     />
   );
 }

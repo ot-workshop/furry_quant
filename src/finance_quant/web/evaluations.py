@@ -15,6 +15,7 @@ from finance_quant.research.factor_selection import SelectionParameters
 from finance_quant.research.report import evaluation_markdown
 from finance_quant.storage_tables import read_rows, table_path
 from finance_quant.web.artifacts import ArtifactReader
+from finance_quant.web.factor_evidence import evaluation_evidence
 
 
 def selection_parameters(
@@ -79,6 +80,31 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
                 end=end,
                 first=first,
                 second=second,
+            )
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
+
+    @router.get("/evaluations/{run_id}/evidence")
+    def evidence(
+        run_id: str,
+        horizon: Annotated[int, Query(ge=1, le=252)],
+        factor: str = "composite",
+        start: str | None = None,
+        end: str | None = None,
+        cutoff: str | None = None,
+        lag: Annotated[int | None, Query(ge=0, le=251)] = None,
+    ):
+        result = read_evaluation(run_id)
+        try:
+            return evaluation_evidence(
+                store,
+                result,
+                horizon=horizon,
+                factor=factor,
+                start=start,
+                end=end,
+                cutoff=cutoff,
+                lag=lag,
             )
         except ValueError as error:
             raise HTTPException(422, str(error)) from None
