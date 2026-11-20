@@ -84,6 +84,49 @@ def restore_valuation_dates(frame):
     return out
 
 
+def financial_audit_item(metadata):
+    """Use frozen dependencies, not whether missing-value policies allow a run."""
+    definitions = metadata.get("factor_definitions")
+    dependencies = (
+        [
+            definition.get("requires_financials") if isinstance(definition, dict) else None
+            for definition in definitions.values()
+        ]
+        if isinstance(definitions, dict) and definitions
+        else []
+    )
+    required = (
+        True
+        if any(value is True for value in dependencies)
+        else (False if dependencies and all(value is False for value in dependencies) else None)
+    )
+    financial = metadata.get("financial_data")
+    if required is None:
+        status = "unknown"
+        detail = "结果中的财务依赖或绑定记录不完整，无法判断相关财务数据是否可用。"
+    elif not required:
+        status = "not_used"
+        detail = "本次入选因子不依赖财务报表，无需绑定财务版本。"
+    elif not isinstance(financial, dict) or not financial.get("version"):
+        status = "missing_binding"
+        detail = (
+            "本次入选因子需要财务数据，但结果未记录绑定的财务版本。"
+            "缺少有效财务原始观测时，IC和分组收益为空，无法据此比较该因子。"
+            "请先准备并绑定覆盖研究期的财务版本，再重新评估；"
+            "能否得到有效统计，仍取决于有效观测、收益标签和每日截面。"
+        )
+    else:
+        status = "unverified"
+        detail = (
+            "使用财务数据版本 "
+            + str(financial["version"])
+            + "："
+            + financial.get("policy", "按公告日估计历史可见时间")
+            + "。供应商未留痕的历史更正无法还原，因此不是严格PIT。"
+        )
+    return {"key": "financials", "label": "财务报表", "status": status, "detail": detail}
+
+
 def factor_temporal_audit(metadata):
     fields = sorted(
         {field for d in metadata.get("factor_definitions", {}).values() for field in d.get("required_fields", [])}
@@ -137,21 +180,7 @@ def factor_temporal_audit(metadata):
                 else "本次入选因子不依赖PE/PB或市值字段。"
             ),
         },
-        {
-            "key": "financials",
-            "label": "财务报表",
-            "status": "unverified" if metadata.get("financial_data") else "not_used",
-            "detail": (
-                "使用财务数据版本 "
-                + metadata["financial_data"]["version"]
-                + "："
-                + metadata["financial_data"].get("policy", "按公告日估计历史可见时间")
-                + "。"
-                "供应商未留痕的历史更正无法还原，因此不是严格PIT。"
-                if metadata.get("financial_data")
-                else "本次入选因子不使用财务报表。"
-            ),
-        },
+        financial_audit_item(metadata),
         {
             "key": "signal",
             "label": "信号与交易时序",
@@ -168,9 +197,33 @@ def factor_temporal_audit(metadata):
     }
 
 
+def evaluation_financial_audit(result):
+    """Correct response-only diagnostics from frozen evidence; never rewrite an artifact."""
+    metadata = dict(result["metadata"])
+    audit = copy.deepcopy(metadata.get("temporal_audit"))
+    if not isinstance(audit, dict):
+        audit = {
+            "version": VERSION,
+            "point_in_time_certified": False,
+            "items": [],
+            "note": "历史结果未保存完整时点核验清单；此处仅说明财务依赖，其余历史时点仍未认证。",
+        }
+    item = financial_audit_item(metadata)
+    items = audit.get("items") or []
+    for index, previous in enumerate(items):
+        if previous.get("key") == "financials":
+            items[index] = item
+            break
+    else:
+        items.append(item)
+    audit["items"] = items
+    metadata["temporal_audit"] = audit
+    return {**result, "metadata": metadata}
+
+
 def capacity_diagnostics(quotes, trades):
     """Diagnostic only, using PRIOR turnover, never an execution-day fill input."""
-    totals = {}
+    totals: dict[tuple[str, str], float] = {}
     for t in trades:
         key = (t["instrument"], t["date"])
         totals[key] = totals.get(key, 0.0) + t["value"]

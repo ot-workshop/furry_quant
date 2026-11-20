@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from finance_quant.application.selection_context import selection_result
 from finance_quant.application.selection_experiments import selection_draft
+from finance_quant.data.temporal_audit import evaluation_financial_audit
 from finance_quant.research.evaluation_analysis import evaluation_analysis
 from finance_quant.research.factor_selection import SelectionParameters
 from finance_quant.research.report import evaluation_markdown
@@ -36,6 +37,9 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
     artifacts = ArtifactReader(store)
 
+    def read_evaluation(run_id):
+        return evaluation_financial_audit(artifacts.get("evaluations", run_id))
+
     @router.get("/evaluations")
     def evaluations():
         records, unavailable = store.list_metadata("evaluations")
@@ -49,7 +53,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
 
     @router.get("/evaluations/{run_id}")
     def evaluation(run_id: str):
-        return artifacts.get("evaluations", run_id)
+        return read_evaluation(run_id)
 
     @router.get("/evaluations/{run_id}/analysis")
     def analysis(
@@ -63,7 +67,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
         first: str | None = None,
         second: str | None = None,
     ):
-        result = artifacts.get("evaluations", run_id)
+        result = read_evaluation(run_id)
         try:
             return evaluation_analysis(
                 result,
@@ -81,7 +85,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
 
     @router.get("/evaluations/{run_id}/selection")
     def select_combination(run_id: str, parameters: Annotated[SelectionParameters, Depends(selection_parameters)]):
-        artifacts.get("evaluations", run_id)
+        read_evaluation(run_id)
         try:
             return selection_result(store, run_id, parameters)
         except ValueError as error:
@@ -91,7 +95,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
     def combination_draft(
         run_id: str, parameters: Annotated[SelectionParameters, Depends(selection_parameters)], selection_id: str
     ):
-        artifacts.get("evaluations", run_id)
+        read_evaluation(run_id)
         try:
             reference = selection_result(store, run_id, parameters)["reference"]
             if reference["selection_id"] != selection_id:
@@ -107,7 +111,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=500)] = 50,
     ):
-        result = artifacts.get("evaluations", run_id)
+        result = read_evaluation(run_id)
         if str(horizon) not in result.get("labels", {}):
             raise HTTPException(404, "持有期不存在")
         rows, total = read_rows(
@@ -123,7 +127,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
 
     @router.get("/evaluations/{run_id}/labels/{horizon}/download")
     def label_download(run_id: str, horizon: int):
-        result = artifacts.get("evaluations", run_id)
+        result = read_evaluation(run_id)
         path = f"labels/{horizon}/observations"
         if path not in result.get("tables", {}):
             raise HTTPException(404, "该批次没有独立标签文件")
@@ -135,13 +139,13 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
     @router.get("/evaluations/{run_id}/download")
     def download_evaluation(run_id: str):
         return JSONResponse(
-            artifacts.get("evaluations", run_id),
+            read_evaluation(run_id),
             headers={"Content-Disposition": f'attachment; filename="{run_id}.json"'},
         )
 
     @router.get("/evaluations/{run_id}/report")
     def download_evaluation_report(run_id: str):
-        report = evaluation_markdown(artifacts.get("evaluations", run_id))
+        report = evaluation_markdown(read_evaluation(run_id))
         return PlainTextResponse(
             report,
             media_type="text/markdown",
