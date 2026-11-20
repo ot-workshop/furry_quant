@@ -339,6 +339,22 @@ body {
   .cmp-status {
     grid-column: 1;
   }
+  /* The evidence card header stacks so the switch cannot squeeze the title
+     into one character per line. */
+  #comparison-evidence .ant-card-head-wrapper {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  #comparison-evidence .ant-card-head-title {
+    flex: 1 1 100%;
+  }
+  #comparison-evidence .ant-card-extra {
+    flex: 1 1 100%;
+    margin-inline-start: 0;
+    display: flex;
+    justify-content: flex-end;
+  }
 }
 
 .aside-sticky {

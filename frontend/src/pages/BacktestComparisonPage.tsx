@@ -342,6 +342,7 @@ export default function BacktestComparisonPage() {
                 </Section>
 
                 <Section
+                  id="comparison-evidence"
                   title="版本与参数证据"
                   extra={
                     <Flex align="center" gap={8}>

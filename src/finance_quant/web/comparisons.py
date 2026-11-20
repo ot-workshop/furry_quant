@@ -647,17 +647,25 @@ def attach_factor_recipe(document: dict, store) -> dict:
     """
 
     metadata = document.get("metadata") or {}
-    provenance = metadata.get("provenance") or {}
-    factor_run_id = provenance.get("factor_run_id") or metadata.get("factor_run_id")
+    provenance = metadata.get("provenance") if isinstance(metadata, dict) else {}
+    provenance = provenance if isinstance(provenance, dict) else {}
+    factor_run_id = provenance.get("factor_run_id") or (
+        metadata.get("factor_run_id") if isinstance(metadata, dict) else None
+    )
     if not factor_run_id:
         return document
     if provenance.get("factors") and provenance.get("neutralization"):
         return document
     try:
         factor_run = project_document(store, "factors", factor_run_id)
-    except (FileNotFoundError, OSError, ValueError, KeyError, TypeError):
+    except (FileNotFoundError, OSError, ValueError, KeyError, TypeError, AttributeError):
         return document
-    factor_metadata = factor_run.get("metadata") or {}
+    # A related archive that is not the expected mapping leaves the recipe
+    # unknown; it must never turn the main comparison into an error.
+    if not isinstance(factor_run, dict):
+        return document
+    factor_metadata = factor_run.get("metadata")
+    factor_metadata = factor_metadata if isinstance(factor_metadata, dict) else {}
     # Only fill what the result does not already record: a stored recipe or
     # neutralization is never overwritten by the factor archive.
     filled = {}

@@ -653,3 +653,30 @@ def test_legacy_benchmark_mapping_is_read_as_a_code(tmp_path):
     code = next(field for field in benchmark["fields"] if field["label"] == "基准代码")
     assert code["baseline"] == "000300.SH"
     assert code["status"] == "same"
+
+
+def test_a_related_factor_archive_with_a_non_mapping_metadata_body_stays_unknown(tmp_path):
+    publish(
+        tmp_path,
+        "fixed-backtest",
+        backtest("fixed-backtest", provenance={"factor_run_id": "odd-factors", "factors": None}),
+    )
+    for run_id, body in (
+        ("odd-factors", {"metadata": ["corrupt"], "history": []}),
+        ("null-factors", {"metadata": None, "history": []}),
+        ("list-factors", ["not-a-mapping"]),
+    ):
+        ResultStore(tmp_path).publish("factors", run_id, body)
+    publish(tmp_path, "peer", backtest("peer"))
+    client = client_for(tmp_path)
+    for run_id in ("odd-factors", "null-factors", "list-factors"):
+        # Point the same backtest at each odd archive in turn.
+        document = backtest("fixed-backtest", provenance={"factor_run_id": run_id, "factors": None})
+        (tmp_path / "backtests" / "fixed-backtest" / "result.json").write_text(json.dumps(document), encoding="utf-8")
+        response = client.get(
+            "/api/v1/backtest-comparisons",
+            params={"baseline_run_id": "fixed-backtest", "candidate_run_id": "peer"},
+        )
+        assert response.status_code == 200, run_id
+        factors = {item["key"]: item for item in response.json()["dimensions"]}["factors"]
+        assert all(field["status"] != "same" for field in factors["fields"]), run_id
