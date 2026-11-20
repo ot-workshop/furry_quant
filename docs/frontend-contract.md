@@ -80,7 +80,7 @@
 | `cutoff` | 成熟截止日（`YYYY-MM-DD`）；评估结果缺少 `metadata.end` 时必填 |
 | `lag` | Bartlett 滞后阶数（0–251），默认 `horizon - 1` |
 
-返回状态（`ready` / `no_valid_observations` / `insufficient_observations` / `undefined_variance` / `missing_frozen_calendar` / `no_signal_dates`）、`counts`（含 `paired_observations` 逐日最小/最大与全区间合计）、`rank_ic`（仅 `ready` 时给出 `se`/`ci_low`/`ci_high`/`variance`）、`label_coverage`（标明为信号区间内按原评估截止日统计）、`raw_availability`（按字段独立判断是否覆盖筛选区间全部信号日，含 `matched_signal_dates`/`total_signal_dates` 及综合分 `component_imputations`）、`common_sample`（校验策略与 12/64 位十六进制指纹）及 `financials`（映射校正后的 `temporal_audit` 财务绑定状态）。缺失冻结日历、未保存字段或部分日期匹配均保留 `null` / 未知，不回填为 0。
+返回状态（`ready` / `no_valid_observations` / `insufficient_observations` / `undefined_variance` / `missing_frozen_calendar` / `no_signal_dates`）、`counts`（含 `paired_observations` 逐日最小/最大与全区间合计）、`rank_ic`（仅 `ready` 时给出 `se`/`ci_low`/`ci_high`/`variance`）、`label_coverage`（标明为信号区间内按原评估截止日统计，部分日或原因明细不全时抑制排除小计）、`raw_availability`（按字段及预期组成因子逐日独立判断是否覆盖筛选区间全部信号日，含 `matched_signal_dates`/`total_signal_dates` 及综合分 `component_imputations`）、`common_sample`（仅在政策为 `signal_date_common_v1` 且携带 12/64 位十六进制指纹时标记已冻结共同样本，其余策略或空对象保持未知）及 `financials`（映射校正后的 `temporal_audit` 财务绑定状态）。缺失冻结日历、未保存字段或部分日期匹配均保留 `null` / 未知，不回填为 0。
 
 
 ### 因子组合筛选

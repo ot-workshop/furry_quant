@@ -83,7 +83,7 @@ test("FactorEvidencePanel keeps null raw availability fields unknown, displays f
         },
         rank_ic: { mean: null, sample_std: null, se: null, ci_low: null, ci_high: null, variance: null },
         exclusions: { ic: [], labels: [] },
-        label_coverage: { scope: "evaluation_end_in_signal_range", evaluation_end: "2025-02-20", matched_signal_dates: 25, total_signal_dates: 25, scored_stock_days: 100, valid_stock_days: 100, excluded_stock_days: 0 },
+        label_coverage: { scope: "evaluation_end_in_signal_range", evaluation_end: "2025-02-20", matched_signal_dates: 24, total_signal_dates: 25, scored_stock_days: null, valid_stock_days: null, excluded_stock_days: null, exclusions_complete: false },
         raw_availability: {
           available: true,
           coverage_status: "partial",
@@ -131,6 +131,7 @@ test("FactorEvidencePanel keeps null raw availability fields unknown, displays f
     assert.ok(text.includes("未知（未保存或非全区间填补字段）"), text);
     assert.ok(text.includes("未绑定"), text);
     assert.ok(text.includes("本评估未绑定冻结财务版本"), text);
+    assert.ok(text.includes("标签排除（按原评估截止日）：未知"), text);
     assert.ok(!text.includes("0 只·日（无填补规则）"), text);
 
     requestedUrls.length = 0;

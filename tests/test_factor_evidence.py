@@ -301,7 +301,7 @@ def test_missing_exit_date_zero_all_empty_and_missing_calendar_guards(tmp_path):
     assert res_bad_exit["counts"]["invalid_exit_date_dates"] == 2
     assert res_bad_exit["counts"]["valid_rank_ic_dates"] == 23
 
-    # Empty scoring_sample={} stays unknown; valid 12-char sha256 + policy is accepted
+    # Empty scoring_sample={} or unrecognized policy stays unknown; signal_date_common_v1 + 12-char sha256 accepted
     empty_cs_doc = copy.deepcopy(no_cal)
     empty_cs_doc["metadata"]["provenance"] = {"scoring_sample": {}}
     assert (
@@ -310,14 +310,80 @@ def test_missing_exit_date_zero_all_empty_and_missing_calendar_guards(tmp_path):
         ]
         is False
     )
+    indep_cs_doc = copy.deepcopy(no_cal)
+    indep_cs_doc["metadata"]["provenance"] = {"scoring_sample": {"policy": "independent", "sha256": "a1b2c3d4e5f6"}}
+    assert (
+        evaluation_evidence(store, indep_cs_doc, horizon=1, factor="momentum", cutoff=dates[-1])["common_sample"][
+            "available"
+        ]
+        is False
+    )
     valid_cs_doc = copy.deepcopy(no_cal)
     valid_cs_doc["metadata"]["provenance"] = {
-        "scoring_sample": {"policy": "common_across_candidates", "sha256": "a1b2c3d4e5f6"}
+        "scoring_sample": {"policy": "signal_date_common_v1", "sha256": "a1b2c3d4e5f6"}
     }
     cs_res = evaluation_evidence(store, valid_cs_doc, horizon=1, factor="momentum", cutoff=dates[-1])["common_sample"]
     assert cs_res["available"] is True
-    assert cs_res["policy"] == "common_across_candidates"
+    assert cs_res["policy"] == "signal_date_common_v1"
     assert cs_res["sha256"] == "a1b2c3d4e5f6"
+
+    # Composite keeps all expected frozen weights keys even if absent on all days, and marks partial
+    missing_comp_doc = {
+        "metadata": {
+            "id": "factors-comp-missing-val",
+            "name": "组合缺组成因子",
+            "is_synthetic": True,
+            "created_at": "2026-11-20T00:00:00Z",
+            "scheme": "equal",
+            "as_of": two_dates[1],
+            "weights": {"momentum": 0.5, "value": 0.5},
+            "availability_by_date": {
+                d: {
+                    "universe": 10,
+                    "eligible": 10,
+                    "factors": {
+                        "momentum": {
+                            "valid": 10,
+                            "missing": 0,
+                            "imputed": 0,
+                            "not_applicable": 0,
+                            "not_applicable_scored": 0,
+                        }
+                    },
+                }
+                for d in two_dates
+            },
+        },
+        "history": [],
+    }
+    store.publish("factors", "factors-comp-missing-val", missing_comp_doc)
+    miss_comp_eval, _ = _make_evaluation(
+        [None, None], factor="momentum", horizon=1, factor_run_id="factors-comp-missing-val"
+    )
+    miss_comp_res = evaluation_evidence(store, miss_comp_eval, horizon=1, factor="composite", cutoff=two_dates[-1])
+    assert miss_comp_res["raw_availability"]["coverage_status"] == "partial"
+    comp_by_key = {row["factor"]: row for row in miss_comp_res["raw_availability"]["component_imputations"]}
+    assert set(comp_by_key) == {"momentum", "value"}
+    assert comp_by_key["value"]["matched_signal_dates"] == 0
+    assert comp_by_key["value"]["raw_valid_stock_days"] is None
+
+    # Partial label coverage (1/2) suppresses label exclusion breakdown; missing exclusion reasons keeps excluded=2 & complete=False
+    lbl_partial_eval, lbl_dates = _make_evaluation([0.05, 0.04], factor="momentum", horizon=1)
+    lbl_partial_eval["labels"]["1"]["coverage"] = lbl_partial_eval["labels"]["1"]["coverage"][:1]
+    res_lbl_partial = evaluation_evidence(store, lbl_partial_eval, horizon=1, factor="momentum", cutoff=lbl_dates[-1])
+    assert res_lbl_partial["label_coverage"]["scored_stock_days"] is None
+    assert res_lbl_partial["label_coverage"]["exclusions_complete"] is False
+    assert res_lbl_partial["exclusions"]["labels"] == []
+
+    lbl_no_reason, lbl_dates2 = _make_evaluation([0.05, 0.04], factor="momentum", horizon=1)
+    for r in lbl_no_reason["labels"]["1"]["coverage"]:
+        r["scored"] = 20
+        r["valid_labels"] = 18
+        r["exclusions"] = {}
+    res_lbl_no_reason = evaluation_evidence(store, lbl_no_reason, horizon=1, factor="momentum", cutoff=lbl_dates2[-1])
+    assert res_lbl_no_reason["label_coverage"]["excluded_stock_days"] == 4
+    assert res_lbl_no_reason["label_coverage"]["exclusions_complete"] is False
+    assert res_lbl_no_reason["exclusions"]["labels"] == []
 
     # Composite keeps component_imputations per factor without scalar cross-factor sum
     full_comp_doc = {

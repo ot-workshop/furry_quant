@@ -15,6 +15,7 @@ from finance_quant.data.temporal_audit import financial_audit_item
 Z_CRIT_95 = 1.959963984540054
 MIN_VALID_DATES = 20
 SHA256_RE = re.compile(r"^(?:[0-9a-fA-F]{12}|[0-9a-fA-F]{64})$")
+COMMON_SAMPLE_POLICIES = {"signal_date_common_v1"}
 
 EXCLUSION_LABELS = {
     "insufficient_cross_section": "有效截面不足",
@@ -298,9 +299,56 @@ def _project_raw_availability(
 
     full_days = len(dates)
     if factor == "composite":
+        expected_keys: list[str] = []
+        seen_expected: set[str] = set()
+
+        def _add_key(raw_key):
+            if isinstance(raw_key, str) and raw_key and raw_key != "composite" and raw_key not in seen_expected:
+                seen_expected.add(raw_key)
+                expected_keys.append(raw_key)
+
+        factor_weights = factor_doc.get("metadata", {}).get("weights")
+        if isinstance(factor_weights, dict):
+            for k in factor_weights:
+                _add_key(k)
+        eval_cfg = metadata.get("factor_config")
+        if isinstance(eval_cfg, list):
+            for spec in eval_cfg:
+                if isinstance(spec, dict):
+                    _add_key(spec.get("id") or spec.get("name"))
+        eval_weights = metadata.get("weights")
+        if isinstance(eval_weights, dict):
+            for k in eval_weights:
+                _add_key(k)
+        if not expected_keys:
+            for k in result.get("factors", {}):
+                _add_key(k)
+        for k in component_acc:
+            _add_key(k)
+
         component_rows = []
-        for b in component_acc.values():
+        all_expected_complete = bool(expected_keys)
+        for key in expected_keys:
+            b = component_acc.get(key)
+            if b is None:
+                all_expected_complete = False
+                component_rows.append(
+                    {
+                        "factor": key,
+                        "matched_signal_dates": 0,
+                        "total_signal_dates": full_days,
+                        "raw_valid_stock_days": None,
+                        "raw_missing_stock_days": None,
+                        "imputed_stock_days": None,
+                        "not_applicable_stock_days": None,
+                        "not_applicable_scored_stock_days": None,
+                        "missing_policy": None,
+                    }
+                )
+                continue
             comp_full = b["matched_days"] == full_days
+            if not (comp_full and b["valid_complete"] and b["missing_complete"]):
+                all_expected_complete = False
             policies = b["policies"]
             component_rows.append(
                 {
@@ -314,19 +362,10 @@ def _project_raw_availability(
                     "not_applicable_scored_stock_days": (
                         b["na_scored_sum"] if (comp_full and b["na_scored_complete"]) else None
                     ),
-                    "missing_policy": next(iter(policies)) if len(policies) == 1 else None,
+                    "missing_policy": next(iter(policies)) if (comp_full and len(policies) == 1) else None,
                 }
             )
-        is_complete = (
-            day_matched == full_days
-            and universe_complete
-            and eligible_complete
-            and bool(component_acc)
-            and all(
-                b["matched_days"] == full_days and b["valid_complete"] and b["missing_complete"]
-                for b in component_acc.values()
-            )
-        )
+        is_complete = day_matched == full_days and universe_complete and eligible_complete and all_expected_complete
         # Never sum cross-factor stock-days into a composite scalar total.
         return {
             "available": True,
@@ -383,7 +422,7 @@ def _common_sample_info(store, result: dict) -> dict:
         sha256 = scoring_sample.get("sha256")
         if (
             isinstance(policy, str)
-            and policy.strip()
+            and policy.strip() in COMMON_SAMPLE_POLICIES
             and isinstance(sha256, str)
             and SHA256_RE.fullmatch(sha256.strip())
         ):
@@ -743,6 +782,7 @@ def evaluation_evidence(
         valid_sd = 0
         matched_lbl_rows = 0
         lbl_complete = bool(filtered_dates)
+        excl_details_complete = bool(filtered_dates)
         lbl_excl: dict[str, int] = {}
         seen_lbl_dates: set[str] = set()
         for row in label_obj["coverage"]:
@@ -754,14 +794,29 @@ def evaluation_evidence(
             v_val = _opt_int(row, "valid_labels")
             if s_val is None or v_val is None:
                 lbl_complete = False
+                excl_details_complete = False
             else:
                 scored_sd += s_val
                 valid_sd += v_val
-            for k, c in (row.get("exclusions") or {}).items():
-                lbl_excl[str(k)] = lbl_excl.get(str(k), 0) + int(c)
+            raw_excl = row.get("exclusions")
+            if not isinstance(raw_excl, dict):
+                excl_details_complete = False
+                continue
+            row_excl_sum = 0
+            for k, c in raw_excl.items():
+                if isinstance(c, bool) or not isinstance(c, int) or c < 0:
+                    excl_details_complete = False
+                    continue
+                row_excl_sum += c
+                lbl_excl[str(k)] = lbl_excl.get(str(k), 0) + c
+            if s_val is not None and v_val is not None and (s_val - v_val) > 0 and row_excl_sum != (s_val - v_val):
+                excl_details_complete = False
         if len(seen_lbl_dates) != len(filtered_set):
             lbl_complete = False
+            excl_details_complete = False
         if matched_lbl_rows > 0:
+            excluded_total = (scored_sd - valid_sd) if (lbl_complete and scored_sd >= valid_sd) else None
+            exclusions_complete = lbl_complete and excl_details_complete
             label_coverage_summary = {
                 "scope": "evaluation_end_in_signal_range",
                 "evaluation_end": result.get("metadata", {}).get("end"),
@@ -769,13 +824,15 @@ def evaluation_evidence(
                 "total_signal_dates": len(filtered_dates),
                 "scored_stock_days": scored_sd if lbl_complete else None,
                 "valid_stock_days": valid_sd if lbl_complete else None,
-                "excluded_stock_days": sum(lbl_excl.values()) if lbl_complete else None,
+                "excluded_stock_days": excluded_total,
+                "exclusions_complete": exclusions_complete,
             }
-            label_exclusions_list = [
-                {"code": k, "label": LABEL_EXCLUSION_LABELS.get(k, k), "count": c}
-                for k, c in sorted(lbl_excl.items(), key=lambda item: (-item[1], item[0]))
-                if c > 0
-            ]
+            if exclusions_complete:
+                label_exclusions_list = [
+                    {"code": k, "label": LABEL_EXCLUSION_LABELS.get(k, k), "count": c}
+                    for k, c in sorted(lbl_excl.items(), key=lambda item: (-item[1], item[0]))
+                    if c > 0
+                ]
 
     ic_exclusions_list = [
         {"code": k, "label": EXCLUSION_LABELS.get(k, k), "count": c}

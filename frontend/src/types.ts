@@ -790,6 +790,7 @@ export interface EvaluationEvidence {
     scored_stock_days: number | null;
     valid_stock_days: number | null;
     excluded_stock_days: number | null;
+    exclusions_complete?: boolean;
   } | null;
   raw_availability: {
     available: boolean;

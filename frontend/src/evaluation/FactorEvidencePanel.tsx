@@ -132,7 +132,14 @@ export function FactorEvidencePanel({
               默认 {defaultLag}（h−1）
             </Typography.Text>
           </Flex>
-          <AnalysisDates value={range} onChange={setRange} />
+          <Flex gap={8} align="center" wrap>
+            <Typography.Text>信号区间</Typography.Text>
+            <AnalysisDates
+              value={range}
+              onChange={setRange}
+              compact={compact}
+            />
+          </Flex>
           <Flex gap={8} align="center">
             <Typography.Text>截止日</Typography.Text>
             <DatePicker
@@ -312,7 +319,9 @@ export function FactorEvidencePanel({
                     label: "有效滞后配对数",
                     children:
                       data.counts.lag_pairs !== null
-                        ? `${data.counts.lag_pairs} 对（k=1..${data.lag.lag}）`
+                        ? data.lag.lag === 0
+                          ? "无滞后配对（L=0，常规样本标准误）"
+                          : `${data.counts.lag_pairs} 对（k=1..${data.lag.lag}）`
                         : "未知",
                   },
                   {
@@ -460,7 +469,10 @@ export function FactorEvidencePanel({
                 />
               ) : null}
 
-              {data.exclusions.ic.length || data.exclusions.labels.length ? (
+              {data.exclusions.ic.length ||
+              (data.label_coverage &&
+                (data.exclusions.labels.length ||
+                  data.label_coverage.exclusions_complete === false)) ? (
                 <Flex gap={16} wrap>
                   {data.exclusions.ic.length ? (
                     <Typography.Text type="secondary" style={{ fontSize: 13 }}>
@@ -471,14 +483,15 @@ export function FactorEvidencePanel({
                         .join("；")}
                     </Typography.Text>
                   ) : null}
-                  {data.exclusions.labels.length && data.label_coverage ? (
+                  {data.label_coverage &&
+                  (data.exclusions.labels.length ||
+                    data.label_coverage.exclusions_complete === false) ? (
                     <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                      标签排除（按原评估截止日，分母{" "}
-                      {data.label_coverage.scored_stock_days ?? "未知"}{" "}
-                      只·日）：
-                      {data.exclusions.labels
-                        .map((item) => `${item.label} ${item.count}`)
-                        .join("；")}
+                      {data.exclusions.labels.length
+                        ? `标签排除（按原评估截止日，分母 ${data.label_coverage.scored_stock_days ?? "未知"} 只·日）：${data.exclusions.labels
+                            .map((item) => `${item.label} ${item.count}`)
+                            .join("；")}`
+                        : `标签排除（按原评估截止日）：未知（部分日或原因明细未完整保存，已记录 ${data.label_coverage.matched_signal_dates ?? 0}/${data.label_coverage.total_signal_dates ?? data.counts.signal_dates ?? "—"} 日）`}
                     </Typography.Text>
                   ) : null}
                 </Flex>
@@ -570,14 +583,17 @@ export function FactorEvidencePanel({
                     children: (
                       <Flex vertical gap={6}>
                         <Typography.Text style={{ fontSize: 13 }}>
-                          1.
-                          仅纳入截止日（cutoff）前已记录退出日且退出日不晚于截止日的有限
-                          Rank IC；无退出日记录的旧观察不推定为已成熟。
+                          1. 仅纳入截止日（cutoff）前已记录合法 YYYY-MM-DD
+                          退出日且退出日不晚于截止日的有限 Rank
+                          IC；有入场日记录时同时校验 信号日 ≤ 入场日 ≤
+                          退出日，缺入场日时校验 信号日 ≤
+                          退出日，无退出日或时序异常不推定为已成熟。
                         </Typography.Text>
                         <Typography.Text style={{ fontSize: 13 }}>
                           2.
                           均值为有效且已成熟日值的等权平均；协方差按冻结信号交易日位置对齐，缺失或未成熟日仅在自协方差求和中记
-                          z=0，不计作样本量 n。
+                          z=0，不计作样本量 n（L=0
+                          时无滞后配对，退化为常规样本标准误）。
                         </Typography.Text>
                         <Typography.Text style={{ fontSize: 13 }}>
                           3. Bartlett 权重为 1−k/(L+1)，有限样本标准误为
