@@ -123,6 +123,24 @@ class PgResultStore(FileResultStore):
             hydrate_tables(self, category, run_id, result)
         return result
 
+    def project(self, category, run_id):
+        """Narrow read: the stored summary/metadata/payload only.
+
+        One row from ``research_run``; equity, trades and Parquet tables are not
+        touched, so comparing two large runs stays a bounded read.
+        """
+
+        with self.engine.connect() as connection:
+            row = self._record(category, run_id, connection)
+            result = copy.deepcopy(row["payload"])
+            result["metadata"] = copy.deepcopy(row["metadata"])
+            if row["dataset_id"]:
+                result["metadata"]["dataset_id"] = row["dataset_id"]
+            if category == "backtests":
+                result["summary"] = copy.deepcopy(row["summary"])
+        result.pop("tables", None)
+        return result
+
     def list(self, category):
         self.path(category, "listing-validation")
         with self.engine.connect() as connection:

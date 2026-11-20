@@ -15,6 +15,7 @@ from finance_quant.research_api import research_router
 from finance_quant.storage import ResultStore
 from finance_quant.storage_tables import ResultTableError
 from finance_quant.web.backtests import backtest_router
+from finance_quant.web.comparisons import comparison_router
 from finance_quant.web.evaluations import evaluation_router
 from finance_quant.web.experiments import experiment_router
 from finance_quant.web.factors import factor_router
@@ -54,6 +55,7 @@ def create_app(
     )
     app.include_router(factor_router(store))
     app.include_router(backtest_router(store))
+    app.include_router(comparison_router(store))
     app.include_router(evaluation_router(store, data_root=service.data_root, runs_root=service.runs_root))
     app.include_router(experiment_router(store))
 

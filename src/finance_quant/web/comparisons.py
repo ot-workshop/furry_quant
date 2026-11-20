@@ -1,0 +1,530 @@
+"""Read-only explanation of the differences between two stored backtests.
+
+The first version answers three questions with stored evidence only:
+
+* what is the same, what changed and what is unknown between two results;
+* are the headline numbers comparable at all;
+* when one result is a derived report of the other's exact execution and only the
+  evaluation benchmark changed, why the reported excess return moved.
+
+Nothing here recalculates a backtest, rewrites a stored document or scans the
+equity/trade detail series: both sides come from one narrow projection of the
+result store (summary, metadata and provenance).
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from fastapi import APIRouter, HTTPException
+
+SAME = "same"
+DIFFERENT = "different"
+UNKNOWN = "unknown"
+
+TOLERANCE = 1e-12
+
+
+def _value(document: dict, path: str) -> Any:
+    node: Any = document
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return node
+
+
+def _first(document: dict, *paths: str) -> Any:
+    for path in paths:
+        value = _value(document, path)
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def _text(value: Any) -> str | None:
+    """Display text for one evidence value; never turns a missing value into 0."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, float):
+        return f"{value:.10g}"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _field(label: str, baseline: Any, candidate: Any) -> dict[str, Any]:
+    if baseline is None and candidate is None:
+        status = UNKNOWN
+    elif baseline is None or candidate is None:
+        status = UNKNOWN
+    elif _canonical(baseline) == _canonical(candidate):
+        status = SAME
+    else:
+        status = DIFFERENT
+    return {
+        "label": label,
+        "baseline": _text(baseline),
+        "candidate": _text(candidate),
+        "status": status,
+    }
+
+
+def _dimension(key: str, label: str, fields: list[dict]) -> dict[str, Any]:
+    statuses = {field["status"] for field in fields}
+    if DIFFERENT in statuses:
+        status = DIFFERENT
+    elif UNKNOWN in statuses:
+        status = UNKNOWN
+    else:
+        status = SAME
+    return {"key": key, "label": label, "status": status, "fields": fields}
+
+
+def _factor_text(factors: Any) -> Any:
+    if not isinstance(factors, list):
+        return factors
+    parts = []
+    for factor in factors:
+        if not isinstance(factor, dict):
+            parts.append(str(factor))
+            continue
+        pieces = [str(factor.get("name", "?"))]
+        weight = factor.get("weight")
+        if isinstance(weight, (int, float)):
+            pieces.append(f"权重 {weight * 100:.2f}%")
+        window = factor.get("window")
+        if window is not None:
+            pieces.append(f"窗口 {window}")
+        policy = factor.get("missing_policy")
+        if policy:
+            pieces.append(f"缺失 {policy}")
+        parts.append(" / ".join(pieces))
+    return "; ".join(parts) if parts else factors
+
+
+def _dimensions(baseline: dict, candidate: dict) -> list[dict[str, Any]]:
+    """Frozen evidence grouped by the dimensions the review asked for."""
+
+    def pair(paths: tuple[str, ...]) -> tuple[Any, Any]:
+        return _first(baseline, *paths), _first(candidate, *paths)
+
+    market = pair(("metadata.dataset_id",))
+    market_version = pair(("metadata.data_version", "metadata.provenance.data_version"))
+    manifest = pair(("metadata.provenance.manifest_sha256",))
+    financial_version = pair(("metadata.provenance.financial_version",))
+    financial_policy = pair(("metadata.provenance.financial_availability_policy",))
+    industry_version = pair(
+        (
+            "metadata.provenance.industry_version",
+            "metadata.industry_data.id",
+            "metadata.universe_filters.industry_version",
+        )
+    )
+    industry_level = pair(("metadata.universe_filters.industry_level",))
+    code_hash = pair(("metadata.provenance.code_sha256",))
+    lock_hash = pair(("metadata.provenance.dependency_lock_sha256",))
+    engine = pair(("metadata.engine",))
+    engine_version = pair(("metadata.engine_version",))
+    factors = pair(("metadata.provenance.factors",))
+    neutralization = pair(("metadata.provenance.neutralization",))
+    pool = pair(("metadata.provenance.pool_kind", "metadata.universe_kind"))
+    universe_filters = pair(("metadata.provenance.universe_filters",))
+    backtest_rules = pair(("metadata.provenance.backtest",))
+    market_rules = pair(("metadata.market_rule_version",))
+    costs = pair(("metadata.execution_costs",))
+    benchmark_code = pair(("metadata.benchmark_provenance.code", "metadata.benchmark.code"))
+    benchmark_name = pair(("metadata.benchmark_name",))
+    benchmark_return_type = pair(("metadata.benchmark.return_type",))
+    benchmark_series = pair(
+        (
+            "metadata.benchmark_provenance.series_sha256",
+            "metadata.benchmark.series_sha256",
+            "metadata.benchmark.snapshot.series_sha256",
+        )
+    )
+    benchmark_version = pair(("metadata.benchmark_provenance.version", "metadata.benchmark.snapshot.schema_version"))
+
+    factor_fields = [
+        _field("因子与权重", _factor_text(factors[0]), _factor_text(factors[1])),
+        _field("中性化", neutralization[0], neutralization[1]),
+    ]
+    return [
+        _dimension(
+            "market_data",
+            "行情与冻结数据集",
+            [
+                _field("冻结数据集", market[0], market[1]),
+                _field("行情数据版本", market_version[0], market_version[1]),
+                _field("数据集清单哈希", manifest[0], manifest[1]),
+            ],
+        ),
+        _dimension(
+            "financials",
+            "财务数据",
+            [
+                _field("财务数据版本", financial_version[0], financial_version[1]),
+                _field("财务可用性口径", financial_policy[0], financial_policy[1]),
+            ],
+        ),
+        _dimension(
+            "industries",
+            "行业数据",
+            [
+                _field("行业版本", industry_version[0], industry_version[1]),
+                _field("行业层级", industry_level[0], industry_level[1]),
+            ],
+        ),
+        _dimension(
+            "code",
+            "代码与运行环境",
+            [
+                _field("计算层代码哈希", code_hash[0], code_hash[1]),
+                _field("依赖锁哈希", lock_hash[0], lock_hash[1]),
+                _field("引擎", engine[0], engine[1]),
+                _field("引擎版本", engine_version[0], engine_version[1]),
+            ],
+        ),
+        _dimension("factors", "因子与参数", factor_fields),
+        _dimension(
+            "trading_rules",
+            "交易规则",
+            [
+                _field("股票池类型", pool[0], pool[1]),
+                _field("股票池筛选", universe_filters[0], universe_filters[1]),
+                _field("回测参数", backtest_rules[0], backtest_rules[1]),
+                _field("市场规则版本", market_rules[0], market_rules[1]),
+                _field("成本模型", costs[0], costs[1]),
+            ],
+        ),
+        _dimension(
+            "benchmark",
+            "评价基准",
+            [
+                _field("基准代码", benchmark_code[0], benchmark_code[1]),
+                _field("基准名称", benchmark_name[0], benchmark_name[1]),
+                _field("收益类型", benchmark_return_type[0], benchmark_return_type[1]),
+                _field("基准序列哈希", benchmark_series[0], benchmark_series[1]),
+                _field("序列版本", benchmark_version[0], benchmark_version[1]),
+            ],
+        ),
+    ]
+
+
+def _summary(document: dict) -> dict[str, Any]:
+    summary = dict(document.get("summary") or {})
+    metrics = dict(summary.get("metrics") or {})
+    return {**summary, "metrics": metrics}
+
+
+def _side(document: dict, identifier: str) -> dict[str, Any]:
+    summary = _summary(document)
+    metadata = document.get("metadata") or {}
+    benchmark = metadata.get("benchmark") or {}
+    return {
+        "id": identifier,
+        "name": summary.get("name"),
+        "status": summary.get("status"),
+        "start_date": summary.get("start_date"),
+        "end_date": summary.get("end_date"),
+        "created_at": summary.get("created_at"),
+        "benchmark": {
+            "code": _first(metadata, "benchmark_provenance.code", "benchmark.code"),
+            "name": metadata.get("benchmark_name"),
+            "return_type": benchmark.get("return_type"),
+            "series_sha256": _first(
+                metadata,
+                "benchmark_provenance.series_sha256",
+                "benchmark.series_sha256",
+                "benchmark.snapshot.series_sha256",
+            ),
+        },
+        "metrics": {
+            "total_return": summary["metrics"].get("total_return"),
+            "benchmark_return": summary["metrics"].get("benchmark_return"),
+            "excess_return": summary["metrics"].get("excess_return"),
+            "max_drawdown": summary["metrics"].get("max_drawdown"),
+        },
+        "execution_run_id": _first(
+            metadata,
+            "execution_run_id",
+            "benchmark_provenance.execution_run_id",
+            "provenance.execution_run_id",
+        ),
+        "performance_version": _value(document, "performance.version") or _value(metadata, "performance.version"),
+    }
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _metric(
+    key: str, label: str, unit: str, baseline: Any, candidate: Any, comparable: bool
+) -> dict[str, Any]:
+    left, right = _number(baseline), _number(candidate)
+    delta = None
+    if left is not None and right is not None:
+        delta = (right - left) * 100 if unit == "percent" else right - left
+    return {
+        "key": key,
+        "label": label,
+        "unit": unit,
+        "baseline": left,
+        "candidate": right,
+        # Direction is always candidate − baseline ("B − A").
+        "delta": delta,
+        "comparable": comparable and left is not None and right is not None,
+    }
+
+
+def _comparability(side_a: dict, side_b: dict) -> dict[str, Any]:
+    reasons = []
+    interval_same = (
+        (side_a["start_date"] == side_b["start_date"] and side_a["end_date"] == side_b["end_date"])
+        if side_a["start_date"] and side_b["start_date"]
+        else None
+    )
+    if interval_same is False:
+        reasons.append("两次回测的区间不同，收益类差值不可直接比较")
+    version_a, version_b = side_a["performance_version"], side_b["performance_version"]
+    if version_a and version_b:
+        version_same = version_a == version_b
+        if not version_same:
+            reasons.append(f"绩效口径版本不同（{version_a} / {version_b}），差值不可比")
+    else:
+        version_same = None
+        reasons.append("至少一侧缺少绩效口径版本，差值标为不可比")
+    return {
+        "comparable": interval_same is not False and version_same is not False,
+        "interval": "same" if interval_same else ("different" if interval_same is False else UNKNOWN),
+        "metric_version": "same" if version_same else ("different" if version_same is False else UNKNOWN),
+        "reasons": reasons,
+        "baseline_interval": [side_a["start_date"], side_a["end_date"]],
+        "candidate_interval": [side_b["start_date"], side_b["end_date"]],
+    }
+
+
+def _relation(side_a: dict, side_b: dict) -> dict[str, Any]:
+    """Same-execution detection with the arithmetic check the review required."""
+
+    left, right = side_a["execution_run_id"], side_b["execution_run_id"]
+    derived: dict[str, Any] | None
+    source: dict[str, Any] | None
+    pointer: Any = None
+    if left and left == side_b["id"]:
+        derived, source, pointer = side_a, side_b, left
+    elif right and right == side_a["id"]:
+        derived, source, pointer = side_b, side_a, right
+    else:
+        derived, source = None, None
+
+    if derived is None or source is None:
+        status = "independent" if (left or right) else UNKNOWN
+        return {
+            "status": status,
+            "execution_pointer": left or right,
+            "evidence": [
+                {
+                    "label": "执行来源指针",
+                    "baseline": left,
+                    "candidate": right,
+                }
+            ],
+            "explanation": None,
+        }
+
+    evidence = [
+        {"label": "派生报告记录的执行来源", "value": pointer},
+        {"label": "派生报告", "value": derived["id"]},
+        {"label": "原执行结果", "value": source["id"]},
+    ]
+    total_a, total_b = _number(derived["metrics"]["total_return"]), _number(source["metrics"]["total_return"])
+    same_total = total_a is not None and total_b is not None and abs(total_a - total_b) <= TOLERANCE
+    evidence.append(
+        {
+            "label": "策略总收益是否完全一致",
+            "value": "一致" if same_total else "不一致或缺失",
+            "precision": [total_a, total_b],
+        }
+    )
+
+    formula_ok = True
+    for side in (derived, source):
+        total = _number(side["metrics"]["total_return"])
+        benchmark = _number(side["metrics"]["benchmark_return"])
+        excess = _number(side["metrics"]["excess_return"])
+        holds = (
+            total is not None
+            and benchmark is not None
+            and excess is not None
+            and abs(excess - (total - benchmark)) <= 1e-9
+        )
+        formula_ok = formula_ok and holds
+        evidence.append(
+            {
+                "label": f"{side['id']}：已存超额 = 策略总收益 − 基准收益",
+                "value": "成立" if holds else "不成立或字段缺失",
+            }
+        )
+
+    if not same_total or not formula_ok:
+        return {
+            "status": "conflict",
+            "execution_pointer": pointer,
+            "evidence": evidence,
+            "derived_run_id": derived["id"],
+            "source_run_id": source["id"],
+            "explanation": None,
+        }
+
+    benchmark_delta = _number(derived["metrics"]["benchmark_return"])
+    source_benchmark = _number(source["metrics"]["benchmark_return"])
+    excess_delta = _number(derived["metrics"]["excess_return"])
+    source_excess = _number(source["metrics"]["excess_return"])
+    explanation = None
+    if (
+        benchmark_delta is not None
+        and source_benchmark is not None
+        and excess_delta is not None
+        and source_excess is not None
+    ):
+        benchmark_pp = (benchmark_delta - source_benchmark) * 100
+        excess_pp = (excess_delta - source_excess) * 100
+        if abs(benchmark_pp + excess_pp) <= 1e-6:
+            explanation = (
+                f"两次结果来自同一执行结果，策略总收益完全相同；只有评价基准不同，"
+                f"已存基准收益差 {benchmark_pp:+.4f} 个百分点，报表超额收益随之变化 "
+                f"{excess_pp:+.4f} 个百分点。这不代表策略交易发生变化。"
+            )
+            evidence.append(
+                {
+                    "label": "基准收益差与超额收益差互为相反数",
+                    "value": f"基准 {benchmark_pp:+.10f} pp / 超额 {excess_pp:+.10f} pp",
+                }
+            )
+    return {
+        "status": "same_execution",
+        "execution_pointer": pointer,
+        "evidence": evidence,
+        "derived_run_id": derived["id"],
+        "source_run_id": source["id"],
+        "benchmark_delta_pp": (
+            (benchmark_delta - source_benchmark) * 100 if None not in (benchmark_delta, source_benchmark) else None
+        ),
+        "excess_delta_pp": (
+            (excess_delta - source_excess) * 100 if None not in (excess_delta, source_excess) else None
+        ),
+        "explanation": explanation,
+    }
+
+
+def compare_documents(
+    baseline_id: str, candidate_id: str, baseline: dict, candidate: dict
+) -> dict[str, Any]:
+    side_a = _side(baseline, baseline_id)
+    side_b = _side(candidate, candidate_id)
+    comparability = _comparability(side_a, side_b)
+    comparable = comparability["comparable"]
+    metrics = [
+        _metric(
+            "total_return",
+            "策略总收益",
+            "percent",
+            side_a["metrics"]["total_return"],
+            side_b["metrics"]["total_return"],
+            comparable,
+        ),
+        _metric(
+            "benchmark_return",
+            "基准收益",
+            "percent",
+            side_a["metrics"]["benchmark_return"],
+            side_b["metrics"]["benchmark_return"],
+            comparable,
+        ),
+        _metric(
+            "excess_return",
+            "收益差（超额收益）",
+            "percent",
+            side_a["metrics"]["excess_return"],
+            side_b["metrics"]["excess_return"],
+            comparable,
+        ),
+    ]
+    dimensions = _dimensions(baseline, candidate)
+    relation = _relation(side_a, side_b)
+    changed = [item["label"] for item in dimensions if item["status"] == DIFFERENT]
+    unknown = [item["label"] for item in dimensions if item["status"] == UNKNOWN]
+    if relation["status"] == "same_execution":
+        conclusion = "两次结果来自同一执行结果，只有评价基准不同"
+    elif changed and unknown:
+        conclusion = f"发现多项差异（{len(changed)} 项不同、{len(unknown)} 项未知），不据此判断单一原因"
+    elif changed:
+        conclusion = f"发现 {len(changed)} 项差异，不据此判断单一原因"
+    elif unknown:
+        conclusion = "现有证据不足，无法判断差异原因"
+    else:
+        conclusion = "两次结果的已存证据完全一致"
+    return {
+        "baseline": side_a,
+        "candidate": side_b,
+        "direction": "candidate_minus_baseline",
+        "conclusion": conclusion,
+        "conclusion_states_cause": relation["status"] == "same_execution",
+        "comparability": comparability,
+        "metrics": metrics,
+        "dimensions": dimensions,
+        "relation": relation,
+        "not_implemented": [
+            "最早评分差异或最早成交差异的定位：首版不扫描全量净值与成交明细",
+            "旧价格基准的序列版本：旧结果未保存来源版本时保持未知",
+        ],
+    }
+
+
+def comparison_router(store) -> APIRouter:
+    router = APIRouter(prefix="/api/v1")
+
+    def load(run_id: str) -> dict:
+        """One narrow projection per side; detail series stay in storage."""
+
+        document: dict[str, Any] | None
+        try:
+            document = store.project("backtests", run_id)
+        except FileNotFoundError:
+            raise HTTPException(404, f"回测结果不存在：{run_id}") from None
+        except (OSError, ValueError):
+            document = None
+        if (
+            not isinstance(document, dict)
+            or not isinstance(document.get("metadata"), dict)
+            or not isinstance(document.get("summary"), dict)
+        ):
+            try:
+                exists = store.exists("backtests", run_id)
+            except (FileNotFoundError, ValueError):
+                exists = False
+            detail = "回测结果文件损坏或格式异常，请重新运行该配置" if exists else "回测结果不存在"
+            raise HTTPException(409 if exists else 404, detail) from None
+        return document
+
+    @router.get("/backtest-comparisons")
+    def compare(baseline_run_id: str, candidate_run_id: str):
+        if baseline_run_id == candidate_run_id:
+            raise HTTPException(422, "请选择两条不同的回测")
+        baseline = load(baseline_run_id)
+        candidate = load(candidate_run_id)
+        return compare_documents(baseline_run_id, candidate_run_id, baseline, candidate)
+
+    return router
