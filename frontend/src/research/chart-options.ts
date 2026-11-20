@@ -189,6 +189,7 @@ export function horizontalIntervalOption(
   ciLow: number,
   ciHigh: number,
   palette: ChartPalette,
+  compact = false,
 ): EChartsOption {
   const span = Math.max(
     Math.abs(ciLow),
@@ -199,10 +200,14 @@ export function horizontalIntervalOption(
   const pad = Math.max(span * 0.2, 0.005);
   const min = Number(Math.min(0, ciLow - pad).toFixed(4));
   const max = Number(Math.max(0, ciHigh + pad).toFixed(4));
+  const compactInterval =
+    compact && max > min ? Number(((max - min) / 2).toFixed(4)) : undefined;
   return {
     backgroundColor: "transparent",
     textStyle: { color: palette.text, fontFamily: "inherit" },
-    grid: { left: 82, right: 28, top: 24, bottom: 36 },
+    grid: compact
+      ? { left: 56, right: 16, top: 20, bottom: 34 }
+      : { left: 82, right: 28, top: 24, bottom: 36 },
     tooltip: {
       trigger: "item",
       renderMode: "richText",
@@ -215,10 +220,24 @@ export function horizontalIntervalOption(
       type: "value",
       min,
       max,
+      ...(compactInterval !== undefined
+        ? { interval: compactInterval }
+        : compact
+          ? { splitNumber: 2 }
+          : {}),
       axisLabel: {
         color: palette.muted,
         hideOverlap: true,
-        formatter: (value: number) => value.toFixed(3),
+        ...(compact
+          ? {
+              showMinLabel: true,
+              showMaxLabel: true,
+              alignMinLabel: "left",
+              alignMaxLabel: "right",
+              fontSize: 11,
+            }
+          : {}),
+        formatter: (value: number) => value.toFixed(compact ? 2 : 3),
       },
       splitLine: { lineStyle: { color: palette.split } },
     },

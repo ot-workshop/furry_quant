@@ -1,3 +1,4 @@
+import { Grid } from "antd";
 import * as echarts from "echarts/core";
 import { HeatmapChart, ScatterChart } from "echarts/charts";
 import { VisualMapComponent } from "echarts/components";
@@ -84,14 +85,18 @@ export function HorizontalIntervalChart({
   ciHigh: number;
   ariaLabel: string;
 }) {
+  const screens = Grid.useBreakpoint();
+  const compact =
+    screens.sm === false ||
+    (typeof window !== "undefined" && window.innerWidth < 576);
   return (
     <Chart
       height={120}
       ariaLabel={ariaLabel}
       build={(palette) =>
-        horizontalIntervalOption(mean, ciLow, ciHigh, palette)
+        horizontalIntervalOption(mean, ciLow, ciHigh, palette, compact)
       }
-      deps={[mean, ciLow, ciHigh]}
+      deps={[mean, ciLow, ciHigh, compact]}
     />
   );
 }

@@ -216,13 +216,54 @@ def test_missing_exit_date_zero_all_empty_and_missing_calendar_guards(tmp_path):
     assert res_empty["common_sample"]["available"] is False
     assert "未知" in res_empty["common_sample"]["label"]
 
-    # Missing frozen calendar -> explicit error status, never fabricates positions
+    # Missing frozen calendar -> explicit error status, signal_dates & n unknown, never fabricates positions
     no_cal, _ = _make_evaluation([0.05] * 25, horizon=1, with_calendar=False)
     res_no_cal = evaluation_evidence(store, no_cal, horizon=1, factor="momentum", cutoff=dates[-1])
     assert res_no_cal["status"] == "missing_frozen_calendar"
+    assert res_no_cal["counts"]["signal_dates"] is None
+    assert res_no_cal["counts"]["valid_rank_ic_dates"] is None
+    assert res_no_cal["counts"]["lag_pairs"] is None
+    assert res_no_cal["raw_availability"]["total_signal_dates"] is None
     assert res_no_cal["rank_ic"]["ci_low"] is None
 
-    # Unsaved factor fields & partial dates in availability_by_date must stay None (unknown), never zero
+    # Two-day filter where day 1 has value and day 2 only has another factor -> matched 1/2, totals stay None
+    two_day_eval, two_dates = _make_evaluation([None, None], factor="value", horizon=1, factor_run_id="factors-two-day")
+    two_day_doc = {
+        "metadata": {
+            "id": "factors-two-day",
+            "name": "两日部分缺失批次",
+            "is_synthetic": True,
+            "created_at": "2026-11-20T00:00:00Z",
+            "scheme": "equal",
+            "as_of": two_dates[1],
+            "weights": {"value": 1.0},
+            "availability_by_date": {
+                two_dates[0]: {
+                    "universe": 4,
+                    "eligible": 4,
+                    "factors": {"value": {"valid": 0, "missing": 4, "imputed": 4, "missing_policy": "zero"}},
+                },
+                two_dates[1]: {
+                    "universe": 4,
+                    "eligible": 4,
+                    "factors": {"momentum": {"valid": 4, "missing": 0, "imputed": 0}},
+                },
+            },
+        },
+        "history": [],
+    }
+    store.publish("factors", "factors-two-day", two_day_doc)
+    res_two = evaluation_evidence(
+        store, two_day_eval, horizon=1, factor="value", start=two_dates[0], end=two_dates[1], cutoff=two_dates[-1]
+    )
+    assert res_two["raw_availability"]["coverage_status"] == "partial"
+    assert res_two["raw_availability"]["matched_signal_dates"] == 1
+    assert res_two["raw_availability"]["total_signal_dates"] == 2
+    assert res_two["raw_availability"]["raw_valid_stock_days"] is None
+    assert res_two["raw_availability"]["raw_missing_stock_days"] is None
+    assert res_two["raw_availability"]["imputed_stock_days"] is None
+
+    # Unsaved factor fields & partial dates in availability_by_date must stay None (never partial sums or zero)
     partial_factor_doc = {
         "metadata": {
             "id": "factors-partial",
@@ -246,11 +287,83 @@ def test_missing_exit_date_zero_all_empty_and_missing_calendar_guards(tmp_path):
     assert raw_p["coverage_status"] == "partial"
     assert raw_p["matched_signal_dates"] == 1
     assert raw_p["total_signal_dates"] == 25
-    assert raw_p["universe_stock_days"] == 4
-    assert raw_p["eligible_stock_days"] == 4
+    assert raw_p["universe_stock_days"] is None
+    assert raw_p["eligible_stock_days"] is None
     assert raw_p["raw_valid_stock_days"] is None
     assert raw_p["raw_missing_stock_days"] is None
     assert raw_p["imputed_stock_days"] is None
+
+    # Invalid exit_date ("0") and reversed date ordering must be rejected, never included as matured
+    bad_exit_doc, dates = _make_evaluation([0.05] * 25, horizon=5)
+    bad_exit_doc["factors"]["momentum"]["horizons"]["5"]["daily"][0]["exit_date"] = "0"
+    bad_exit_doc["factors"]["momentum"]["horizons"]["5"]["daily"][1]["exit_date"] = "2024-01-01"
+    res_bad_exit = evaluation_evidence(store, bad_exit_doc, horizon=5, factor="momentum", cutoff=dates[-1])
+    assert res_bad_exit["counts"]["invalid_exit_date_dates"] == 2
+    assert res_bad_exit["counts"]["valid_rank_ic_dates"] == 23
+
+    # Empty scoring_sample={} stays unknown; valid 12-char sha256 + policy is accepted
+    empty_cs_doc = copy.deepcopy(no_cal)
+    empty_cs_doc["metadata"]["provenance"] = {"scoring_sample": {}}
+    assert (
+        evaluation_evidence(store, empty_cs_doc, horizon=1, factor="momentum", cutoff=dates[-1])["common_sample"][
+            "available"
+        ]
+        is False
+    )
+    valid_cs_doc = copy.deepcopy(no_cal)
+    valid_cs_doc["metadata"]["provenance"] = {
+        "scoring_sample": {"policy": "common_across_candidates", "sha256": "a1b2c3d4e5f6"}
+    }
+    cs_res = evaluation_evidence(store, valid_cs_doc, horizon=1, factor="momentum", cutoff=dates[-1])["common_sample"]
+    assert cs_res["available"] is True
+    assert cs_res["policy"] == "common_across_candidates"
+    assert cs_res["sha256"] == "a1b2c3d4e5f6"
+
+    # Composite keeps component_imputations per factor without scalar cross-factor sum
+    full_comp_doc = {
+        "metadata": {
+            "id": "factors-comp",
+            "name": "组合因子批次",
+            "is_synthetic": True,
+            "created_at": "2026-11-20T00:00:00Z",
+            "scheme": "equal",
+            "as_of": dates[24],
+            "weights": {"momentum": 0.5, "value": 0.5},
+            "availability_by_date": {
+                d: {
+                    "universe": 150,
+                    "eligible": 120,
+                    "factors": {
+                        "momentum": {
+                            "valid": 120,
+                            "missing": 0,
+                            "imputed": 0,
+                            "not_applicable": 0,
+                            "not_applicable_scored": 0,
+                            "missing_policy": "strict",
+                        },
+                        "value": {
+                            "valid": 0,
+                            "missing": 120,
+                            "imputed": 120,
+                            "not_applicable": 0,
+                            "not_applicable_scored": 0,
+                            "missing_policy": "zero",
+                        },
+                    },
+                }
+                for d in dates[:25]
+            },
+        },
+        "history": [],
+    }
+    store.publish("factors", "factors-comp", full_comp_doc)
+    comp_eval, _ = _make_evaluation(
+        [0.04 + 0.01 * (i % 3) for i in range(25)], factor="momentum", horizon=1, factor_run_id="factors-comp"
+    )
+    comp_res = evaluation_evidence(store, comp_eval, horizon=1, factor="composite", cutoff=dates[-1])
+    assert comp_res["raw_availability"]["imputed_stock_days"] is None
+    assert len(comp_res["raw_availability"]["component_imputations"]) == 2
 
 
 def test_http_evidence_route_read_only_and_requires_cutoff_when_end_missing(tmp_path):
@@ -259,6 +372,14 @@ def test_http_evidence_route_read_only_and_requires_cutoff_when_end_missing(tmp_
     vals = [0.03 + 0.005 * (i % 4) for i in range(25)]
     doc, dates = _make_evaluation(vals, factor="momentum", horizon=5)
     doc["metadata"]["end"] = dates[-1]
+    doc["metadata"]["factor_definitions"] = {
+        "momentum": {"requires_financials": False},
+        "value": {"requires_financials": True},
+    }
+    doc["metadata"]["factor_config"] = [
+        {"id": "momentum", "name": "momentum"},
+        {"id": "value", "name": "value"},
+    ]
     store.publish("evaluations", "eval-http-1", doc)
     original_bytes = store.path("evaluations", "eval-http-1").read_bytes()
 
@@ -269,6 +390,10 @@ def test_http_evidence_route_read_only_and_requires_cutoff_when_end_missing(tmp_
     payload = resp.json()
     assert payload["status"] == "ready"
     assert payload["counts"]["valid_rank_ic_dates"] == 25
+    assert payload["counts"]["paired_observations"]["min"] == 120
+    assert payload["counts"]["paired_observations"]["max"] == 120
+    assert payload["financials"]["status"] == "missing_binding"
+    assert payload["financials"]["status_label"] == "未绑定"
     assert store.path("evaluations", "eval-http-1").read_bytes() == original_bytes
     assert code_sha256() == before_sha
     json.dumps(payload, allow_nan=False)

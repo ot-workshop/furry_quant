@@ -7,10 +7,14 @@ while projecting frozen evaluation and factor artifacts.
 from __future__ import annotations
 
 import math
+import re
 from datetime import date
+
+from finance_quant.data.temporal_audit import financial_audit_item
 
 Z_CRIT_95 = 1.959963984540054
 MIN_VALID_DATES = 20
+SHA256_RE = re.compile(r"^(?:[0-9a-fA-F]{12}|[0-9a-fA-F]{64})$")
 
 EXCLUSION_LABELS = {
     "insufficient_cross_section": "有效截面不足",
@@ -18,7 +22,21 @@ EXCLUSION_LABELS = {
     "constant_return": "未来收益为常数",
     "unmatured": "截止日时尚未到期",
     "missing_exit_date": "缺少离场日记录",
+    "invalid_exit_date": "离场日格式或时序异常",
     "missing_daily_row": "缺少当日诊断记录",
+}
+
+FINANCIAL_STATUS_LABELS = {
+    "guarded": "程序约束",
+    "assumption": "保守假设",
+    "model_assumption": "模拟边界",
+    "selection_bias": "固定池限制",
+    "unverified": "未认证",
+    "diagnostic_only": "仅诊断",
+    "not_used": "未使用",
+    "missing_binding": "未绑定",
+    "unknown": "无法判断",
+    "not_modeled": "未建模",
 }
 
 LABEL_EXCLUSION_LABELS = {
@@ -81,12 +99,12 @@ def _validate_inputs(
     return eff_start, eff_end, eff_cutoff, eff_lag
 
 
-def _unavailable_availability(reason: str, total_signal_dates: int) -> dict:
+def _unavailable_availability(reason: str, total_signal_dates: int | None) -> dict:
     return {
         "available": False,
         "coverage_status": "unavailable",
         "reason": reason,
-        "matched_signal_dates": 0,
+        "matched_signal_dates": None if total_signal_dates is None else 0,
         "total_signal_dates": total_signal_dates,
         "universe_stock_days": None,
         "eligible_stock_days": None,
@@ -115,8 +133,9 @@ def _project_raw_availability(
     *,
     factor: str,
     dates: list[str],
+    calendar_known: bool = True,
 ) -> dict:
-    total_days = len(dates)
+    total_days: int | None = len(dates) if calendar_known else None
     metadata = result.get("metadata", {})
     factor_run_id = metadata.get("factor_run_id")
     if not isinstance(factor_run_id, str) or not factor_run_id:
@@ -128,8 +147,10 @@ def _project_raw_availability(
     availability = factor_doc.get("metadata", {}).get("availability_by_date")
     if not isinstance(availability, dict) or not availability:
         return _unavailable_availability("因子批次未保存逐日可用性明细（旧结果不回填）", total_days)
+    if not calendar_known or not dates:
+        return _unavailable_availability("无信号日历或所选信号区间为空", total_days)
 
-    matched_days = 0
+    day_matched = 0
     universe_total = 0
     universe_complete = True
     eligible_total = 0
@@ -147,13 +168,22 @@ def _project_raw_availability(
     not_applicable_scored_total = 0
     not_applicable_scored_complete = True
     missing_policy: str | None = None
+    policies_seen: set[str] = set()
     component_acc: dict[str, dict] = {}
 
     for day in dates:
         day_info = availability.get(day)
         if not isinstance(day_info, dict):
+            universe_complete = False
+            eligible_complete = False
+            valid_complete = False
+            missing_complete = False
+            imputed_complete = False
+            not_applicable_complete = False
+            not_applicable_scored_complete = False
             continue
-        matched_days += 1
+
+        day_matched += 1
         u_val = _opt_int(day_info, "universe")
         e_val = _opt_int(day_info, "eligible")
         if u_val is None:
@@ -165,7 +195,7 @@ def _project_raw_availability(
         else:
             eligible_total += e_val
 
-        factors_map = day_info.get("factors", {})
+        factors_map = day_info.get("factors")
         if not isinstance(factors_map, dict):
             valid_complete = False
             missing_complete = False
@@ -173,37 +203,44 @@ def _project_raw_availability(
             not_applicable_complete = False
             not_applicable_scored_complete = False
             continue
+
         if factor != "composite":
             entry = factors_map.get(factor)
-            if isinstance(entry, dict):
-                factor_matched_days += 1
-                v = _opt_int(entry, "valid")
-                m = _opt_int(entry, "missing")
-                imp = _opt_int(entry, "imputed")
-                na = _opt_int(entry, "not_applicable")
-                nas = _opt_int(entry, "not_applicable_scored")
-                if v is None:
-                    valid_complete = False
-                else:
-                    raw_valid += v
-                if m is None:
-                    missing_complete = False
-                else:
-                    raw_missing += m
-                if imp is None:
-                    imputed_complete = False
-                else:
-                    imputed_total += imp
-                if na is None:
-                    not_applicable_complete = False
-                else:
-                    not_applicable_total += na
-                if nas is None:
-                    not_applicable_scored_complete = False
-                else:
-                    not_applicable_scored_total += nas
-                if entry.get("missing_policy"):
-                    missing_policy = str(entry["missing_policy"])
+            if not isinstance(entry, dict):
+                valid_complete = False
+                missing_complete = False
+                imputed_complete = False
+                not_applicable_complete = False
+                not_applicable_scored_complete = False
+                continue
+            factor_matched_days += 1
+            v = _opt_int(entry, "valid")
+            m = _opt_int(entry, "missing")
+            imp = _opt_int(entry, "imputed")
+            na = _opt_int(entry, "not_applicable")
+            nas = _opt_int(entry, "not_applicable_scored")
+            if v is None:
+                valid_complete = False
+            else:
+                raw_valid += v
+            if m is None:
+                missing_complete = False
+            else:
+                raw_missing += m
+            if imp is None:
+                imputed_complete = False
+            else:
+                imputed_total += imp
+            if na is None:
+                not_applicable_complete = False
+            else:
+                not_applicable_total += na
+            if nas is None:
+                not_applicable_scored_complete = False
+            else:
+                not_applicable_scored_total += nas
+            if isinstance(entry.get("missing_policy"), str) and entry["missing_policy"]:
+                policies_seen.add(entry["missing_policy"])
         else:
             for key, entry in factors_map.items():
                 if not isinstance(entry, dict):
@@ -223,7 +260,7 @@ def _project_raw_availability(
                         "na_complete": True,
                         "na_scored_sum": 0,
                         "na_scored_complete": True,
-                        "missing_policy": None,
+                        "policies": set(),
                     },
                 )
                 bucket["matched_days"] += 1
@@ -252,89 +289,80 @@ def _project_raw_availability(
                     bucket["na_scored_complete"] = False
                 else:
                     bucket["na_scored_sum"] += nas
-                if entry.get("missing_policy"):
-                    bucket["missing_policy"] = str(entry["missing_policy"])
+                if isinstance(entry.get("missing_policy"), str) and entry["missing_policy"]:
+                    bucket["policies"].add(entry["missing_policy"])
 
-    if matched_days == 0:
-        return _unavailable_availability("所选信号区间在关联因子批次中没有可用性记录", total_days)
+    matched_for_factor = day_matched if factor == "composite" else factor_matched_days
+    if matched_for_factor == 0:
+        return _unavailable_availability("所选信号区间与因子在关联因子批次中没有可用性记录", total_days)
 
+    full_days = len(dates)
     if factor == "composite":
-        component_rows = [
-            {
-                "factor": b["factor"],
-                "matched_signal_dates": b["matched_days"],
-                "raw_valid_stock_days": b["raw_valid_sum"] if b["valid_complete"] else None,
-                "raw_missing_stock_days": b["raw_missing_sum"] if b["missing_complete"] else None,
-                "imputed_stock_days": b["imputed_sum"] if b["imputed_complete"] else None,
-                "not_applicable_scored_stock_days": b["na_scored_sum"] if b["na_scored_complete"] else None,
-                "missing_policy": b["missing_policy"],
-            }
-            for b in component_acc.values()
-        ]
-        all_comp_imputed = bool(component_acc) and all(
-            b["imputed_complete"] and b["matched_days"] == matched_days for b in component_acc.values()
-        )
-        all_comp_na = bool(component_acc) and all(
-            b["na_complete"] and b["matched_days"] == matched_days for b in component_acc.values()
-        )
-        all_comp_na_scored = bool(component_acc) and all(
-            b["na_scored_complete"] and b["matched_days"] == matched_days for b in component_acc.values()
-        )
-        comp_imputed_total = sum(b["imputed_sum"] for b in component_acc.values()) if all_comp_imputed else None
-        comp_na_total = sum(b["na_sum"] for b in component_acc.values()) if all_comp_na else None
-        comp_na_scored_total = sum(b["na_scored_sum"] for b in component_acc.values()) if all_comp_na_scored else None
+        component_rows = []
+        for b in component_acc.values():
+            comp_full = b["matched_days"] == full_days
+            policies = b["policies"]
+            component_rows.append(
+                {
+                    "factor": b["factor"],
+                    "matched_signal_dates": b["matched_days"],
+                    "total_signal_dates": full_days,
+                    "raw_valid_stock_days": b["raw_valid_sum"] if (comp_full and b["valid_complete"]) else None,
+                    "raw_missing_stock_days": b["raw_missing_sum"] if (comp_full and b["missing_complete"]) else None,
+                    "imputed_stock_days": b["imputed_sum"] if (comp_full and b["imputed_complete"]) else None,
+                    "not_applicable_stock_days": b["na_sum"] if (comp_full and b["na_complete"]) else None,
+                    "not_applicable_scored_stock_days": (
+                        b["na_scored_sum"] if (comp_full and b["na_scored_complete"]) else None
+                    ),
+                    "missing_policy": next(iter(policies)) if len(policies) == 1 else None,
+                }
+            )
         is_complete = (
-            total_days > 0
-            and matched_days == total_days
+            day_matched == full_days
             and universe_complete
             and eligible_complete
             and bool(component_acc)
             and all(
-                b["matched_days"] == total_days and b["valid_complete"] and b["missing_complete"]
+                b["matched_days"] == full_days and b["valid_complete"] and b["missing_complete"]
                 for b in component_acc.values()
             )
         )
+        # Never sum cross-factor stock-days into a composite scalar total.
         return {
             "available": True,
             "coverage_status": "complete" if is_complete else "partial",
             "factor_run_id": factor_run_id,
-            "matched_signal_dates": matched_days,
-            "total_signal_dates": total_days,
-            "universe_stock_days": universe_total if universe_complete else None,
-            "eligible_stock_days": eligible_total if eligible_complete else None,
+            "matched_signal_dates": day_matched,
+            "total_signal_dates": full_days,
+            "universe_stock_days": universe_total if (day_matched == full_days and universe_complete) else None,
+            "eligible_stock_days": eligible_total if (day_matched == full_days and eligible_complete) else None,
             "raw_valid_stock_days": None,
             "raw_missing_stock_days": None,
-            "imputed_stock_days": comp_imputed_total,
-            "not_applicable_stock_days": comp_na_total,
-            "not_applicable_scored_stock_days": comp_na_scored_total,
+            "imputed_stock_days": None,
+            "not_applicable_stock_days": None,
+            "not_applicable_scored_stock_days": None,
             "missing_policy": None,
             "component_imputations": component_rows,
         }
 
-    has_factor = factor_matched_days > 0
-    is_complete = (
-        total_days > 0
-        and matched_days == total_days
-        and factor_matched_days == total_days
-        and universe_complete
-        and eligible_complete
-        and valid_complete
-        and missing_complete
-    )
+    full_factor = factor_matched_days == full_days
+    if len(policies_seen) == 1 and full_factor:
+        missing_policy = next(iter(policies_seen))
+    is_complete = full_factor and universe_complete and eligible_complete and valid_complete and missing_complete
     return {
         "available": True,
         "coverage_status": "complete" if is_complete else "partial",
         "factor_run_id": factor_run_id,
-        "matched_signal_dates": matched_days,
-        "total_signal_dates": total_days,
-        "universe_stock_days": universe_total if universe_complete else None,
-        "eligible_stock_days": eligible_total if eligible_complete else None,
-        "raw_valid_stock_days": raw_valid if (has_factor and valid_complete) else None,
-        "raw_missing_stock_days": raw_missing if (has_factor and missing_complete) else None,
-        "imputed_stock_days": imputed_total if (has_factor and imputed_complete) else None,
-        "not_applicable_stock_days": not_applicable_total if (has_factor and not_applicable_complete) else None,
+        "matched_signal_dates": factor_matched_days,
+        "total_signal_dates": full_days,
+        "universe_stock_days": universe_total if (day_matched == full_days and universe_complete) else None,
+        "eligible_stock_days": eligible_total if (day_matched == full_days and eligible_complete) else None,
+        "raw_valid_stock_days": raw_valid if (full_factor and valid_complete) else None,
+        "raw_missing_stock_days": raw_missing if (full_factor and missing_complete) else None,
+        "imputed_stock_days": imputed_total if (full_factor and imputed_complete) else None,
+        "not_applicable_stock_days": not_applicable_total if (full_factor and not_applicable_complete) else None,
         "not_applicable_scored_stock_days": (
-            not_applicable_scored_total if (has_factor and not_applicable_scored_complete) else None
+            not_applicable_scored_total if (full_factor and not_applicable_scored_complete) else None
         ),
         "missing_policy": missing_policy,
         "component_imputations": [],
@@ -351,18 +379,48 @@ def _common_sample_info(store, result: dict) -> dict:
         except (FileNotFoundError, ValueError):
             scoring_sample = None
     if isinstance(scoring_sample, dict):
-        return {
-            "available": True,
-            "policy": scoring_sample.get("policy"),
-            "sha256": scoring_sample.get("sha256"),
-            "label": "已冻结共同样本",
-        }
+        policy = scoring_sample.get("policy")
+        sha256 = scoring_sample.get("sha256")
+        if (
+            isinstance(policy, str)
+            and policy.strip()
+            and isinstance(sha256, str)
+            and SHA256_RE.fullmatch(sha256.strip())
+        ):
+            return {
+                "available": True,
+                "policy": policy.strip(),
+                "sha256": sha256.strip().lower(),
+                "label": "已冻结共同样本",
+            }
     return {
         "available": False,
         "policy": None,
         "sha256": None,
         "label": "未知（无冻结共同样本证据）",
     }
+
+
+def _financials_info(result: dict) -> dict | None:
+    metadata = result.get("metadata", {})
+    audit = metadata.get("temporal_audit")
+    fin_item = None
+    if isinstance(audit, dict) and isinstance(audit.get("items"), list):
+        fin_item = next(
+            (item for item in audit["items"] if isinstance(item, dict) and item.get("key") == "financials"),
+            None,
+        )
+    if fin_item is None:
+        fin_item = financial_audit_item(metadata)
+    if isinstance(fin_item, dict) and isinstance(fin_item.get("status"), str):
+        status = fin_item["status"]
+        return {
+            "status": status,
+            "status_label": FINANCIAL_STATUS_LABELS.get(status, status),
+            "label": str(fin_item.get("label") or "财务数据"),
+            "detail": str(fin_item.get("detail") or ""),
+        }
+    return None
 
 
 def _newey_west_bartlett(values: list[float | None], lag: int) -> dict:
@@ -508,15 +566,23 @@ def evaluation_evidence(
                 "z_critical": Z_CRIT_95,
             },
             "counts": {
-                "signal_dates": 0,
-                "valid_rank_ic_dates": 0,
-                "matured_dates": 0,
-                "unmatured_dates": 0,
-                "missing_exit_date_dates": 0,
-                "excluded_matured_dates": 0,
-                "missing_daily_rows": 0,
-                "lag_pairs": 0,
-                "paired_observations_on_valid_ic_days": 0,
+                "signal_dates": None,
+                "valid_rank_ic_dates": None,
+                "matured_dates": None,
+                "unmatured_dates": None,
+                "missing_exit_date_dates": None,
+                "invalid_exit_date_dates": None,
+                "excluded_matured_dates": None,
+                "missing_daily_rows": None,
+                "lag_pairs": None,
+                "paired_observations_on_valid_ic_days": None,
+                "paired_observations": {
+                    "total": None,
+                    "recorded_dates": None,
+                    "valid_ic_dates": None,
+                    "min": None,
+                    "max": None,
+                },
             },
             "rank_ic": {
                 "mean": None,
@@ -528,14 +594,19 @@ def evaluation_evidence(
             },
             "exclusions": {"ic": [], "labels": []},
             "label_coverage": None,
-            "raw_availability": _project_raw_availability(store, result, factor=factor, dates=[]),
+            "raw_availability": _project_raw_availability(store, result, factor=factor, dates=[], calendar_known=False),
             "common_sample": _common_sample_info(store, result),
-            "financials": result.get("metadata", {}).get("financials"),
+            "financials": _financials_info(result),
         }
 
     calendar = sorted(
         {row["signal_date"] for row in signal_cov if isinstance(row, dict) and isinstance(row.get("signal_date"), str)}
     )
+    sig_entry_by_date = {
+        row["signal_date"]: row.get("entry_date")
+        for row in signal_cov
+        if isinstance(row, dict) and isinstance(row.get("signal_date"), str)
+    }
     filtered_dates = [
         day for day in calendar if (eff_start is None or day >= eff_start) and (eff_end is None or day <= eff_end)
     ]
@@ -549,10 +620,11 @@ def evaluation_evidence(
 
     values: list[float | None] = []
     valid_exit_dates: list[str] = []
-    paired_obs_valid = 0
+    paired_obs_values: list[int] = []
     matured_dates = 0
     unmatured_dates = 0
     missing_exit_date_dates = 0
+    invalid_exit_date_dates = 0
     excluded_matured_dates = 0
     missing_daily_rows = 0
     ic_exclusion_counts: dict[str, int] = {}
@@ -564,13 +636,42 @@ def evaluation_evidence(
             ic_exclusion_counts["missing_daily_row"] = ic_exclusion_counts.get("missing_daily_row", 0) + 1
             values.append(None)
             continue
-        exit_date = row.get("exit_date")
-        if not isinstance(exit_date, str) or not exit_date:
+        raw_exit = row.get("exit_date")
+        if raw_exit is None or raw_exit == "":
             missing_exit_date_dates += 1
             ic_exclusion_counts["missing_exit_date"] = ic_exclusion_counts.get("missing_exit_date", 0) + 1
             values.append(None)
             continue
-        if exit_date > eff_cutoff:
+
+        try:
+            parsed_sig = _parse_date(day, "信号日期")
+            parsed_exit = _parse_date(raw_exit, "退出日期")
+        except ValueError:
+            parsed_sig = None
+            parsed_exit = None
+
+        raw_entry = row.get("entry_date") if row.get("entry_date") is not None else sig_entry_by_date.get(day)
+        parsed_entry: str | None = None
+        entry_valid = True
+        if raw_entry is not None and raw_entry != "":
+            try:
+                parsed_entry = _parse_date(raw_entry, "入场日期")
+            except ValueError:
+                entry_valid = False
+
+        if (
+            parsed_sig is None
+            or parsed_exit is None
+            or not entry_valid
+            or parsed_exit < parsed_sig
+            or (parsed_entry is not None and (parsed_entry < parsed_sig or parsed_exit < parsed_entry))
+        ):
+            invalid_exit_date_dates += 1
+            ic_exclusion_counts["invalid_exit_date"] = ic_exclusion_counts.get("invalid_exit_date", 0) + 1
+            values.append(None)
+            continue
+
+        if parsed_exit > eff_cutoff:
             unmatured_dates += 1
             ic_exclusion_counts["unmatured"] = ic_exclusion_counts.get("unmatured", 0) + 1
             values.append(None)
@@ -580,8 +681,10 @@ def evaluation_evidence(
         val = _finite(row.get("rank_ic"))
         if val is not None:
             values.append(val)
-            valid_exit_dates.append(exit_date)
-            paired_obs_valid += int(row.get("observations") or 0)
+            valid_exit_dates.append(parsed_exit)
+            obs = _opt_int(row, "observations")
+            if obs is not None and obs >= 0:
+                paired_obs_values.append(obs)
         else:
             excluded_matured_dates += 1
             reason = str(row.get("ic_exclusion") or "unknown")
@@ -598,14 +701,19 @@ def evaluation_evidence(
     elif nw["variance_status"] == "no_observations":
         status = "no_valid_observations"
         status_label = "无真实有效观测"
-        if unmatured_dates > 0 and excluded_matured_dates == 0 and missing_exit_date_dates == 0:
-            status_reason = (
-                f"区间内 {len(filtered_dates)} 个信号日在截止日 {eff_cutoff} 前均未成熟，无有效 Rank IC 观测。"
-            )
-        elif missing_exit_date_dates > 0 and excluded_matured_dates == 0:
-            status_reason = f"区间内 {missing_exit_date_dates} 个信号日缺少离场日记录，旧观测不推定已成熟。"
-        else:
-            status_reason = f"区间内 {len(filtered_dates)} 个信号日均未产出有效 Rank IC（有效截面不足或缺失）。"
+        detail_parts = []
+        if unmatured_dates:
+            detail_parts.append(f"截至 {eff_cutoff} 未到期 {unmatured_dates} 日")
+        if missing_exit_date_dates:
+            detail_parts.append(f"缺少离场日 {missing_exit_date_dates} 日")
+        if invalid_exit_date_dates:
+            detail_parts.append(f"离场日格式或时序异常 {invalid_exit_date_dates} 日")
+        if missing_daily_rows:
+            detail_parts.append(f"缺诊断行 {missing_daily_rows} 日")
+        if excluded_matured_dates:
+            detail_parts.append(f"截面不足或常数排除 {excluded_matured_dates} 日")
+        suffix = f"（{'，'.join(detail_parts)}）" if detail_parts else ""
+        status_reason = f"区间内 {len(filtered_dates)} 个信号日均无有效成熟 Rank IC{suffix}。"
     elif nw["variance_status"] == "insufficient_observations":
         status = "insufficient_observations"
         status_label = "有效日不足"
@@ -625,7 +733,7 @@ def evaluation_evidence(
         status_label = "可计算"
         status_reason = f"按冻结信号交易日位置与 Bartlett L={eff_lag} 计算，共 {nw['n']} 个已成熟有效日。"
 
-    # Label coverage summary in [eff_start, eff_end]
+    # Label coverage summary in [eff_start, eff_end] (frozen at original evaluation end)
     label_obj = result.get("labels", {}).get(str(horizon))
     label_coverage_summary = None
     label_exclusions_list = []
@@ -633,30 +741,56 @@ def evaluation_evidence(
         filtered_set = set(filtered_dates)
         scored_sd = 0
         valid_sd = 0
+        matched_lbl_rows = 0
+        lbl_complete = bool(filtered_dates)
         lbl_excl: dict[str, int] = {}
+        seen_lbl_dates: set[str] = set()
         for row in label_obj["coverage"]:
             if not isinstance(row, dict) or row.get("date") not in filtered_set:
                 continue
-            scored_sd += int(row.get("scored", 0))
-            valid_sd += int(row.get("valid_labels", 0))
+            matched_lbl_rows += 1
+            seen_lbl_dates.add(row["date"])
+            s_val = _opt_int(row, "scored")
+            v_val = _opt_int(row, "valid_labels")
+            if s_val is None or v_val is None:
+                lbl_complete = False
+            else:
+                scored_sd += s_val
+                valid_sd += v_val
             for k, c in (row.get("exclusions") or {}).items():
                 lbl_excl[str(k)] = lbl_excl.get(str(k), 0) + int(c)
-        label_coverage_summary = {
-            "scored_stock_days": scored_sd,
-            "valid_stock_days": valid_sd,
-            "excluded_stock_days": sum(lbl_excl.values()),
-        }
-        label_exclusions_list = [
-            {"code": k, "label": LABEL_EXCLUSION_LABELS.get(k, k), "count": c}
-            for k, c in sorted(lbl_excl.items(), key=lambda item: (-item[1], item[0]))
-            if c > 0
-        ]
+        if len(seen_lbl_dates) != len(filtered_set):
+            lbl_complete = False
+        if matched_lbl_rows > 0:
+            label_coverage_summary = {
+                "scope": "evaluation_end_in_signal_range",
+                "evaluation_end": result.get("metadata", {}).get("end"),
+                "matched_signal_dates": len(seen_lbl_dates),
+                "total_signal_dates": len(filtered_dates),
+                "scored_stock_days": scored_sd if lbl_complete else None,
+                "valid_stock_days": valid_sd if lbl_complete else None,
+                "excluded_stock_days": sum(lbl_excl.values()) if lbl_complete else None,
+            }
+            label_exclusions_list = [
+                {"code": k, "label": LABEL_EXCLUSION_LABELS.get(k, k), "count": c}
+                for k, c in sorted(lbl_excl.items(), key=lambda item: (-item[1], item[0]))
+                if c > 0
+            ]
 
     ic_exclusions_list = [
         {"code": k, "label": EXCLUSION_LABELS.get(k, k), "count": c}
         for k, c in sorted(ic_exclusion_counts.items(), key=lambda item: (-item[1], item[0]))
         if c > 0
     ]
+
+    recorded_obs_days = len(paired_obs_values)
+    paired_obs_total: int | None
+    if nw["n"] == 0:
+        paired_obs_total = 0
+    elif recorded_obs_days == nw["n"]:
+        paired_obs_total = sum(paired_obs_values)
+    else:
+        paired_obs_total = None
 
     return {
         "factor": factor,
@@ -686,10 +820,18 @@ def evaluation_evidence(
             "matured_dates": matured_dates,
             "unmatured_dates": unmatured_dates,
             "missing_exit_date_dates": missing_exit_date_dates,
+            "invalid_exit_date_dates": invalid_exit_date_dates,
             "excluded_matured_dates": excluded_matured_dates,
             "missing_daily_rows": missing_daily_rows,
             "lag_pairs": nw["lag_pairs"],
-            "paired_observations_on_valid_ic_days": paired_obs_valid,
+            "paired_observations_on_valid_ic_days": paired_obs_total,
+            "paired_observations": {
+                "total": paired_obs_total,
+                "recorded_dates": recorded_obs_days,
+                "valid_ic_dates": nw["n"],
+                "min": min(paired_obs_values) if paired_obs_values else None,
+                "max": max(paired_obs_values) if paired_obs_values else None,
+            },
         },
         "rank_ic": {
             "mean": nw["mean"],
@@ -706,5 +848,5 @@ def evaluation_evidence(
         "label_coverage": label_coverage_summary,
         "raw_availability": _project_raw_availability(store, result, factor=factor, dates=filtered_dates),
         "common_sample": _common_sample_info(store, result),
-        "financials": result.get("metadata", {}).get("financials"),
+        "financials": _financials_info(result),
     }

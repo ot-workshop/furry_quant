@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Alert,
   Collapse,
   DatePicker,
   Descriptions,
   Flex,
+  Grid,
   InputNumber,
   Select,
   Table,
@@ -54,15 +55,18 @@ export function FactorEvidencePanel({
       ? "composite"
       : Object.keys(result.factors)[0],
   );
-  const [lag, setLag] = useState<number>(defaultLag);
+  const [lagOverride, setLagOverride] = useState<{
+    horizon: string;
+    lag: number;
+  } | null>(null);
+  const lag =
+    lagOverride && lagOverride.horizon === horizon
+      ? lagOverride.lag
+      : defaultLag;
   const [range, setRange] = useState<AnalysisRange>(null);
   const [cutoff, setCutoff] = useState<string | null>(
     result.metadata.end || null,
   );
-
-  useEffect(() => {
-    setLag(Math.max(0, Math.min(251, Number(horizon) - 1)));
-  }, [horizon]);
 
   const resource = useApiResource(
     (signal) =>
@@ -81,6 +85,10 @@ export function FactorEvidencePanel({
     [result.metadata.id, horizon, factor, lag, range, cutoff],
   );
 
+  const screens = Grid.useBreakpoint();
+  const compact =
+    screens.sm === false ||
+    (typeof window !== "undefined" && window.innerWidth < 576);
   const data = resource.data;
   const definitions = result.metadata.factor_definitions;
   const raw = data?.raw_availability;
@@ -115,7 +123,10 @@ export function FactorEvidencePanel({
               min={0}
               max={251}
               value={lag}
-              onChange={(value) => value !== null && setLag(Number(value))}
+              onChange={(value) =>
+                value !== null &&
+                setLagOverride({ horizon, lag: Number(value) })
+              }
             />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               默认 {defaultLag}（h−1）
@@ -169,6 +180,7 @@ export function FactorEvidencePanel({
               />
               <Descriptions
                 size="small"
+                layout={compact ? "vertical" : "horizontal"}
                 column={{ xs: 1, md: 3 }}
                 items={[
                   {
@@ -201,12 +213,33 @@ export function FactorEvidencePanel({
                       ? `${data.common_sample.label} (${data.common_sample.policy ?? "—"})`
                       : "未知",
                   },
-                  ...(data.financials?.label
+                  ...(data.financials?.status_label || data.financials?.label
                     ? [
                         {
                           key: "financials",
                           label: "财务绑定状态",
-                          children: `${data.financials.label}${data.financials.detail ? `：${data.financials.detail}` : ""}`,
+                          children: (
+                            <Flex gap={6} wrap align="center">
+                              {data.financials.status_label ? (
+                                <Tag
+                                  color={
+                                    data.financials.status === "guarded"
+                                      ? "success"
+                                      : data.financials.status ===
+                                          "missing_binding"
+                                        ? "warning"
+                                        : "default"
+                                  }
+                                >
+                                  {data.financials.status_label}
+                                </Tag>
+                              ) : null}
+                              <span>
+                                {data.financials.detail ||
+                                  data.financials.label}
+                              </span>
+                            </Flex>
+                          ),
                         },
                       ]
                     : []),
@@ -222,33 +255,47 @@ export function FactorEvidencePanel({
             <Flex vertical gap={12}>
               <Descriptions
                 size="small"
+                layout={compact ? "vertical" : "horizontal"}
                 column={{ xs: 1, md: 3 }}
                 items={[
                   {
                     key: "signalDates",
                     label: "信号交易日",
-                    children: `${data.counts.signal_dates} 交易日`,
+                    children:
+                      data.counts.signal_dates !== null
+                        ? `${data.counts.signal_dates} 交易日`
+                        : "未知（缺少冻结日历）",
                   },
                   {
                     key: "validIcDates",
                     label: "已成熟有效 Rank IC 日",
-                    children: `${data.counts.valid_rank_ic_dates} / ${data.counts.signal_dates} 交易日`,
+                    children:
+                      data.counts.signal_dates !== null &&
+                      data.counts.valid_rank_ic_dates !== null
+                        ? `${data.counts.valid_rank_ic_dates} / ${data.counts.signal_dates} 交易日`
+                        : "未知",
                   },
                   {
                     key: "unmatured",
-                    label: "未成熟 / 缺退出日",
-                    children: `${data.counts.unmatured_dates} / ${data.counts.missing_exit_date_dates} 交易日`,
+                    label: "未成熟 / 缺退出日 / 异常",
+                    children:
+                      data.counts.unmatured_dates !== null
+                        ? `${data.counts.unmatured_dates} / ${data.counts.missing_exit_date_dates ?? "未知"} / ${data.counts.invalid_exit_date_dates ?? 0} 交易日`
+                        : "未知",
                   },
                   {
                     key: "lagPairs",
                     label: "有效滞后配对数",
-                    children: `${data.counts.lag_pairs} 对（k=1..${data.lag.lag}）`,
+                    children:
+                      data.counts.lag_pairs !== null
+                        ? `${data.counts.lag_pairs} 对（k=1..${data.lag.lag}）`
+                        : "未知",
                   },
                   {
                     key: "rawCovRange",
                     label: "可用性记录覆盖",
                     children: raw?.available
-                      ? `${raw.matched_signal_dates ?? "—"} / ${raw.total_signal_dates ?? data.counts.signal_dates} 交易日（${raw.coverage_status === "complete" ? "完整" : "仅部分日期或字段完整度不足，以下为已匹配范围"}）`
+                      ? `${raw.matched_signal_dates ?? "—"} / ${raw.total_signal_dates ?? data.counts.signal_dates ?? "—"} 交易日（${raw.coverage_status === "complete" ? "完整" : "仅部分匹配，非完整区间不汇总总数"}）`
                       : `未知（${raw?.reason ?? "原因未提供"}）`,
                   },
                   {
@@ -259,32 +306,79 @@ export function FactorEvidencePanel({
                         : "真实原始观测",
                     children: raw?.available
                       ? factor === "composite"
-                        ? `${raw.eligible_stock_days ?? "未知"} / ${raw.universe_stock_days ?? "未知"} 只·日`
+                        ? raw.eligible_stock_days !== null &&
+                          raw.universe_stock_days !== null
+                          ? `${raw.eligible_stock_days} / ${raw.universe_stock_days} 只·日`
+                          : "未知（仅部分日期或字段完整度不足）"
                         : raw.raw_valid_stock_days !== null
                           ? `${raw.raw_valid_stock_days} 只·日（缺失 ${raw.raw_missing_stock_days ?? "未知"}）`
-                          : "未知（旧结果未保存原始观测字段）"
+                          : "未知（未保存或非全区间字段）"
                       : `未知（${raw?.reason ?? "原因未提供"}）`,
                   },
                   {
                     key: "imputed",
                     label: "填补评分数量",
-                    children: raw?.available
-                      ? raw.imputed_stock_days !== null
-                        ? `${raw.imputed_stock_days} 只·日（不进入单因子 IC）`
-                        : "未知（未保存填补字段）"
-                      : "未知",
+                    children:
+                      factor === "composite"
+                        ? raw?.available
+                          ? "见下方组成因子分表（不适用与填补分列）"
+                          : "未知"
+                        : raw?.available
+                          ? raw.imputed_stock_days !== null
+                            ? `${raw.imputed_stock_days} 只·日（不进入单因子 IC）`
+                            : "未知（未保存或非全区间填补字段）"
+                          : "未知",
+                  },
+                  {
+                    key: "notApplicable",
+                    label: "行业不适用",
+                    children:
+                      factor === "composite"
+                        ? raw?.available
+                          ? "见下方组成因子分表"
+                          : "未知"
+                        : raw?.available &&
+                            raw.not_applicable_stock_days !== null
+                          ? `${raw.not_applicable_stock_days} 只·日（赋分 ${raw.not_applicable_scored_stock_days ?? "未知"}）`
+                          : "未知",
                   },
                   {
                     key: "labelCov",
-                    label: "收益标签覆盖",
+                    label: "收益标签覆盖（原评估截止日）",
                     children: data.label_coverage
-                      ? `${data.label_coverage.valid_stock_days} / ${data.label_coverage.scored_stock_days} 只·日`
+                      ? data.label_coverage.valid_stock_days !== null &&
+                        data.label_coverage.scored_stock_days !== null
+                        ? `${data.label_coverage.valid_stock_days} / ${data.label_coverage.scored_stock_days} 只·日（信号区间内按原评估截止日；当前 cutoff 仅约束 Rank IC）`
+                        : `未知（已记录 ${data.label_coverage.matched_signal_dates ?? 0} / ${data.label_coverage.total_signal_dates ?? data.counts.signal_dates ?? "—"} 日）`
                       : "未知",
                   },
                   {
                     key: "pairedObs",
                     label: "进入 IC 配对观测",
-                    children: `${data.counts.paired_observations_on_valid_ic_days} 只·日（仅有效 IC 日）`,
+                    children: (() => {
+                      const po = data.counts.paired_observations;
+                      if (!po) {
+                        return data.counts
+                          .paired_observations_on_valid_ic_days !== null
+                          ? `${data.counts.paired_observations_on_valid_ic_days} 只·日（仅有效 IC 日）`
+                          : "未知";
+                      }
+                      if (
+                        po.valid_ic_dates === null ||
+                        po.recorded_dates === null
+                      ) {
+                        return "未知（缺少冻结信号日历）";
+                      }
+                      const rangeLabel =
+                        po.min !== null && po.max !== null
+                          ? `每日 ${po.min}–${po.max} 只`
+                          : "逐日范围未知";
+                      const totalLabel =
+                        po.total !== null
+                          ? `合计 ${po.total} 只·日`
+                          : "合计未知";
+                      return `${totalLabel}（${rangeLabel}；已记录 ${po.recorded_dates}/${po.valid_ic_dates} 有效日）`;
+                    })(),
                   },
                   {
                     key: "commonSample",
@@ -303,6 +397,7 @@ export function FactorEvidencePanel({
                   size="small"
                   rowKey="factor"
                   pagination={false}
+                  scroll={{ x: "max-content" }}
                   dataSource={raw.component_imputations}
                   columns={[
                     {
@@ -325,6 +420,15 @@ export function FactorEvidencePanel({
                       render: (_, row) => row.imputed_stock_days ?? "未知",
                     },
                     {
+                      title: "行业不适用（只·日）",
+                      align: "right",
+                      render: (_, row) =>
+                        row.not_applicable_stock_days !== undefined &&
+                        row.not_applicable_stock_days !== null
+                          ? `${row.not_applicable_stock_days}（赋分 ${row.not_applicable_scored_stock_days ?? "未知"}）`
+                          : "未知",
+                    },
+                    {
                       title: "缺失处理",
                       render: (_, row) => row.missing_policy ?? "未知",
                     },
@@ -336,7 +440,8 @@ export function FactorEvidencePanel({
                 <Flex gap={16} wrap>
                   {data.exclusions.ic.length ? (
                     <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                      IC 排除（分母 {data.counts.signal_dates} 交易日）：
+                      IC 排除（分母 {data.counts.signal_dates ?? "未知"}{" "}
+                      交易日）：
                       {data.exclusions.ic
                         .map((item) => `${item.label} ${item.count}`)
                         .join("；")}
@@ -344,7 +449,8 @@ export function FactorEvidencePanel({
                   ) : null}
                   {data.exclusions.labels.length && data.label_coverage ? (
                     <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                      标签排除（分母 {data.label_coverage.scored_stock_days}{" "}
+                      标签排除（按原评估截止日，分母{" "}
+                      {data.label_coverage.scored_stock_days ?? "未知"}{" "}
                       只·日）：
                       {data.exclusions.labels
                         .map((item) => `${item.label} ${item.count}`)
@@ -363,6 +469,7 @@ export function FactorEvidencePanel({
             <Flex vertical gap={12}>
               <Descriptions
                 size="small"
+                layout={compact ? "vertical" : "horizontal"}
                 column={{ xs: 1, md: 3 }}
                 items={[
                   {
@@ -379,12 +486,12 @@ export function FactorEvidencePanel({
                     key: "interval",
                     label: "95% 区间（下界 ~ 上界）",
                     children: computable ? (
-                      <Flex gap={4} wrap>
+                      <Flex vertical gap={2}>
                         <span style={{ whiteSpace: "nowrap" }}>
-                          [{signedText(data.rank_ic.ci_low, 6)},
+                          下界：{signedText(data.rank_ic.ci_low, 6)}
                         </span>
                         <span style={{ whiteSpace: "nowrap" }}>
-                          {signedText(data.rank_ic.ci_high, 6)}]
+                          上界：{signedText(data.rank_ic.ci_high, 6)}
                         </span>
                       </Flex>
                     ) : (
@@ -401,7 +508,7 @@ export function FactorEvidencePanel({
                   {
                     key: "method",
                     label: "估计方法与滞后",
-                    children: `Newey–West / Bartlett · L=${data.lag.lag} · n=${data.counts.valid_rank_ic_dates}`,
+                    children: `Newey–West / Bartlett · L=${data.lag.lag} · n=${data.counts.valid_rank_ic_dates ?? "未知"}`,
                   },
                   {
                     key: "conf",

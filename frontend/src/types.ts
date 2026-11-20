@@ -752,15 +752,23 @@ export interface EvaluationEvidence {
     z_critical: number;
   };
   counts: {
-    signal_dates: number;
-    valid_rank_ic_dates: number;
-    matured_dates: number;
-    unmatured_dates: number;
-    missing_exit_date_dates: number;
-    excluded_matured_dates: number;
-    missing_daily_rows: number;
-    lag_pairs: number;
-    paired_observations_on_valid_ic_days: number;
+    signal_dates: number | null;
+    valid_rank_ic_dates: number | null;
+    matured_dates: number | null;
+    unmatured_dates: number | null;
+    missing_exit_date_dates: number | null;
+    invalid_exit_date_dates?: number | null;
+    excluded_matured_dates: number | null;
+    missing_daily_rows: number | null;
+    lag_pairs: number | null;
+    paired_observations_on_valid_ic_days: number | null;
+    paired_observations?: {
+      total: number | null;
+      recorded_dates: number | null;
+      valid_ic_dates: number | null;
+      min: number | null;
+      max: number | null;
+    };
   };
   rank_ic: {
     mean: number | null;
@@ -775,17 +783,21 @@ export interface EvaluationEvidence {
     labels: EvidenceExclusionItem[];
   };
   label_coverage: {
-    scored_stock_days: number;
-    valid_stock_days: number;
-    excluded_stock_days: number;
+    scope?: string;
+    evaluation_end?: string | null;
+    matched_signal_dates?: number;
+    total_signal_dates?: number;
+    scored_stock_days: number | null;
+    valid_stock_days: number | null;
+    excluded_stock_days: number | null;
   } | null;
   raw_availability: {
     available: boolean;
     coverage_status?: "complete" | "partial" | "unavailable";
     reason?: string;
     factor_run_id?: string;
-    matched_signal_dates?: number;
-    total_signal_dates?: number;
+    matched_signal_dates?: number | null;
+    total_signal_dates?: number | null;
     universe_stock_days: number | null;
     eligible_stock_days: number | null;
     raw_valid_stock_days: number | null;
@@ -797,9 +809,11 @@ export interface EvaluationEvidence {
     component_imputations: Array<{
       factor: string;
       matched_signal_dates?: number;
+      total_signal_dates?: number;
       raw_valid_stock_days: number | null;
       raw_missing_stock_days: number | null;
       imputed_stock_days: number | null;
+      not_applicable_stock_days?: number | null;
       not_applicable_scored_stock_days: number | null;
       missing_policy: string | null;
     }>;
@@ -812,6 +826,7 @@ export interface EvaluationEvidence {
   };
   financials?: {
     status?: string;
+    status_label?: string;
     label?: string;
     detail?: string;
     [key: string]: unknown;

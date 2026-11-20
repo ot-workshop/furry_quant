@@ -68,6 +68,20 @@
 
 `series` 提供每日 IC/Rank IC、滚动均值、未年化 IR、有效数与 `available_on`。后者为窗口内已使用收益标签的最晚退出日，不能把这些统计作为信号日已知信息。缺失交易日保留在窗口内，标准差为零和样本不足返回 null。相关性 `cells` 提供平均相关、平均绝对相关及有效日期数；不对缺失单元格填零。
 
+### 因子证据体检
+
+`GET /api/v1/evaluations/{id}/evidence` 从已保存评估产物及关联冻结因子批次只读计算，不修改结果文件或计算指纹。
+
+| 参数 | 说明 |
+| --- | --- |
+| `horizon` | 已保存的收益持有期（1–252），必填 |
+| `factor` | 因子实例键，默认 `composite` |
+| `start` / `end` | 可选信号日期筛选范围（`YYYY-MM-DD`） |
+| `cutoff` | 成熟截止日（`YYYY-MM-DD`）；评估结果缺少 `metadata.end` 时必填 |
+| `lag` | Bartlett 滞后阶数（0–251），默认 `horizon - 1` |
+
+返回状态（`ready` / `no_valid_observations` / `insufficient_observations` / `undefined_variance` / `missing_frozen_calendar` / `no_signal_dates`）、`counts`（含 `paired_observations` 逐日最小/最大与全区间合计）、`rank_ic`（仅 `ready` 时给出 `se`/`ci_low`/`ci_high`/`variance`）、`label_coverage`（标明为信号区间内按原评估截止日统计）、`raw_availability`（按字段独立判断是否覆盖筛选区间全部信号日，含 `matched_signal_dates`/`total_signal_dates` 及综合分 `component_imputations`）、`common_sample`（校验策略与 12/64 位十六进制指纹）及 `financials`（映射校正后的 `temporal_audit` 财务绑定状态）。缺失冻结日历、未保存字段或部分日期匹配均保留 `null` / 未知，不回填为 0。
+
 
 ### 因子组合筛选
 
