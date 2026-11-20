@@ -14,6 +14,9 @@ const EvaluationDetailPage = lazy(() => import("./pages/EvaluationDetailPage"));
 const ExperimentListPage = lazy(() => import("./pages/ExperimentListPage"));
 const ExperimentDetailPage = lazy(() => import("./pages/ExperimentDetailPage"));
 const ExperimentNewPage = lazy(() => import("./pages/ExperimentNewPage"));
+const BacktestComparisonPage = lazy(
+  () => import("./pages/BacktestComparisonPage"),
+);
 const DataPage = lazy(() => import("./pages/DataPage"));
 
 function Page({ route }: { route: Route }) {
@@ -52,6 +55,8 @@ function Page({ route }: { route: Route }) {
       );
     case "data":
       return <DataPage tab={route.search.get("tab")} />;
+    case "compare":
+      return <BacktestComparisonPage />;
     default:
       return <DashboardPage />;
   }

@@ -17,6 +17,7 @@ import {
   BarChartOutlined,
   DashboardOutlined,
   DatabaseOutlined,
+  DiffOutlined,
   FundOutlined,
   LineChartOutlined,
   MenuOutlined,
@@ -44,6 +45,7 @@ const MENU: MenuProps["items"] = [
     children: [
       { key: "research", icon: <PlusCircleOutlined />, label: "新建研究" },
       { key: "experiments", icon: <ApartmentOutlined />, label: "方案比较" },
+      { key: "compare", icon: <DiffOutlined />, label: "差异对照" },
       { key: "tasks", icon: <UnorderedListOutlined />, label: "任务中心" },
     ],
   },
@@ -71,6 +73,7 @@ const TARGETS: Record<Section, string> = {
   factors: paths.factors(),
   evaluations: paths.evaluations(),
   experiments: paths.experiments(),
+  compare: paths.compare(),
   data: paths.data(),
 };
 

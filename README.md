@@ -387,6 +387,7 @@ CI 的 `full-tests.yml` 配置 PR、`master` push 与手动触发；`docker.yml`
 - [历史时点审计](docs/temporal-execution-audit.md)
 - [行业中性化](docs/industry-neutralization.md)
 - [全收益基准](docs/total-return-benchmark.md)
+- [回测差异对照](docs/backtest-comparison.md)
 
 ## 安全边界
 
