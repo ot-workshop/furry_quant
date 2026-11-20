@@ -4,6 +4,7 @@ import type {
   DataStatus,
   EquityResponse,
   EvaluationAnalysis,
+  EvaluationEvidence,
   EvaluationList,
   EvaluationResult,
   ExecutionEventPage,
@@ -132,6 +133,22 @@ export const api = {
   ) =>
     request<EvaluationAnalysis>(
       `/evaluations/${id(runId)}/analysis${query({ ...params })}`,
+      { signal },
+    ),
+  evaluationEvidence: (
+    runId: string,
+    params: {
+      horizon: number;
+      factor?: string;
+      start?: string;
+      end?: string;
+      cutoff?: string;
+      lag?: number;
+    },
+    signal?: AbortSignal,
+  ) =>
+    request<EvaluationEvidence>(
+      `/evaluations/${id(runId)}/evidence${query({ ...params })}`,
       { signal },
     ),
   evaluationDownloadUrl: (runId: string) =>

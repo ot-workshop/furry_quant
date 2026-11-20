@@ -183,3 +183,79 @@ export function correlationHistoryOption(
     ],
   };
 }
+
+export function horizontalIntervalOption(
+  mean: number,
+  ciLow: number,
+  ciHigh: number,
+  palette: ChartPalette,
+): EChartsOption {
+  const span = Math.max(
+    Math.abs(ciLow),
+    Math.abs(ciHigh),
+    Math.abs(mean),
+    0.01,
+  );
+  const pad = Math.max(span * 0.2, 0.005);
+  const min = Number(Math.min(0, ciLow - pad).toFixed(4));
+  const max = Number(Math.max(0, ciHigh + pad).toFixed(4));
+  return {
+    backgroundColor: "transparent",
+    textStyle: { color: palette.text, fontFamily: "inherit" },
+    grid: { left: 82, right: 28, top: 24, bottom: 36 },
+    tooltip: {
+      trigger: "item",
+      renderMode: "richText",
+      backgroundColor: palette.surface,
+      textStyle: { color: palette.text },
+      formatter: () =>
+        `均值：${mean.toFixed(6)}\n95% 区间：[${ciLow.toFixed(6)}, ${ciHigh.toFixed(6)}]`,
+    },
+    xAxis: {
+      type: "value",
+      min,
+      max,
+      axisLabel: {
+        color: palette.muted,
+        formatter: (value: number) => value.toFixed(3),
+      },
+      splitLine: { lineStyle: { color: palette.split } },
+    },
+    yAxis: {
+      type: "category",
+      data: ["Rank IC"],
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: palette.text },
+    },
+    series: [
+      {
+        name: "95% 区间",
+        type: "line",
+        data: [
+          [ciLow, "Rank IC"],
+          [ciHigh, "Rank IC"],
+        ],
+        showSymbol: true,
+        symbol: "rect",
+        symbolSize: [2, 12],
+        lineStyle: { width: 3, color: palette.primary },
+        itemStyle: { color: palette.primary },
+        markLine: {
+          silent: true,
+          symbol: "none",
+          data: [{ xAxis: 0 }],
+          lineStyle: { color: palette.muted, type: "dashed", width: 1.5 },
+          label: { show: false },
+        },
+      },
+      {
+        name: "均值",
+        type: "scatter",
+        data: [[mean, "Rank IC"]],
+        symbolSize: 10,
+        itemStyle: { color: palette.series[3] ?? palette.primary },
+      },
+    ],
+  };
+}
