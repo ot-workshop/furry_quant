@@ -53,20 +53,45 @@ Remove-Item Env:\FINANCE_QUANT_TEST_POSTGRES
 
 ## Compose 备份恢复与启动
 
-在有 Docker Engine、Compose v2 和基础镜像访问能力的 Linux 测试机上执行：
+在有 Docker Engine、Compose v2 和基础镜像访问能力的 Linux 测试机上，从仓库根目录单独运行此段。每次创建随机项目，全部调用显式传入同一个 `-p`；退出时保存日志并清理，原测试失败码优先保留，测试成功而日志/清理失败也返回非零：
 
 ```sh
-docker compose -f docker-compose.test.yaml config --quiet
-docker compose -f docker-compose.test.yaml up --build --abort-on-container-exit --exit-code-from test
-# 先记录退出码和日志，再清理；失败同样执行本项目清理。
-docker compose -f docker-compose.test.yaml logs --no-color
-docker compose -f docker-compose.test.yaml down --volumes
+(
+  set +e
+  set -u
+  test_root="$(mktemp -d "${TMPDIR:-/tmp}/fq-tests.XXXXXX")" || exit 1
+  test_project="$(basename "$test_root" | tr '[:upper:]' '[:lower:]' | tr '.' '-')"
+  test_compose() { docker compose -p "$test_project" -f docker-compose.test.yaml "$@"; }
+  finish_test() {
+    result=$?
+    trap - EXIT
+    test_compose logs --no-color > "$test_root/compose.log" 2>&1
+    logs_result=$?
+    test_compose down --volumes
+    cleanup_result=$?
+    printf '测试项目=%s；日志=%s/compose.log；清理退出码=%s\n' "$test_project" "$test_root" "$cleanup_result"
+    if [ "$result" -eq 0 ] && [ "$logs_result" -ne 0 ]; then result=$logs_result; fi
+    if [ "$result" -eq 0 ] && [ "$cleanup_result" -ne 0 ]; then result=$cleanup_result; fi
+    exit "$result"
+  }
+  trap finish_test EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  test_compose config --quiet || exit $?
+  test_compose up --build --abort-on-container-exit --exit-code-from test
+  exit $?
+)
+```
 
+处理该段非零结果及残留后，再独立执行启动检查：
+
+```sh
+set -eu
 docker build --target application -t finance-quant:startup-check .
 python3 scripts/check_compose_startup.py --image finance-quant:startup-check
 ```
 
-测试 Compose 的项目名是 `finance-quant-isolated-tests`，无生产主机目录挂载或数据库端口映射。同机不要同时复用这一个项目；并行时在全部命令中一致增加 `-p <唯一测试项目名>`。只清理对应项目；不要在正式 Compose 上照搬 `down --volumes`。启动脚本自行创建随机项目与临时目录，并清理其资源。失败日志应保存到测试工作目录，检查是否仍有遗留项目/进程，不执行全机 `docker system prune`。
+显式 `-p` 覆盖文件默认 name 及外部 COMPOSE_PROJECT_NAME；测试无生产主机目录挂载或数据库端口映射。只清理打印的随机项目，保留日志；清理失败时核该项目的残留，不在正式 Compose 上照搬 `down --volumes`，也不执行全机 `docker system prune`。启动检查脚本另建随机项目与临时目录，并清理其资源。
 
 目标生产机若不能访问 Docker Hub，不在上面执行 `--build`。可在具备构建网络的隔离环境运行这些检查，再按[产物发布流程](operations.md#镜像来源与发布约定)交付 GHCR 镜像；有源码挂载的测试环境须记录基底镜像 digest、挂载清单和源码提交，不能等同已验证最终发布镜像。
 
@@ -74,13 +99,28 @@ python3 scripts/check_compose_startup.py --image finance-quant:startup-check
 
 以下是每次涉及研究或比较流程时的验收步骤，执行结果另附，不表示本文已经完成浏览器验收。
 
-1. 固定候选提交或镜像 digest，启动独立 API、一个 worker 和测试数据库。项目名、端口、数据库及全部存储路径与生产分离；`ALLOWED_ORIGINS` 包含实际浏览器地址。启动方法沿 [README 开发入口](../README.md#本地开发启动windows--无-docker)或独立 Compose，禁止连接生产库进行临时研究。
+1. 固定候选提交或镜像 digest，启动独立 API、一个 worker 和测试数据库。项目名、端口、数据库及全部存储路径与生产分离；原生 API 采用构建后的前端同源托管，具体启动见下方“隔离 UI 地址”。不能沿用默认 Vite 代理后只修改测试 API 端口。
 2. 使用可重新生成的小型数据夹具或已授权的测试数据副本；记录数据版本、日期、预热、股票池、因子、财务/行业/基准绑定。合成数据只验流程，不宣称投资有效性。
 3. 从 `/research/new` 经真实 UI 提交研究，确认任务由排队走到完成，打开对应回测、因子评分和评估。核回测 KPI 与 API `metrics`、日期筛选、持仓、费用和图表；保存路由、运行 ID、请求/响应及截图。
 4. 从 `/experiments/new` 分别验证受影响的分段比较或收益来源对照。至少两种合法候选，检查分段边界、选优依据、详情跳转与覆盖；相关改动须覆盖固定池/动态池。不能只手工请求 API 就宣称 UI 提交流程通过。
 5. 财务说明改动覆盖无需财务、需要但未绑定、已绑定未认证、历史证据不足；区分真实 0 与 null。旧结果详情/JSON 下载可更正说明，报告与冻结文件不改；按测试范围记录读取前后哈希。
 6. 量化测试验 UI 逻辑，量化美工验信息层级、图表和桌面/手机效果；建议共用 1440×900 与 390×844 证据，浏览器、缩放及输入方式一并记录。浏览器不可用时明确未验部分，不用组件测试冒充实际页面。
 7. 先保存日志与证据，再停止专用 API/worker/Compose 项目。仅清理本次登记的测试目录、数据库及容器；测试数据不能在服务仍连接时删除。清理失败由执行人列出残留与下一处理人，保留正式备份和其他项目资源。
+
+### 隔离 UI 地址
+
+原生测试先从空白配置准备 `.env.ui-test`，使用独立测试库（如 `finance_quant_ui_test`）、专用账号和独立存储根；所有 `FINANCE_QUANT_*` 路径覆盖也须位于该根内，不复制生产路径。设置 `ALLOWED_ORIGINS=http://127.0.0.1:18122`，端口改动时同步修改完整来源。安装依赖后：
+
+```sh
+npm --prefix frontend run build
+uv run python -m finance_quant.server migrate --env-file .env.ui-test
+uv run python -m finance_quant.server check --env-file .env.ui-test
+uv run python -m finance_quant.server api --env-file .env.ui-test --host 127.0.0.1 --port 18122
+```
+
+在另一个终端用同一 `.env.ui-test` 启动一个 worker：`uv run python -m finance_quant.server worker --env-file .env.ui-test`。浏览器只打开该 API 托管的 <http://127.0.0.1:18122>。首次提交前，从这个地址核 `/api/v1/health`、已登记测试数据及浏览器 Network 的实际请求地址，确认全部指向隔离实例。
+
+README 的默认 Vite 将 `/api` 代理到 `127.0.0.1:8000`，可能连接现有实例或 SSH 隧道；本步骤不使用这个入口。独立 Compose 同样绑定回环高位端口、配完整 ALLOWED_ORIGINS，并打开该端口同源页面。UI 提交成功、API 结果复核与完整比较流程分别记录，不把只打开比较入口写成比较通过。
 
 ## 固定 PR 与发布检查
 

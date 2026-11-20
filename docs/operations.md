@@ -113,16 +113,30 @@ docker compose logs --tail=100 db storage-init migrate api worker
 
 ## 更新镜像
 
-先完成[发布准入与版本核对](#发布准入与版本核对)。确认没有运行中的任务后，使用旧版本按[备份](#备份)停止 API/worker、创建并校验部署前归档；成功后记录其路径，失败则停止发布并恢复原服务。将 `.env` 中的 `APP_IMAGE` 改为已验证的目标 digest，并保留其他配置：
+先完成[发布准入与版本核对](#发布准入与版本核对)，确认没有运行中的任务。以下是发布专用停写步骤；不要用后文会恢复旧服务的例行备份代码块代替。示例部署目录及项目名为 `/data/finance-quant`、`finance-quant`，使用前核对实际值；在独立 shell 中执行，任一步失败立即退出，保留现场并由负责人处理，不继续下一段。
 
 ```sh
-docker compose pull migrate api worker
-docker compose stop -t 90 worker api
-docker compose up -d
-docker compose ps -a
+set -eu
+cd /data/finance-quant
+prod_project=finance-quant
+release_image='ghcr.io/ot-workshop/furry_quant@sha256:<已核digest>'
+unset APP_IMAGE  # 备份先使用 .env 中的旧版本，不接受外部同名覆盖。
+test "$(grep -c '^APP_IMAGE=' .env)" -eq 1
+docker pull "$release_image"  # 拉取失败时尚未停服务。
+backup_dir="/backups/predeploy-$(date -u +%Y%m%dT%H%M%SZ)"
+docker compose -p "$prod_project" stop -t 90 api worker
+docker compose -p "$prod_project" --profile tools run --rm maintenance python -m finance_quant.backup create "$backup_dir"
+docker compose -p "$prod_project" --profile tools run --rm maintenance python -m finance_quant.backup verify "$backup_dir"
+# 校验成功后仍保持停写；此间不能重新启动旧 API/worker。
+sed -i "s|^APP_IMAGE=.*|APP_IMAGE=$release_image|" .env
+docker compose -p "$prod_project" config --quiet
+docker compose -p "$prod_project" up -d --pull never --wait --wait-timeout 180 api worker
+docker compose -p "$prod_project" ps -a
 ```
 
-数据库保持运行。worker 收到停止信号后停止领取新任务，并给当前子进程保留退出时间。新镜像的迁移自动执行，数据库卷与主机文件继续保留。
+数据库保持运行。worker 收到停止信号后停止领取新任务，并给当前子进程保留退出时间。归档校验完成到新应用启动之间持续停写，使回滚点覆盖最后一次旧版本写入。新镜像的迁移依赖自动执行；`--wait` 等待应用健康，`--pull never` 使用事先已核镜像，避免在切换时隐式访问 Docker Hub。所需数据库镜像也须已在准入阶段准备好。
+
+备份、校验或切换失败时，本脚本不会自动重开旧服务；记录失败发生在修改 APP_IMAGE/执行迁移之前还是之后，由负责人核实兼容性后恢复服务或进入[回滚](#回滚)。
 
 ### 部署后核验
 
@@ -167,12 +181,17 @@ mv docker-compose.yaml.new docker-compose.yaml
 
 ## 回滚
 
-先判断数据和 schema 是否仍兼容旧版本。无迁移或已独立验证向后兼容时，经负责人决定，将 `APP_IMAGE` 改回部署前验证过的 digest，必要时连同原 Compose 文件一起恢复：
+先判断数据和 schema 是否仍兼容旧版本。无迁移或已独立验证向后兼容时，经负责人决定，将 `.env` 的 `APP_IMAGE` 改回部署前验证过的完整 digest，必要时连同原 Compose 文件一起恢复。以下在独立 shell 执行，`prod_project` 替换为实际现有项目名；拉取或停止失败会立即退出，不再执行后续切换：
 
 ```sh
-docker compose --env-file .env -f docker-compose.yaml pull
-docker compose --env-file .env -f docker-compose.yaml stop -t 90 worker api
-docker compose --env-file .env -f docker-compose.yaml up -d
+set -eu
+cd /data/finance-quant
+prod_project=finance-quant
+unset APP_IMAGE
+docker compose -p "$prod_project" --env-file .env -f docker-compose.yaml config --quiet
+docker compose -p "$prod_project" --env-file .env -f docker-compose.yaml pull migrate api worker
+docker compose -p "$prod_project" --env-file .env -f docker-compose.yaml stop -t 90 worker api
+docker compose -p "$prod_project" --env-file .env -f docker-compose.yaml up -d --pull never --wait --wait-timeout 180 api worker
 ```
 
 镜像回滚不会自动回滚数据库。存在迁移而未证明向后兼容时，不只切旧镜像；使用部署前已校验备份，按[恢复](#恢复)在独立空数据库和空存储中恢复、验证，再由负责人切换访问。不要先 migrate 空目标，也不要在现有业务目录上覆盖恢复。迁移应采用向前兼容的扩展/收缩方式；删除列、修改字段类型等破坏性操作拆分到后续版本。
@@ -213,7 +232,7 @@ ssh -N -L 8000:127.0.0.1:8000 用户名@服务器地址
 
 网页“数据管理 → 备份与恢复”提供创建、校验和恢复入口，风格与其他数据页面一致。后台任务与行情更新共用串行 worker，备份执行期间阻止 API 写入；无需在网页操作时停掉 worker。下列命令行方式则需要先停止 API 与 worker。
 
-停止 API 与 worker 后执行；数据库保持运行。备份命令会检查 worker 互斥锁并阻止 API 写入，不会仅凭“当前没有运行中的任务”判断一致性：
+下面是**例行备份**：完成后恢复原服务，不用于发布停写窗口。发布时使用上文[更新镜像](#更新镜像)的专用顺序。停止 API 与 worker 后执行；数据库保持运行。备份命令会检查 worker 互斥锁并阻止 API 写入，不会仅凭“当前没有运行中的任务”判断一致性：
 
 ```sh
 backup_dir="/backups/backup-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -252,34 +271,73 @@ uv run python -m finance_quant.backup verify D:/quant-backups/backup-20261112
 
 若当前数据库账号没有 CREATEDB 权限，可由管理员预建同名空库，或在环境配置 `RESTORE_POSTGRES_USER` 与 `RESTORE_POSTGRES_PASSWORD`，然后重启应用。凭据只在服务器使用，不发送到网页。使用 Compose 时，备份与恢复目录由 storage-init 自动准备写权限。
 
-为恢复环境单独创建目录，复制 Compose 与 `.env`，修改以下配置。不要使用现有部署目录：
+回滚恢复与演练使用独立项目、数据库、回环端口和四个真实挂载目录。**先把已校验归档复制到独立 BACKUP_ROOT**，不要直接挂载生产备份目录：Compose 的 storage-init 会修改挂载根目录的所有者，即使只运行恢复工具也会触发。
 
-```dotenv
-COMPOSE_PROJECT_NAME=finance-quant-restore-check
-POSTGRES_DATA_ROOT=./postgres
-STORAGE_ROOT=/home/用户名/finance-quant-restore-check/storage
-BACKUP_ROOT=/home/用户名/finance-quant/backups
-HTTP_PORT=8001
-```
-
-恢复环境使用独立的部署目录、项目名、数据库目录和业务目录；备份目录可以指向原归档位置。恢复目标必须是全新空数据库和空存储目录；不要先运行 migrate。CLI 恢复的目标是**可写宿主父目录下的独立子目录**，不要把 `/app/storage` 这类挂载点本身作为恢复目标，也不要提高容器用户权限。先在恢复项目的 `.env` 中给 `RESTORE_ROOT` 指定专用宿主父目录（例如宿主上的 `/home/用户名/finance-quant-restore-check/restores`，容器内为 `/restores`），目标子目录（例如 `recovered`）可以尚不存在：
+在单独的终端从原部署目录准备副本，替换 `verified_archive` 为实际已校验归档；以下不启动任何服务：
 
 ```sh
-docker compose up -d db
-docker compose --profile tools run --rm -e STORAGE_ROOT=/restores/recovered \
-  maintenance python -m finance_quant.backup restore /backups/backup-20261112
+set -eu
+verified_archive='/data/finance-quant/backups/<已校验归档>'
+verified_compose='/已核旧版本/docker-compose.yaml'
+test -d "$verified_archive"
+test ! -L "$verified_archive"
+test -f "$verified_compose"
+drill_root="$(mktemp -d /data/fq-restore.XXXXXX)"
+drill_project="$(basename "$drill_root" | tr '[:upper:]' '[:lower:]' | tr '.' '-')"
+mkdir "$drill_root/postgres" "$drill_root/storage" "$drill_root/backups" "$drill_root/restores"
+cp -- "$verified_compose" "$drill_root/docker-compose.yaml"
+cp -- .env "$drill_root/.env"
+chmod 600 "$drill_root/.env"
+cp -a -- "$verified_archive" "$drill_root/backups/input"
+printf '恢复项目=%s；独立目录=%s\n' "$drill_project" "$drill_root"
 ```
+
+用备份对应的已验证旧镜像及 Compose 版本。启动前编辑副本 `.env`，将以下示例中的“唯一目录”全部替换为刚生成的 `drill_root` 绝对路径；数据库账号/密码仅在本机配置，项目、端口须与现有实例不同：
+
+```dotenv
+APP_IMAGE=ghcr.io/旧命名空间/应用@sha256:备份对应的已验digest
+COMPOSE_PROJECT_NAME=刚生成的drill_project
+POSTGRES_DB=finance_quant_restore_test
+POSTGRES_DATA_ROOT=/data/唯一目录/postgres
+STORAGE_ROOT=/data/唯一目录/storage
+BACKUP_ROOT=/data/唯一目录/backups
+RESTORE_ROOT=/data/唯一目录/restores
+HTTP_BIND_HOST=127.0.0.1
+HTTP_PORT=18081
+ALLOWED_ORIGINS=http://127.0.0.1:18081
+```
+
+核对四个目录都是真实独立路径，不是生产目录、指向生产的链接或复用挂载；备份副本与源归档内容一致。端口须空闲，旧应用和数据库镜像已可用。所有命令显式使用同一随机项目，外部 COMPOSE_PROJECT_NAME 不会覆盖；在保留 `drill_root`、`drill_project` 的同一终端继续：
+
+```sh
+set -eu
+drill_compose() {
+  docker compose -p "$drill_project" --env-file "$drill_root/.env" -f "$drill_root/docker-compose.yaml" "$@"
+}
+unset APP_IMAGE POSTGRES_DATA_ROOT STORAGE_ROOT BACKUP_ROOT RESTORE_ROOT COMPOSE_PROJECT_NAME
+unset HTTP_BIND_HOST HTTP_PORT ALLOWED_ORIGINS POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_IMAGE
+unset RESTORE_POSTGRES_USER RESTORE_POSTGRES_PASSWORD
+drill_compose config --quiet
+drill_compose up -d --pull never db storage-init
+drill_compose --profile tools run --rm maintenance python -m finance_quant.backup verify /backups/input
+drill_compose --profile tools run --rm -e STORAGE_ROOT=/restores/recovered \
+  maintenance python -m finance_quant.backup restore /backups/input
+```
+
+恢复目标必须是全新空数据库和空存储目录，不先运行 migrate。CLI 的目标为**可写宿主父目录下的独立子目录** `/restores/recovered`，而非挂载点本身，不提高容器用户权限。
 
 恢复进程按固定顺序执行：先校验归档完整性，再对恢复目标做只读检查（父目录可写、目标不是挂载点、不是符号链接、不存在或为空），这些检查失败时不会打开数据库、不会删除或创建任何目录；检查通过后才建立离线锁、确认实际数据库身份和目标库为空，随后才移除已存在的空目标并由当前用户重建、创建私有暂存目录，最后解包文件并执行 `pg_restore`。挂载点、父目录不可写、非空目标、无法移除的已有空目录或数据库非空都会在写库前拒绝，已有空目录无法移除时保持原样。不要用 `--user 0:0` 恢复，否则文件归 root，后续服务用户无法写入。
 
-恢复成功后保留同一项目和数据库，把项目 `.env` 的 `STORAGE_ROOT` 改为宿主的 `<恢复父目录>/recovered`，使该目录挂载为 `/app/storage`，再启动服务并检查同一运行：
+恢复成功后保留同一随机项目和数据库，把副本 `.env` 的 `STORAGE_ROOT` 改为刚生成的 `<drill_root>/restores/recovered`，其余目录仍在本次独立根内；使该目录挂载为 `/app/storage`，再启动同版本旧镜像并检查同一运行：
 
 ```sh
-docker compose --profile tools run --rm maintenance python -m finance_quant.server check
-docker compose up -d api worker
+set -eu
+drill_compose --profile tools run --rm maintenance python -m finance_quant.server check
+drill_compose up -d --pull never --wait --wait-timeout 180 api worker
+curl -fsS http://127.0.0.1:18081/api/v1/health
 ```
 
-`server check` 只检查表结构和服务可用；恢复是否完整还要从 API 读回同一 `run_id` 和 `dataset_id`，并核对冻结输入与结果文件。
+`server check` 只检查表结构和服务可用；还须从该隔离端口读回相同 `run_id`、`dataset_id`，核对冻结输入、结果和报告哈希及旧镜像身份，全部符合后再由负责人考虑访问切换。保存证据后执行 `drill_compose down --volumes`，只清本次项目；主机目录另行核对保留/清理，原数据库、storage 和备份均不操作。失败现场保留并报告残留，不能自动把演练实例切成生产。
 
 恢复不会执行清库或覆盖已有文件。原排队、运行中任务改为中断状态，自动更新计划关闭，确认数据后再手动续传或开启计划。已完成任务、数据版本及结果保留。发布前检查失败不会写入数据库或目标目录；已有空目标无法移除时保持原样，不同级其他挂载不会阻断合法子目录。不会清理原环境。自定义目录布局可在备份 manifest 的 layout 中查看，并在恢复环境配置相同的相对布局。
 
@@ -293,16 +351,9 @@ docker compose up -d api worker
 
 ## 隔离测试
 
-完整备份恢复演练使用独立测试服务，无生产 volume、主机目录挂载或数据库端口暴露：
+完整备份恢复演练使用 [测试指南中的随机项目代码块](testing.md#compose-备份恢复与启动)，全部 up/logs/down 带同一个显式 `-p`，保存测试退出码后清理对应项目，不依赖外部环境可覆盖的默认项目名。无生产主机目录挂载或数据库端口暴露。
 
-```sh
-docker compose -f docker-compose.test.yaml up --build --abort-on-container-exit --exit-code-from test
-docker compose -f docker-compose.test.yaml down --volumes
-```
-
-第二条命令只清理命名为 finance-quant-isolated-tests 的测试服务。原生测试必须显式指定测试数据库和临时存储，数据库名为 fq_* 或 *_test；测试夹具拒绝开发库配置。备份恢复测试在测试服务器中另建一次性数据库，并在任何写入前核验实际连接。
-
-此 Compose 固定 command 只覆盖备份恢复及相关更新测试，不代表整个 PostgreSQL 集成目录。完整测试分组、UI 临时回测及失败清理见[测试指南](testing.md)。
+原生测试必须显式指定测试数据库和临时存储，数据库名为 fq_* 或 *_test；夹具拒绝开发库配置。备份恢复测试在测试服务器中另建一次性数据库，并核验实际连接。测试 Compose 固定 command 只覆盖备份恢复及相关更新测试，不代表整个 PostgreSQL 集成目录；UI 临时回测与清理也见[测试指南](testing.md)。
 
 ## 磁盘与清理
 

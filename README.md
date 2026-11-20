@@ -269,16 +269,9 @@ docker compose exec api python -m finance_quant.server check
 
 ### 更新应用
 
-先按[发布准入与版本核对](docs/operations.md#发布准入与版本核对)固定已验收的完整提交、镜像 digest 和回滚点，完成部署前一致备份并校验。确认任务中心没有运行中的任务，将 `.env` 的 `APP_IMAGE` 更新为目标 digest 后执行：
+更新统一按[运维文档的发布准入](docs/operations.md#发布准入与版本核对)及[更新镜像步骤](docs/operations.md#更新镜像)执行：固定提交与 digest，在旧版本下停写、备份并校验，保持停写直至切换完成，再核验新服务。此处不另列第二套命令顺序。
 
-```sh
-docker compose pull migrate api worker
-docker compose stop -t 90 worker api
-docker compose up -d
-docker compose ps -a
-```
-
-新镜像对应的迁移会自动执行，数据库卷和主机数据目录继续复用。Compose 文件有变化时，应同步使用目标版本的文件。应用镜像回滚不会回滚数据库结构。
+新镜像对应的迁移会自动执行，数据库卷和主机数据目录继续复用。Compose 文件有变化时，应同步使用目标版本的文件；应用镜像回滚不会回滚数据库结构，按[回滚步骤](docs/operations.md#回滚)判断是否需要独立恢复。
 
 ### 数据管理与运维
 
