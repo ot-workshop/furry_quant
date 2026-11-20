@@ -192,14 +192,34 @@ export function FactorEvidencePanel({
                     key: "signalRange",
                     label: "信号日期范围",
                     children:
-                      data.range.start && data.range.end
-                        ? `${data.range.start} ~ ${data.range.end}`
-                        : "—",
+                      data.range.start && data.range.end ? (
+                        <Flex gap={4} wrap>
+                          <span style={{ whiteSpace: "nowrap" }}>
+                            {data.range.start}
+                          </span>
+                          <span>~</span>
+                          <span style={{ whiteSpace: "nowrap" }}>
+                            {data.range.end}
+                          </span>
+                        </Flex>
+                      ) : (
+                        "—"
+                      ),
                   },
                   {
                     key: "cutoff",
                     label: "截止日 / 最晚退出日",
-                    children: `${data.range.cutoff} / ${data.range.latest_exit_date ?? "—"}`,
+                    children: (
+                      <Flex gap={4} wrap>
+                        <span style={{ whiteSpace: "nowrap" }}>
+                          {data.range.cutoff}
+                        </span>
+                        <span>/</span>
+                        <span style={{ whiteSpace: "nowrap" }}>
+                          {data.range.latest_exit_date ?? "—"}
+                        </span>
+                      </Flex>
+                    ),
                   },
                   {
                     key: "lagRule",
@@ -209,42 +229,46 @@ export function FactorEvidencePanel({
                   {
                     key: "common",
                     label: "共同样本证据",
+                    span: compact ? 1 : 2,
                     children: data.common_sample.available
                       ? `${data.common_sample.label} (${data.common_sample.policy ?? "—"})`
                       : "未知",
                   },
-                  ...(data.financials?.status_label || data.financials?.label
-                    ? [
-                        {
-                          key: "financials",
-                          label: "财务绑定状态",
-                          children: (
-                            <Flex gap={6} wrap align="center">
-                              {data.financials.status_label ? (
-                                <Tag
-                                  color={
-                                    data.financials.status === "guarded"
-                                      ? "success"
-                                      : data.financials.status ===
-                                          "missing_binding"
-                                        ? "warning"
-                                        : "default"
-                                  }
-                                >
-                                  {data.financials.status_label}
-                                </Tag>
-                              ) : null}
-                              <span>
-                                {data.financials.detail ||
-                                  data.financials.label}
-                              </span>
-                            </Flex>
-                          ),
-                        },
-                      ]
-                    : []),
                 ]}
               />
+              {data.financials?.status_label || data.financials?.label ? (
+                <Descriptions
+                  size="small"
+                  layout={compact ? "vertical" : "horizontal"}
+                  column={1}
+                  items={[
+                    {
+                      key: "financials",
+                      label: "财务绑定状态",
+                      children: (
+                        <Flex gap={6} wrap align="center">
+                          {data.financials.status_label ? (
+                            <Tag
+                              color={
+                                data.financials.status === "guarded"
+                                  ? "success"
+                                  : data.financials.status === "missing_binding"
+                                    ? "warning"
+                                    : "default"
+                              }
+                            >
+                              {data.financials.status_label}
+                            </Tag>
+                          ) : null}
+                          <span>
+                            {data.financials.detail || data.financials.label}
+                          </span>
+                        </Flex>
+                      ),
+                    },
+                  ]}
+                />
+              ) : null}
             </Flex>
           </Section>
 
