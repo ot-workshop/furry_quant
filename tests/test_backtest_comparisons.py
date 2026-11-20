@@ -709,3 +709,22 @@ def test_qlib_style_benchmark_codes_compare_equal(tmp_path):
     code = next(field for field in benchmark["fields"] if field["label"] == "基准代码")
     assert code["status"] == "same"
     assert code["baseline"] == code["candidate"] == "000300.SH"
+
+
+def test_a_string_provenance_or_nan_metric_is_a_conflict_response(tmp_path):
+    publish(tmp_path, "good", backtest("good"))
+    string_provenance = backtest("string-provenance", provenance={"execution_run_id": "x"})
+    string_provenance["metadata"]["provenance"] = "corrupt"
+    publish(tmp_path, "string-provenance", string_provenance)
+    nan_metrics = backtest("nan-metrics")
+    nan_metrics["summary"]["metrics"]["total_return"] = float("nan")
+    target = tmp_path / "backtests" / "nan-metrics"
+    target.mkdir(parents=True)
+    (target / "result.json").write_text(json.dumps(nan_metrics), encoding="utf-8")
+    client = client_for(tmp_path)
+    for run_id in ("string-provenance", "nan-metrics"):
+        response = client.get(
+            "/api/v1/backtest-comparisons",
+            params={"baseline_run_id": "good", "candidate_run_id": run_id},
+        )
+        assert response.status_code == 409, run_id

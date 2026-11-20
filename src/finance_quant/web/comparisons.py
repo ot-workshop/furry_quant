@@ -15,6 +15,7 @@ result store (summary, metadata and provenance).
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
 
@@ -277,6 +278,13 @@ def _benchmark_code(metadata: dict) -> Any:
 def _side(document: dict, identifier: str) -> dict[str, Any]:
     summary = _summary(document)
     metadata = document.get("metadata") or {}
+    provenance = metadata.get("provenance")
+    if provenance is not None and not isinstance(provenance, dict):
+        raise ValueError("metadata.provenance is not an object")
+    for key in ("total_return", "benchmark_return", "excess_return", "max_drawdown"):
+        value = summary["metrics"].get(key)
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"metric {key} is not finite")
     benchmark = metadata.get("benchmark") or {}
     return {
         "id": identifier,
