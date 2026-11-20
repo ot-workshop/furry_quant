@@ -127,6 +127,38 @@ export function Section({
   );
 }
 
+/**
+ * A locally scrollable table region: the page keeps the viewport width, the
+ * table keeps readable columns, and keyboard users can reach the last column.
+ */
+export function TableScroll({
+  label,
+  children,
+  hint = true,
+}: {
+  label: string;
+  children: ReactNode;
+  hint?: boolean;
+}) {
+  return (
+    <div className="table-scroll-host">
+      <div
+        className="table-scroll"
+        tabIndex={0}
+        role="region"
+        aria-label={label}
+      >
+        {children}
+      </div>
+      {hint ? (
+        <Typography.Text type="secondary" className="table-scroll-hint">
+          左右滑动或聚焦后用方向键查看更多列
+        </Typography.Text>
+      ) : null}
+    </div>
+  );
+}
+
 export function Loading({ rows = 4 }: { rows?: number }) {
   return <Skeleton active paragraph={{ rows }} />;
 }

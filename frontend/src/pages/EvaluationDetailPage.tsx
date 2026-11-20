@@ -27,6 +27,7 @@ import {
   PageHeader,
   Section,
   Signed,
+  TableScroll,
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import type {
@@ -122,39 +123,41 @@ function EvaluationView({ result }: { result: EvaluationResult }) {
                   title="IC 汇总"
                   description="各因子在所选持有期的信息系数；IR 为均值 / 标准差，未年化"
                 >
-                  <Table<DiagnosticRow>
-                    size="small"
-                    rowKey="key"
-                    pagination={false}
-                    dataSource={factors.flatMap(([key, value]) => {
-                      const diagnostic = value.horizons[horizon];
-                      return diagnostic ? [{ key, diagnostic }] : [];
-                    })}
-                    columns={[
-                      {
-                        title: "因子",
-                        render: (_, row) => factorLabel(row.key, definitions),
-                      },
-                      ...icColumns<DiagnosticRow>(
-                        "IC",
-                        (row) => row.diagnostic.summary.ic,
-                      ),
-                      ...icColumns<DiagnosticRow>(
-                        "Rank IC",
-                        (row) => row.diagnostic.summary.rank_ic,
-                      ),
-                      {
-                        title: "高减低",
-                        align: "right" as const,
-                        render: (_: unknown, row: DiagnosticRow) => (
-                          <Signed
-                            value={row.diagnostic.summary.mean_high_minus_low}
-                            format={(v) => formatPercent(v)}
-                          />
+                  <TableScroll label="因子 IC 汇总表">
+                    <Table<DiagnosticRow>
+                      size="small"
+                      rowKey="key"
+                      pagination={false}
+                      dataSource={factors.flatMap(([key, value]) => {
+                        const diagnostic = value.horizons[horizon];
+                        return diagnostic ? [{ key, diagnostic }] : [];
+                      })}
+                      columns={[
+                        {
+                          title: "因子",
+                          render: (_, row) => factorLabel(row.key, definitions),
+                        },
+                        ...icColumns<DiagnosticRow>(
+                          "IC",
+                          (row) => row.diagnostic.summary.ic,
                         ),
-                      },
-                    ]}
-                  />
+                        ...icColumns<DiagnosticRow>(
+                          "Rank IC",
+                          (row) => row.diagnostic.summary.rank_ic,
+                        ),
+                        {
+                          title: "高减低",
+                          align: "right" as const,
+                          render: (_: unknown, row: DiagnosticRow) => (
+                            <Signed
+                              value={row.diagnostic.summary.mean_high_minus_low}
+                              format={(v) => formatPercent(v)}
+                            />
+                          ),
+                        },
+                      ]}
+                    />
+                  </TableScroll>
                 </Section>
                 <div className="grid-2">
                   {factors.map(([key, value]) => {
@@ -306,21 +309,24 @@ function Coverage({
         title="信号覆盖"
         description={`${result.signal_coverage.length} 个信号日`}
       >
-        <Table
-          size="small"
-          rowKey="signal_date"
-          dataSource={result.signal_coverage}
-          pagination={{ pageSize: 10, hideOnSinglePage: true, size: "small" }}
-          columns={[
-            { title: "信号日", dataIndex: "signal_date" },
-            { title: "入场日", dataIndex: "entry_date" },
-            {
-              title: "已评分 / 股票池",
-              align: "right",
-              render: (_, row) => `${row.scored_instruments} / ${row.universe}`,
-            },
-          ]}
-        />
+        <TableScroll label="信号覆盖表">
+          <Table
+            size="small"
+            rowKey="signal_date"
+            dataSource={result.signal_coverage}
+            pagination={{ pageSize: 10, hideOnSinglePage: true, size: "small" }}
+            columns={[
+              { title: "信号日", dataIndex: "signal_date" },
+              { title: "入场日", dataIndex: "entry_date" },
+              {
+                title: "已评分 / 股票池",
+                align: "right",
+                render: (_, row) =>
+                  `${row.scored_instruments} / ${row.universe}`,
+              },
+            ]}
+          />
+        </TableScroll>
       </Section>
       <Section
         title={`收益标签（${horizon} 日）`}

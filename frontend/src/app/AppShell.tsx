@@ -204,7 +204,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 />
               ) : null}
             </Flex>
-            <Flex align="center" gap={8}>
+            <Flex align="center" gap={8} className="app-header-actions">
               <Tooltip
                 title={
                   active ? `${active} 个任务排队或运行中` : "没有进行中的任务"

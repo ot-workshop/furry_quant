@@ -57,7 +57,14 @@ export function PerformancePanel({ detail }: { detail: BacktestDetail }) {
   const method = performance?.methodology;
   return (
     <div className="grid-2">
-      <Section title="绩效指标" description="基于扣除费用后的账户净值">
+      <Section
+        title="绩效指标"
+        description={
+          detail.benchmark_name
+            ? `基于扣除费用后的账户净值 · 基准：${detail.benchmark_name}`
+            : "基于扣除费用后的账户净值"
+        }
+      >
         <Table
           size="small"
           pagination={false}
@@ -83,9 +90,7 @@ export function PerformancePanel({ detail }: { detail: BacktestDetail }) {
                 ),
             },
             {
-              title: detail.benchmark_name
-                ? `基准（${detail.benchmark_name}）`
-                : "基准",
+              title: "基准",
               align: "right",
               render: (_, row) =>
                 typeof row.benchmark === "string" ? (
