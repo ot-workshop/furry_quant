@@ -50,7 +50,13 @@
 
 ## 测试
 
-`npm test` 运行 `frontend/tests/`：表单规则的纯函数测试，以及在 jsdom 中挂载应用、模拟接口的交互测试。
+在仓库根目录执行 `npm --prefix frontend test`，或进入 `frontend/` 执行 `npm test`。它运行表单规则的纯函数测试，以及在 jsdom 中挂载应用、模拟接口的交互测试；不替代真实浏览器、worker 和 PostgreSQL 的端到端验收。完整步骤与清理要求见[测试指南](testing.md)。
+
+## 财务状态与旧结果兼容
+
+`GET /api/v1/evaluations/{id}` 与 `/evaluations/{id}/download` 在响应中按冻结定义和绑定证据校正 `metadata.temporal_audit.items` 的 `financials` 项；不写回存档，不修改 `factors`、IC、分组收益或运行 ID。评估列表、Markdown 报告、分析、选优和标签读取不应用此投影。
+
+`components/audit.tsx` 的标签为：`not_used` → 未使用、`missing_binding` → 未绑定、`unknown` → 无法判断、`unverified` → 未认证。财务依赖来自冻结入选因子的 `requires_financials` 定义，不能用“允许缺失评分后能否启动”替代。只在请求中出现的版本不是实际使用证据；旧字段空值或格式异常不能被解释成有效版本。面向用户的完整说明见[财务数据](financial-data.md#研究绑定)。
 
 
 ## 滚动诊断接口

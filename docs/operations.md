@@ -2,6 +2,44 @@
 
 生产环境由 Docker Compose 运行 PostgreSQL、FastAPI 和一个串行 worker。应用镜像由 GitHub Actions 构建并保存在私有 GHCR；服务器不编译源码，也不接受 GitHub 的自动部署连接。
 
+## 镜像来源与发布约定
+
+| 用途 | 约定 |
+| --- | --- |
+| 新发布目标 | `ghcr.io/ot-workshop/furry_quant:sha-<完整40位提交>`，运行时固定 `ghcr.io/ot-workshop/furry_quant@sha256:<digest>`。 |
+| 基线旧配置 | `docker.yml` 和环境示例曾使用 `ghcr.io/quqionfree/my_quant_project` 与短 SHA；迁移由 workflow 修订落实，不能只改文档就假定新镜像已发布。 |
+| 回滚来源 | 保留部署前实际验证过的旧镜像 digest，包括旧命名空间产物，不因更名删除。 |
+
+新命名空间的私有包推送、目标机授权拉取和对应源码必须用首个真实产物验证。`manifest unknown`、匿名拒绝、workflow 配置为 active 或没有 Actions 记录，都不能证明目标镜像可部署；记录实际成功 pull 的 digest。`:master` 是移动标签，短 SHA 可用于查找，均不替代完整提交与 digest 的核对。
+
+发布 workflow 是 `docker.yml`，触发为 `master` push、`v*` tag 或手动派发；测试 workflow 与 PR 检查见[测试指南](testing.md)。手动派发沿仓库支持的入口和当前授权执行，不能用 API 绕过权限。发布记录给出完整提交和 run 链接，不自动部署最新分支。
+
+## 发布准入与版本核对
+
+由 CEO 固定发布提交，CTO 审核技术条件，牛马执行部署，量化测试做部署后冒烟。开始前必须具备：
+
+- 该版本必要检查通过、CTO 审批与 CEO 合并结论；合并提交或组合版本与被验版本对应。新提交不能沿用旧头结果。
+- 对应发布 run 成功，应用镜像存在且目标机能拉取；记录 digest、完整源提交、部署前镜像和数据库迁移版本。
+- 正确版本的 Compose 文件、配置与目录；部署前一致备份 create/verify 成功、回滚目标及恢复方法可用。
+- 测试与部署窗口、失败责任人和证据目录明确，未完成任务已处理。目标机不能访问 Docker Hub 时不在其上构建，先确认所需数据库镜像已存在或有可用授权来源。
+
+以下仅做产物检查，不启动应用；在部署目录用已确定的真实值替换占位符：
+
+```sh
+cd /data/finance-quant
+docker compose config --quiet
+docker compose ps -a
+release_image='ghcr.io/ot-workshop/furry_quant@sha256:<已核digest>'
+docker pull "$release_image"
+docker image inspect "$release_image" --format '{{.Id}} {{json .RepoDigests}}'
+docker image inspect "$release_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+docker run --rm --entrypoint python "$release_image" -c 'from finance_quant.provenance import source_provenance; import json; print(json.dumps(source_provenance()))'
+```
+
+镜像标签的 revision 应对应发布完整提交；缺少或冲突时核对构建证据，不猜测。可在同一提交的干净源码目录执行 `uv run python -c "from finance_quant.provenance import source_provenance; print(source_provenance())"`，对照 `code_sha256`、依赖锁哈希和 Python 版本。`code_sha256` 只覆盖计算层，排除了网页、持久化和部分进程入口，不能单独证明完整应用或前端相同；完整身份还需提交、构建 run 与镜像 digest。
+
+记录当前运行 api/worker 的 image ID 与 digest，确认二者使用同一目标产物。只输出所需字段，不把完整环境或 Docker 配置打印到日志。现场的 `/root/deploy_verify.sh` 若经部署负责人核对，可作为特定主机的辅助工具；它不在仓库中，不能成为通用操作前提，`preflight` 的 pull 也会写本机镜像缓存。
+
 ## 目录与配置
 
 部署目录只需要：
@@ -75,16 +113,32 @@ docker compose logs --tail=100 db storage-init migrate api worker
 
 ## 更新镜像
 
-从 GitHub Actions 获取目标镜像标签或 digest，更新 `.env` 中的 `APP_IMAGE`。确认没有运行中的任务后执行：
+先完成[发布准入与版本核对](#发布准入与版本核对)。确认没有运行中的任务后，使用旧版本按[备份](#备份)停止 API/worker、创建并校验部署前归档；成功后记录其路径，失败则停止发布并恢复原服务。将 `.env` 中的 `APP_IMAGE` 改为已验证的目标 digest，并保留其他配置：
 
 ```sh
-docker compose pull
+docker compose pull migrate api worker
 docker compose stop -t 90 worker api
 docker compose up -d
 docker compose ps -a
 ```
 
 数据库保持运行。worker 收到停止信号后停止领取新任务，并给当前子进程保留退出时间。新镜像的迁移自动执行，数据库卷与主机文件继续保留。
+
+### 部署后核验
+
+```sh
+docker compose ps -a
+curl -fsS http://127.0.0.1:8000/api/v1/health
+docker compose --profile tools run --rm maintenance python -m finance_quant.server check
+docker compose exec -T api python -c 'from finance_quant.provenance import source_provenance; print(source_provenance())'
+docker compose exec -T worker python -c 'from finance_quant.provenance import source_provenance; print(source_provenance())'
+```
+
+端口按实际配置替换。核对 api/worker 容器 image ID 与目标镜像、计算与依赖哈希，以及 health 的数据库 revision；健康检查的 revision 是数据库迁移版本，不是 Git 提交。
+
+量化测试在约定窗口执行线上冒烟：原有回测/评估/评分数量与部署前对照、`/api/v1/data-status` 的原数据版本未意外变化、既有回测 KPI 与 API 一致、研究/比较入口正常。财务兼容修复须打开 `/evaluations/<原运行ID>` 并对照详情 API 与 JSON 下载，不能仅检查评估列表；无原始观测的 IC/分组收益仍为空，冻结文件不变。新增临时研究在隔离环境完成，生产写入另按明确验收范围执行。页面无法访问时记录未验项，不以 HTTP 或组件测试冒充浏览器验收。
+
+将部署提交、发布 run、镜像 digest、备份校验、迁移、版本核对与冒烟结论写入发布记录。检查失败时由执行人保留日志，CEO 与 CTO 判断继续修复或回滚，不能只重启后宣称通过。
 
 ### 更新后继续未完成下载
 
@@ -113,7 +167,7 @@ mv docker-compose.yaml.new docker-compose.yaml
 
 ## 回滚
 
-将 `APP_IMAGE` 改回之前验证过的 tag 或 digest：
+先判断数据和 schema 是否仍兼容旧版本。无迁移或已独立验证向后兼容时，经负责人决定，将 `APP_IMAGE` 改回部署前验证过的 digest，必要时连同原 Compose 文件一起恢复：
 
 ```sh
 docker compose --env-file .env -f docker-compose.yaml pull
@@ -121,7 +175,9 @@ docker compose --env-file .env -f docker-compose.yaml stop -t 90 worker api
 docker compose --env-file .env -f docker-compose.yaml up -d
 ```
 
-镜像回滚不会自动回滚数据库。迁移应采用向前兼容的扩展/收缩方式；删除列、修改字段类型等破坏性操作拆分到后续版本。无法兼容时恢复部署前备份。
+镜像回滚不会自动回滚数据库。存在迁移而未证明向后兼容时，不只切旧镜像；使用部署前已校验备份，按[恢复](#恢复)在独立空数据库和空存储中恢复、验证，再由负责人切换访问。不要先 migrate 空目标，也不要在现有业务目录上覆盖恢复。迁移应采用向前兼容的扩展/收缩方式；删除列、修改字段类型等破坏性操作拆分到后续版本。
+
+回滚后再次核版本、health、server check、既有结果与页面；记录原因、恢复点与未恢复的新数据范围。旧环境和失败现场先保留以供排查，不能把重新建库当作无损回滚。
 
 ## 日志与状态
 
@@ -160,11 +216,18 @@ ssh -N -L 8000:127.0.0.1:8000 用户名@服务器地址
 停止 API 与 worker 后执行；数据库保持运行。备份命令会检查 worker 互斥锁并阻止 API 写入，不会仅凭“当前没有运行中的任务”判断一致性：
 
 ```sh
-docker compose stop -t 90 api worker
-docker compose run --rm maintenance python -m finance_quant.backup create /backups/backup-20261112
-docker compose run --rm maintenance python -m finance_quant.backup verify /backups/backup-20261112
+backup_dir="/backups/backup-$(date -u +%Y%m%dT%H%M%SZ)"
+docker compose stop -t 90 api worker || exit 1
+if ! docker compose --profile tools run --rm maintenance python -m finance_quant.backup create "$backup_dir" \
+   || ! docker compose --profile tools run --rm maintenance python -m finance_quant.backup verify "$backup_dir"; then
+  docker compose up -d api worker
+  printf '备份或校验失败，停止发布；核对原服务恢复状态。\n' >&2
+  exit 1
+fi
 docker compose up -d api worker
 ```
+
+记录本次 `backup_dir`；下文恢复示例的 `backup-20261112` 必须替换为实际已校验归档，不能复用不存在的示例日期。备份失败分支只尝试恢复旧服务，仍需核其健康状态，不视为发布成功。
 
 备份包括：
 
@@ -239,6 +302,8 @@ docker compose -f docker-compose.test.yaml down --volumes
 
 第二条命令只清理命名为 finance-quant-isolated-tests 的测试服务。原生测试必须显式指定测试数据库和临时存储，数据库名为 fq_* 或 *_test；测试夹具拒绝开发库配置。备份恢复测试在测试服务器中另建一次性数据库，并在任何写入前核验实际连接。
 
+此 Compose 固定 command 只覆盖备份恢复及相关更新测试，不代表整个 PostgreSQL 集成目录。完整测试分组、UI 临时回测及失败清理见[测试指南](testing.md)。
+
 ## 磁盘与清理
 
 定期检查：
@@ -250,6 +315,8 @@ du -sh storage backups
 ```
 
 不得手动删除 `datasets/` 或 `runs/` 中仍被 PostgreSQL 登记的文件。Docker 构建缓存可清理，但数据库 volume、正式镜像和备份必须先确认引用关系。
+
+临时演练只清理登记过的项目、数据库、目录和镜像；先保存日志/哈希，再停服务、断开连接后清理。保留回滚 digest、部署前备份及失败现场直到负责人确认验收完成。清理失败要列出残留与责任人，不执行全机清理以掩盖问题。发布与回滚执行人负责资源闭环，量化测试报告冒烟结论，量化文档记录实际版本与变化。
 
 ## 试运行环境重建
 
