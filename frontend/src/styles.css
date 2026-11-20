@@ -229,9 +229,11 @@ body {
   .result-tabs .ant-tabs-nav-wrap {
     overflow-x: auto !important;
   }
-  /* Draw the focus ring inside the tab so the scrolling strip cannot clip it. */
-  .result-tabs .ant-tabs-tab-btn:focus-visible {
-    outline-offset: -2px;
+  /* Draw the focus ring inside the tab so the scrolling strip cannot clip it.
+     rc-tabs' own focus style outranks a plain class, hence the explicit
+     importance and the inner -3px offset. */
+  .result-tabs .ant-tabs-tab .ant-tabs-tab-btn:focus-visible {
+    outline-offset: -3px !important;
   }
 }
 
