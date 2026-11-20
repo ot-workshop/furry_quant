@@ -234,7 +234,7 @@ test("a proven reason replaces the generic note and links to coverage", async ()
       ),
     );
     assert.ok(!document.body.textContent.includes("未按 0 显示。"));
-    const link = document.querySelector(".chart-note a");
+    const link = document.querySelector(".chart-note button");
     assert.ok(link, "coverage link is rendered");
     await act(async () =>
       link.dispatchEvent(new MouseEvent("click", { bubbles: true })),

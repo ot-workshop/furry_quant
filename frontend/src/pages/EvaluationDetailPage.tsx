@@ -61,19 +61,26 @@ export default function EvaluationDetailPage({ id }: { id: string }) {
   return <EvaluationView result={detail.data} />;
 }
 
-function groupEmptyReason(
+export function groupEmptyReason(
   daily: FactorDailyDiagnostic[],
+  signalDates: number | null | undefined,
   minCrossSection: number | null | undefined,
 ): string | null {
-  // Only report a cause the stored diagnostics actually prove; otherwise the
-  // chart keeps the generic wording.
+  // Only report a cause that the whole stored series proves: the daily records
+  // must cover the summary's signal dates exactly once. Partial evidence falls
+  // back to the generic wording instead of claiming a whole-period cause.
   if (!daily.length) return null;
+  const uniqueDates = new Set(daily.map((row) => row.date));
+  if (uniqueDates.size !== daily.length) return null;
+  // Without a usable signal-date count the series cannot be shown complete.
+  if (typeof signalDates !== "number" || signalDates <= 0) return null;
+  if (uniqueDates.size !== signalDates) return null;
   if (daily.every((row) => row.ic_exclusion === "insufficient_cross_section"))
     return minCrossSection
-      ? `逐日可评分股票数少于横截面门槛（${minCrossSection} 只），没有可用于分组的收益。`
-      : "逐日可评分股票数少于横截面门槛，没有可用于分组的收益。";
+      ? `同时具备有效评分和未来收益标签的样本数低于横截面门槛（${minCrossSection} 只），没有可用于分组的收益。`
+      : "同时具备有效评分和未来收益标签的样本数低于横截面门槛，没有可用于分组的收益。";
   if (daily.every((row) => row.ic_exclusion === "constant_score"))
-    return "因子得分在每日截面上没有差异（constant_score），无法分组。";
+    return "有收益标签的配对样本中因子得分没有差异（constant_score），无法分组。";
   return null;
 }
 
@@ -83,6 +90,17 @@ function EvaluationView({ result }: { result: EvaluationResult }) {
     String(metadata.evaluation.horizons[0] ?? ""),
   );
   const [tab, setTab] = useState("factors");
+  // Switching from the chart's coverage link also moves focus onto the shown tab,
+  // so a keyboard user lands on the panel they just opened.
+  const showCoverage = () => {
+    setTab("coverage");
+    requestAnimationFrame(() => {
+      const active = document.querySelector<HTMLElement>(
+        ".ant-tabs-tab-active .ant-tabs-tab-btn",
+      );
+      active?.focus();
+    });
+  };
   const minCrossSection = metadata.evaluation.min_cross_section;
   const definitions = metadata.factor_definitions;
   const factors = Object.entries(result.factors);
@@ -194,9 +212,10 @@ function EvaluationView({ result }: { result: EvaluationResult }) {
                             groups={diagnostic.groups}
                             reason={groupEmptyReason(
                               diagnostic.daily,
+                              diagnostic.summary.signal_dates,
                               minCrossSection,
                             )}
-                            onShowCoverage={() => setTab("coverage")}
+                            onShowCoverage={showCoverage}
                           />
                         ) : (
                           <EmptyState title="没有分组收益" />

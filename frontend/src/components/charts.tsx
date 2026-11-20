@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Typography } from "antd";
+import { Button, Typography } from "antd";
 import * as echarts from "echarts/core";
 import { BarChart, LineChart } from "echarts/charts";
 import {
@@ -588,9 +588,9 @@ export function GroupReturnsChart({
           {!hasValues && reason && onShowCoverage ? (
             <>
               {" "}
-              <Typography.Link onClick={onShowCoverage}>
+              <Button type="link" size="small" onClick={onShowCoverage}>
                 查看覆盖信息
-              </Typography.Link>
+              </Button>
             </>
           ) : null}
         </Typography.Text>
