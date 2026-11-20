@@ -189,6 +189,70 @@ body {
   }
 }
 
+/* ------------------------------------------------------- responsive shell */
+
+@media (max-width: 767px) {
+  .app-header {
+    padding-inline: 12px;
+  }
+}
+
+.app-nav-drawer .ant-drawer-header {
+  padding-block: 12px;
+}
+
+/* Result summary: two columns on small screens keep the tab bar above the fold. */
+.kpi-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+@media (max-width: 720px) {
+  .kpi-grid {
+    gap: 10px 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .kpi-card .ant-card-body {
+    padding: 12px;
+  }
+}
+
+/* At 200% zoom the tab strip is wider than the page; clip it horizontally so the
+   document keeps one scroll axis and the overflow menu still reaches every tab. */
+@media (max-width: 767px) {
+  .result-tabs {
+    overflow-x: clip;
+  }
+  /* rc-tabs pins overflow:hidden inline; scrolling keeps a focused tab visible
+     when it is only partly inside the strip. */
+  .result-tabs .ant-tabs-nav {
+    min-inline-size: 0;
+  }
+  .result-tabs .ant-tabs-nav-wrap {
+    overflow: clip !important;
+    min-inline-size: 0;
+  }
+  /* Draw the focus ring inside the tab so the scrolling strip cannot clip it.
+     rc-tabs' own focus style outranks a plain class, hence the explicit
+     importance and the inner -3px offset. */
+  .result-tabs .ant-tabs-tab .ant-tabs-tab-btn:focus-visible {
+    outline-offset: -3px !important;
+  }
+}
+
+/* A value never breaks inside a number. Below a two-column width the summary
+   falls back to one column instead (200% zoom on a 390px phone is ~195 CSS px). */
+.kpi-grid .ant-statistic-content {
+  overflow-wrap: normal;
+}
+
+@media (max-width: 279px) {
+  .kpi-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .with-aside {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;

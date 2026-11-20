@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts/core";
 import { BarChart, LineChart } from "echarts/charts";
 import {
@@ -33,7 +33,7 @@ echarts.use([
 ]);
 
 interface ChartProps {
-  build: (palette: ChartPalette) => EChartsOption;
+  build: (palette: ChartPalette, width: number) => EChartsOption;
   deps: readonly unknown[];
   height: number;
   ariaLabel: string;
@@ -55,11 +55,15 @@ export function Chart({
   const palette = useChartPalette();
   const element = useRef<HTMLDivElement | null>(null);
   const chart = useRef<ReturnType<typeof echarts.init> | null>(null);
+  const [width, setWidth] = useState(0);
   const click = useRef(onDateClick);
   click.current = onDateClick;
   const dataClick = useRef(onDataClick);
   dataClick.current = onDataClick;
-  const option = useMemo(() => build(palette), [palette, ...deps]);
+  const option = useMemo(
+    () => build(palette, width),
+    [palette, width, ...deps],
+  );
 
   useEffect(() => {
     if (!element.current) return;
@@ -79,8 +83,12 @@ export function Chart({
       )
         click.current?.(params.name);
     });
-    const observer = new ResizeObserver(() => instance.resize());
+    const observer = new ResizeObserver(() => {
+      instance.resize();
+      setWidth(element.current?.clientWidth ?? 0);
+    });
     observer.observe(element.current);
+    setWidth(element.current.clientWidth);
     return () => {
       observer.disconnect();
       instance.dispose();
@@ -91,11 +99,17 @@ export function Chart({
   useEffect(() => {
     const instance = chart.current;
     if (!instance) return;
-    // Keep the user's zoom window when only colours change.
+    // Keep user state across option rebuilds (theme change, resize): the zoom
+    // window and any legend series the reader turned off.
+    const previous = instance.getOption();
     const zoom =
-      (instance.getOption()?.dataZoom as Array<{
+      (previous?.dataZoom as Array<{
         start?: number;
         end?: number;
+      }>) ?? [];
+    const legend =
+      (previous?.legend as Array<{
+        selected?: Record<string, boolean>;
       }>) ?? [];
     const next = { ...option };
     if (Array.isArray(next.dataZoom) && zoom.length) {
@@ -104,6 +118,17 @@ export function Chart({
         start: zoom[index]?.start ?? item.start,
         end: zoom[index]?.end ?? item.end,
       }));
+    }
+    if (Array.isArray(next.legend) && legend.length) {
+      next.legend = next.legend.map((item, index) => ({
+        ...item,
+        selected: { ...item.selected, ...legend[index]?.selected },
+      }));
+    } else if (next.legend && !Array.isArray(next.legend) && legend.length) {
+      next.legend = {
+        ...next.legend,
+        selected: { ...next.legend.selected, ...legend[0]?.selected },
+      };
     }
     instance.setOption(next, { notMerge: true });
   }, [option]);
@@ -144,6 +169,46 @@ function axis(p: ChartPalette, data: string[]) {
   };
 }
 
+/**
+ * Category axis for dated series: both ends keep the full `YYYY-MM-DD` label and
+ * are aligned inwards so they stay inside the canvas at any width. Middle ticks
+ * are stepped from the measured width, so narrow charts drop them instead of
+ * letting labels collide with the endpoints.
+ */
+const DATE_LABEL_WIDTH = 70;
+const DATE_LABEL_GAP = 8;
+// An endpoint label is pinned against the plot edge, a middle label is centred:
+// keep a full endpoint label, a gap and half a centred label clear of either end.
+const DATE_EDGE_CLEARANCE = DATE_LABEL_WIDTH * 1.5 + DATE_LABEL_GAP;
+
+function dateAxis(p: ChartPalette, data: string[], width: number) {
+  const count = data.length;
+  const plot = Math.max(120, width - 72);
+  const slots = Math.max(
+    2,
+    Math.floor(plot / (DATE_LABEL_WIDTH + DATE_LABEL_GAP)),
+  );
+  const step = Math.max(1, Math.ceil((count - 1) / (slots - 1)));
+  const edge = Math.ceil(((count - 1) * DATE_EDGE_CLEARANCE) / plot);
+  const showInterval = (index: number) =>
+    index === 0 ||
+    index === count - 1 ||
+    (index % step === 0 && index >= edge && count - 1 - index >= edge);
+  return {
+    ...axis(p, data),
+    axisLabel: {
+      color: p.muted,
+      fontSize: 11,
+      hideOverlap: true,
+      showMinLabel: true,
+      showMaxLabel: true,
+      alignMinLabel: "left" as const,
+      alignMaxLabel: "right" as const,
+      interval: (index: number) => showInterval(index),
+    },
+  };
+}
+
 function valueAxis(p: ChartPalette, extra: Record<string, unknown> = {}) {
   return {
     type: "value" as const,
@@ -170,17 +235,20 @@ export function EquityChart({
   onDateClick?: (date: string) => void;
   onDataClick?: (data: unknown) => void;
 }) {
+  const first = items[0]?.date;
+  const last = items[items.length - 1]?.date;
+  const range = first && last ? `，区间 ${first} 至 ${last}` : "";
   return (
     <Chart
       height={360}
       group={group}
       onDateClick={onDateClick}
-      ariaLabel="策略净值与基准净值走势，期初基准点仅作起点，点击区间内日期查看持仓"
+      ariaLabel={`策略净值与基准净值走势${range}，期初基准点仅作起点，点击区间内日期查看持仓`}
       deps={[items, anchorDate]}
-      build={(p) => ({
+      build={(p, width) => ({
         ...base(p),
         color: [p.primary, p.benchmark, p.accent],
-        grid: { left: 8, right: 16, top: 40, bottom: 56, containLabel: true },
+        grid: { left: 8, right: 28, top: 40, bottom: 56, containLabel: true },
         legend: { top: 0, right: 0, textStyle: { color: p.muted } },
         tooltip: {
           ...(base(p).tooltip as object),
@@ -200,9 +268,10 @@ export function EquityChart({
             textStyle: { color: p.muted, fontSize: 10 },
           },
         ],
-        xAxis: axis(
+        xAxis: dateAxis(
           p,
           items.map((row) => row.date),
+          width,
         ),
         yAxis: valueAxis(p, { name: "净值" }),
         series: [
@@ -263,16 +332,19 @@ export function DrawdownChart({
   items: EquityPoint[];
   group?: string;
 }) {
+  const first = items[0]?.date;
+  const last = items[items.length - 1]?.date;
+  const range = first && last ? `，区间 ${first} 至 ${last}` : "";
   return (
     <Chart
       height={180}
       group={group}
-      ariaLabel="策略回撤走势，单位为百分比"
+      ariaLabel={`策略回撤走势${range}，单位为百分比`}
       deps={[items]}
-      build={(p) => ({
+      build={(p, width) => ({
         ...base(p),
         color: [p.down],
-        grid: { left: 8, right: 16, top: 24, bottom: 16, containLabel: true },
+        grid: { left: 8, right: 28, top: 24, bottom: 16, containLabel: true },
         tooltip: {
           ...(base(p).tooltip as object),
           valueFormatter: (value) =>
@@ -281,9 +353,10 @@ export function DrawdownChart({
               : `${Number(value).toFixed(2)}%`,
         },
         dataZoom: [{ type: "inside" }],
-        xAxis: axis(
+        xAxis: dateAxis(
           p,
           items.map((row) => row.date),
+          width,
         ),
         yAxis: valueAxis(p, {
           max: 0,

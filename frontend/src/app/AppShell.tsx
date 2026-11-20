@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import {
   Badge,
   Button,
+  Drawer,
   Dropdown,
   Flex,
   Layout,
@@ -18,6 +19,7 @@ import {
   DatabaseOutlined,
   FundOutlined,
   LineChartOutlined,
+  MenuOutlined,
   MoonOutlined,
   PlusCircleOutlined,
   SunOutlined,
@@ -27,6 +29,12 @@ import { researchApi } from "../api/research";
 import { useApiResource } from "../hooks/useApiResource";
 import { navigate, paths, useRoute, type Section } from "./routes";
 import { useTheme, type ThemeMode } from "./theme";
+import { useMediaQuery } from "./useMediaQuery";
+
+/** Below this width the sidebar becomes a drawer so result pages keep the full width. */
+const COMPACT_QUERY = "(max-width: 767px)";
+/** Below this width the header keeps icon-only actions so they never crowd. */
+const NARROW_QUERY = "(max-width: 479px)";
 
 const MENU: MenuProps["items"] = [
   { key: "dashboard", icon: <DashboardOutlined />, label: "工作台" },
@@ -111,72 +119,115 @@ function ThemeSwitch() {
 export function AppShell({ children }: { children: ReactNode }) {
   const route = useRoute();
   const [collapsed, setCollapsed] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
+  const compact = useMediaQuery(COMPACT_QUERY);
+  const narrow = useMediaQuery(NARROW_QUERY);
   const tasks = useApiResource((signal) => researchApi.tasks(signal), [], {
     pollMs: 5000,
   });
   const active = (tasks.data?.items ?? []).filter(
     (t) => t.status === "queued" || t.status === "running",
   ).length;
+  const go = (key: string) => {
+    setNavOpen(false);
+    navigate(TARGETS[key as Section]);
+  };
 
   return (
     <Layout className="app-layout">
-      <Layout.Sider
-        collapsible
-        collapsed={collapsed}
-        onCollapse={setCollapsed}
-        width={216}
-        theme="light"
-        className="app-sider"
-        breakpoint="lg"
-      >
-        <div
-          className="brand"
-          onClick={() => navigate(paths.dashboard())}
-          role="link"
-          tabIndex={0}
+      {compact ? null : (
+        <Layout.Sider
+          collapsible
+          collapsed={collapsed}
+          onCollapse={setCollapsed}
+          width={216}
+          theme="light"
+          className="app-sider"
+          breakpoint="lg"
         >
-          <span className="brand-mark">Q</span>
-          {!collapsed ? <span className="brand-name">量化研究台</span> : null}
-        </div>
-        <Menu
-          className="app-menu"
-          mode="inline"
-          selectedKeys={[route.section]}
-          items={MENU}
-          onClick={({ key }) => navigate(TARGETS[key as Section])}
-        />
-      </Layout.Sider>
+          <div
+            className="brand"
+            onClick={() => navigate(paths.dashboard())}
+            role="link"
+            tabIndex={0}
+          >
+            <span className="brand-mark">Q</span>
+            {!collapsed ? <span className="brand-name">量化研究台</span> : null}
+          </div>
+          <Menu
+            className="app-menu"
+            mode="inline"
+            selectedKeys={[route.section]}
+            items={MENU}
+            onClick={({ key }) => navigate(TARGETS[key as Section])}
+          />
+        </Layout.Sider>
+      )}
+      {compact ? (
+        <Drawer
+          open={navOpen}
+          onClose={() => setNavOpen(false)}
+          placement="left"
+          size="min(280px, 85vw)"
+          title="量化研究台"
+          className="app-nav-drawer"
+          styles={{ body: { padding: 8 } }}
+        >
+          <Menu
+            mode="inline"
+            selectedKeys={[route.section]}
+            items={MENU}
+            style={{ borderInlineEnd: 0 }}
+            onClick={({ key }) => go(key)}
+          />
+        </Drawer>
+      ) : null}
       <Layout>
         <Layout.Header className="app-header">
           <Flex
-            justify="flex-end"
+            justify="space-between"
             align="center"
             gap={8}
             style={{ height: "100%" }}
           >
-            <Tooltip
-              title={
-                active ? `${active} 个任务排队或运行中` : "没有进行中的任务"
-              }
-            >
-              <Badge count={active} size="small" offset={[-4, 4]}>
+            <Flex align="center" gap={8} style={{ minWidth: 0 }}>
+              {compact ? (
                 <Button
                   type="text"
-                  icon={<UnorderedListOutlined />}
-                  onClick={() => navigate(paths.tasks())}
-                >
-                  任务
-                </Button>
-              </Badge>
-            </Tooltip>
-            <Button
-              type="primary"
-              icon={<PlusCircleOutlined />}
-              onClick={() => navigate(paths.newResearch())}
-            >
-              新建研究
-            </Button>
-            <ThemeSwitch />
+                  icon={<MenuOutlined />}
+                  aria-label="打开导航"
+                  data-testid="nav-toggle"
+                  onClick={() => setNavOpen(true)}
+                />
+              ) : null}
+            </Flex>
+            <Flex align="center" gap={8}>
+              <Tooltip
+                title={
+                  active ? `${active} 个任务排队或运行中` : "没有进行中的任务"
+                }
+              >
+                <Badge count={active} size="small" offset={[-4, 4]}>
+                  <Button
+                    type="text"
+                    icon={<UnorderedListOutlined />}
+                    aria-label={narrow ? "任务" : undefined}
+                    onClick={() => navigate(paths.tasks())}
+                  >
+                    {narrow ? null : "任务"}
+                  </Button>
+                </Badge>
+              </Tooltip>
+              <Button
+                type="primary"
+                icon={<PlusCircleOutlined />}
+                aria-label={narrow ? "新建研究" : undefined}
+                onClick={() => navigate(paths.newResearch())}
+              >
+                {narrow ? null : "新建研究"}
+              </Button>
+              <ThemeSwitch />
+            </Flex>
           </Flex>
         </Layout.Header>
         <Layout.Content className="app-content">
