@@ -25,10 +25,11 @@
 
 - 行情下载：自选股票、沪深300历史成分或全市场（沪深 A 股，含已退市）；增量补缺口、断点续传、发布不可变版本。
 - 研究：固定股票池、沪深300历史成分与全市场动态条件筛选；支持板块、历史ST、上市天数、市值、成交额和历史行业条件。
-- 因子与调仓：10 个行情因子和8个基本面因子，可配置窗口与权重；可选历史行业中性化（申万一级/二级/三级），日/周/月调仓。
+- 因子与调仓：行情与基本面因子可配置窗口与权重，完整清单见[因子库](docs/factor-library.md)；可选历史行业中性化（申万一级/二级/三级），日/周/月调仓。
 - 交易模拟：T+1、涨跌停、停牌、整手与板块规则，佣金/印花税/过户费与默认 0.05% 冲击成本。
 - 结果：净值与回撤、绩效指标、持仓、成交、费用、行业暴露、IC/Rank IC、滚动均值与 IR、分组收益和因子相关性热图。
-- 财务数据：三张报表按股票增量下载，按公告时点重建可见版本；8 个基本面因子（TTM 口径）可用。
+- 因子证据体检：从评估详情查看原始观测、填补、标签覆盖与财务绑定，按成熟截止日和冻结交易日位置计算 Rank IC 均值的相关性调整区间；缺失证据保留未知，方法与限制见[因子分析](docs/factor-analysis.md)。
+- 财务数据：三张报表按股票增量下载，按公告时点重建可见版本；支持 TTM 流量及资产负债表存量因子。
 - 组合筛选与比较：按 Rank IC、IR 和相关性预筛并通过 MILP 选择因子组合；三类股票池共用开发/验证/测试流程，支持把推荐组合直接带入比较。
 - 收益来源对照：比较因子增减、行业中性化与缺失处理，支持逐日固定共同可评分样本，查看收益差、样本变化、费用、净值及每日股票覆盖。
 - 可追溯：每个结果记录数据版本、冻结数据集、代码与依赖哈希；PostgreSQL 与文件可一致备份恢复。
@@ -187,7 +188,7 @@ chmod 600 .env
 在 `.env` 中填写应用镜像、数据库密码和数据源 Token：
 
 ```dotenv
-APP_IMAGE=ghcr.io/quqionfree/my_quant_project:sha-实际提交号
+APP_IMAGE=ghcr.io/ot-workshop/furry_quant@sha256:实际已验digest
 POSTGRES_USER=quant
 POSTGRES_DB=finance_quant
 POSTGRES_PASSWORD='替换为数据库密码'
@@ -256,10 +257,10 @@ ssh -N -L 8000:127.0.0.1:8000 USER@SERVER
 ```dotenv
 HTTP_BIND_HOST=0.0.0.0
 HTTP_PORT=8000
-ALLOWED_ORIGINS=http://10.88.0.61:8000,http://127.0.0.1:8000,http://localhost:8000
+ALLOWED_ORIGINS=http://SERVER_ADDRESS:8000,http://127.0.0.1:8000,http://localhost:8000
 ```
 
-执行 `docker compose up -d` 应用配置后，从其他电脑打开 `http://10.88.0.61:8000`。`0.0.0.0` 表示监听所有网卡，浏览器使用服务器实际 IP 或域名。网页与 API 共用该端口，配置的来源同时用于研究、下载和数据管理操作的提交校验。
+先将示例中的 `SERVER_ADDRESS` 替换为自己的服务器 IP 或域名，再执行 `docker compose up -d` 应用配置，从其他电脑打开相应地址。`0.0.0.0` 表示监听所有网卡。网页与 API 共用该端口，配置的来源同时用于研究、下载和数据管理操作的提交校验。
 
 验证数据库结构与存储连接：
 
@@ -269,16 +270,9 @@ docker compose exec api python -m finance_quant.server check
 
 ### 更新应用
 
-确认任务中心没有运行中的任务，将 `.env` 的 `APP_IMAGE` 更新为目标版本，然后执行：
+更新统一按[运维文档的发布准入](docs/operations.md#发布准入与版本核对)及[更新镜像步骤](docs/operations.md#更新镜像)执行：固定提交与 digest，在旧版本下停写、备份并校验，保持停写直至切换完成，再核验新服务。此处不另列第二套命令顺序。
 
-```sh
-docker compose pull
-docker compose stop -t 90 worker api
-docker compose up -d
-docker compose ps -a
-```
-
-新镜像对应的迁移会自动执行，数据库卷和主机数据目录继续复用。Compose 文件有变化时，应同步使用目标版本的文件。应用镜像回滚不会回滚数据库结构。
+本流程只覆盖现有 Compose、数据库镜像、迁移定义、布局及运行身份兼容，且已满足候选 schema 与路径权限的镜像更新，跳过执行 migrate/storage-init。首次部署或不满足这些条件时，转单独验证的准备/迁移方案；镜像回滚不会回滚数据库结构，见[回滚步骤](docs/operations.md#回滚)。
 
 ### 数据管理与运维
 
@@ -299,6 +293,12 @@ docker compose ps -a
 4. **分析结果**：回测详情的“概览”点击净值曲线上某一天可直接查看当日持仓；“参数与口径”列出全部参数、已知限制和数据时点核验。
 5. **方案比较**：方案比较 → 新建。选择固定股票池、历史沪深300或全市场数据，配置共用筛选、行业处理和交易参数，再设置三个分段与 2–8 个候选方案。系统只按验证段收益差选方案并锁定，再运行一次测试段。每段独立从空仓开始，详情可打开各段回测、评分和评估，并查看逐日股票池及有效评分的数量范围。
 6. **复用配置**：任务中心的“复用配置”把历史任务载入新建研究页。
+
+### 数据前置条件与空值
+
+首次研究至少需要已发布、覆盖研究区间和因子预热的行情版本，以及在线的 worker。财务因子、行业筛选/中性化和基准对照还分别依赖对应数据；“已下载”不等于每个信号日都可用，应先核验覆盖。固定池、历史沪深300与全市场条件池的入口及限制见[动态股票池教程](docs/dynamic-universe.md)。
+
+盈利收益率等允许缺失赋分的因子可能在没有财务版本时仍能提交，但缺失评分不是财务原始观测，也不会进入单因子 IC、分组收益或相关性。评估中的空值表示统计不可用，不能改成 0，也不能据此认定策略回测总收益消失。财务依赖与版本状态见[财务绑定说明](docs/financial-data.md#研究绑定)，结果与比较的排查顺序见[因子分析](docs/factor-analysis.md#先分清比较的指标)。
 
 在因子评估的“时序分析”中，可以选择因子、持有期、滚动窗口、最少有效日期和信号日范围；“因子相关性”提供固定 −1～1 色阶的热图及因子对历史曲线。收益标签结束前无法知道对应 IC，统计仅用于历史诊断。详细口径与操作见[因子分析与方案比较](docs/factor-analysis.md)。
 
@@ -351,29 +351,31 @@ Tushare / BaoStock 调用按 `FINANCE_QUANT_QUOTA_DB` 计数限速；已完成�
 
 ## 开发与测试
 
+在仓库根目录安装锁定依赖后执行（Windows 使用 `npm.cmd`，Linux 使用 `npm`）：
+
 ```powershell
+uv sync --locked --extra dev
+npm.cmd --prefix frontend ci --no-audit --no-fund
 uv run ruff check src alembic tests scripts
 uv run ruff format --check src alembic tests scripts
 uv run mypy
-uv run pytest -q                       # 单元测试（不需要数据库）
+uv run pytest -q --ignore=tests/integration
 npm.cmd --prefix frontend test
 npm.cmd --prefix frontend run format:check
 npm.cmd --prefix frontend run build
 ```
 
-PostgreSQL 集成测试需要一个可清空的测试库：
+默认 `uv run pytest -q` 会收集集成测试，但未启用 `FINANCE_QUANT_TEST_POSTGRES=1` 时数据库用例跳过，不能据此声称 PostgreSQL 已验收。真实测试库、备份恢复 Compose、UI 回测与比较验收、失败清理及各命令覆盖范围见[测试指南](docs/testing.md)。
 
-```powershell
-$env:FINANCE_QUANT_TEST_POSTGRES = "1"   # 并设置 POSTGRES_* 指向测试库
-uv run pytest -q tests/integration
-```
-
-CI（`.github/workflows/full-tests.yml`）在 Pull Request 上运行以上全部检查与迁移；`docker.yml` 在推送 `main` 或 tag 时构建镜像。
+CI 的 `full-tests.yml` 配置 PR、`master` push 与手动触发；`docker.yml` 在推送 `master`、`v*` tag 或手动派发时构建发布镜像。配置了触发器不等于已有成功运行：核对当前 PR 头、实际检出 SHA 和每个必要 job 的 run 链接；新提交须重核。镜像命名与发布证据要求见[运维文档](docs/operations.md#镜像来源与发布约定)，职责与审批流程见[协作指南](docs/contributing.md)。
 
 ## 文档索引
 
 - [系统架构](docs/architecture.md)
 - [Linux 运维](docs/operations.md)
+- [测试与隔离环境](docs/testing.md)
+- [成员职责与 PR / 发布流程](docs/contributing.md)
+- [因子分析与方案比较](docs/factor-analysis.md)
 - [前端结构与接口](docs/frontend-contract.md)
 - [因子库](docs/factor-library.md)
 - [财务数据](docs/financial-data.md)
