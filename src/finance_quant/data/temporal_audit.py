@@ -87,26 +87,34 @@ def restore_valuation_dates(frame):
 def financial_audit_item(metadata):
     """Use frozen dependencies, not whether missing-value policies allow a run."""
     definitions = metadata.get("factor_definitions")
-    dependencies = (
-        [
-            definition.get("requires_financials") if isinstance(definition, dict) else None
-            for definition in definitions.values()
-        ]
-        if isinstance(definitions, dict) and definitions
-        else []
-    )
+    definitions = definitions if isinstance(definitions, dict) else {}
+    selected = metadata.get("factor_config")
+    complete = isinstance(selected, list) and bool(selected)
+    if complete:
+        keys = [spec.get("id") or spec.get("name") if isinstance(spec, dict) else None for spec in selected]
+        descriptors = [definitions.get(key) if isinstance(key, str) else None for key in keys]
+    else:
+        descriptors = list(definitions.values())
+    dependencies = [entry.get("requires_financials") if isinstance(entry, dict) else None for entry in descriptors]
     required = (
         True
         if any(value is True for value in dependencies)
-        else (False if dependencies and all(value is False for value in dependencies) else None)
+        else (False if complete and dependencies and all(value is False for value in dependencies) else None)
     )
     financial = metadata.get("financial_data")
+    provenance = metadata.get("provenance")
+    requested = provenance.get("financial_version") if isinstance(provenance, dict) else None
     if required is None:
         status = "unknown"
         detail = "结果中的财务依赖或绑定记录不完整，无法判断相关财务数据是否可用。"
+        if requested:
+            detail += f"冻结请求记录了财务版本 {requested}，实际使用及覆盖仍需核对。"
     elif not required:
         status = "not_used"
         detail = "本次入选因子不依赖财务报表，无需绑定财务版本。"
+    elif (not isinstance(financial, dict) or not financial.get("version")) and requested:
+        status = "unknown"
+        detail = f"冻结请求记录了财务版本 {requested}，但结果未保存实际读取及覆盖证据，暂无法确认财务数据是否可用。"
     elif not isinstance(financial, dict) or not financial.get("version"):
         status = "missing_binding"
         detail = (
@@ -121,7 +129,7 @@ def financial_audit_item(metadata):
             "使用财务数据版本 "
             + str(financial["version"])
             + "："
-            + financial.get("policy", "按公告日估计历史可见时间")
+            + (financial.get("policy") or "按公告日估计历史可见时间")
             + "。供应商未留痕的历史更正无法还原，因此不是严格PIT。"
         )
     return {"key": "financials", "label": "财务报表", "status": status, "detail": detail}
@@ -209,7 +217,8 @@ def evaluation_financial_audit(result):
             "note": "历史结果未保存完整时点核验清单；此处仅说明财务依赖，其余历史时点仍未认证。",
         }
     item = financial_audit_item(metadata)
-    items = audit.get("items") or []
+    items = audit.get("items")
+    items = [previous for previous in items if isinstance(previous, dict)] if isinstance(items, list) else []
     for index, previous in enumerate(items):
         if previous.get("key") == "financials":
             items[index] = item

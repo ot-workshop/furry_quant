@@ -67,7 +67,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
         first: str | None = None,
         second: str | None = None,
     ):
-        result = read_evaluation(run_id)
+        result = artifacts.get("evaluations", run_id)
         try:
             return evaluation_analysis(
                 result,
@@ -85,7 +85,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
 
     @router.get("/evaluations/{run_id}/selection")
     def select_combination(run_id: str, parameters: Annotated[SelectionParameters, Depends(selection_parameters)]):
-        read_evaluation(run_id)
+        artifacts.get("evaluations", run_id)
         try:
             return selection_result(store, run_id, parameters)
         except ValueError as error:
@@ -95,7 +95,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
     def combination_draft(
         run_id: str, parameters: Annotated[SelectionParameters, Depends(selection_parameters)], selection_id: str
     ):
-        read_evaluation(run_id)
+        artifacts.get("evaluations", run_id)
         try:
             reference = selection_result(store, run_id, parameters)["reference"]
             if reference["selection_id"] != selection_id:
@@ -111,7 +111,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=500)] = 50,
     ):
-        result = read_evaluation(run_id)
+        result = artifacts.get("evaluations", run_id)
         if str(horizon) not in result.get("labels", {}):
             raise HTTPException(404, "持有期不存在")
         rows, total = read_rows(
@@ -127,7 +127,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
 
     @router.get("/evaluations/{run_id}/labels/{horizon}/download")
     def label_download(run_id: str, horizon: int):
-        result = read_evaluation(run_id)
+        result = artifacts.get("evaluations", run_id)
         path = f"labels/{horizon}/observations"
         if path not in result.get("tables", {}):
             raise HTTPException(404, "该批次没有独立标签文件")
@@ -145,7 +145,7 @@ def evaluation_router(store, *, data_root=None, runs_root=None) -> APIRouter:
 
     @router.get("/evaluations/{run_id}/report")
     def download_evaluation_report(run_id: str):
-        report = evaluation_markdown(read_evaluation(run_id))
+        report = evaluation_markdown(artifacts.get("evaluations", run_id))
         return PlainTextResponse(
             report,
             media_type="text/markdown",
