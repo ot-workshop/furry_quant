@@ -156,7 +156,24 @@ export function TableScroll({
     update();
     const observer = new ResizeObserver(update);
     observer.observe(node);
-    return () => observer.disconnect();
+    // A page change can keep the wrapper's height while the inner table gets
+    // wider or narrower, so watch the table itself and any DOM replacement.
+    const inner = node.querySelector("table");
+    if (inner) observer.observe(inner);
+    const mutations =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver(update);
+    mutations?.observe(node, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style", "class"],
+    });
+    return () => {
+      observer.disconnect();
+      mutations?.disconnect();
+    };
   }, [children]);
 
   return (
