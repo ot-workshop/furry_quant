@@ -680,3 +680,32 @@ def test_a_related_factor_archive_with_a_non_mapping_metadata_body_stays_unknown
         assert response.status_code == 200, run_id
         factors = {item["key"]: item for item in response.json()["dimensions"]}["factors"]
         assert all(field["status"] != "same" for field in factors["fields"]), run_id
+
+
+def test_a_top_level_non_object_document_is_a_conflict_response(tmp_path):
+    publish(tmp_path, "good", backtest("good"))
+    for run_id, body in (("numeric", "123"), ("text", '"broken"'), ("list", "[1, 2, 3]")):
+        target = tmp_path / "backtests" / run_id
+        target.mkdir(parents=True)
+        (target / "result.json").write_text(body, encoding="utf-8")
+    client = client_for(tmp_path)
+    for run_id in ("numeric", "text", "list"):
+        response = client.get(
+            "/api/v1/backtest-comparisons",
+            params={"baseline_run_id": "good", "candidate_run_id": run_id},
+        )
+        assert response.status_code == 409, run_id
+
+
+def test_qlib_style_benchmark_codes_compare_equal(tmp_path):
+    publish(tmp_path, "legacy", backtest("legacy", metadata={"provenance": {"benchmark": "SH000300"}}))
+    publish(tmp_path, "modern", backtest("modern", metadata={"benchmark": {"code": "000300.SH"}}))
+    body = (
+        client_for(tmp_path)
+        .get("/api/v1/backtest-comparisons", params={"baseline_run_id": "legacy", "candidate_run_id": "modern"})
+        .json()
+    )
+    benchmark = {item["key"]: item for item in body["dimensions"]}["benchmark"]
+    code = next(field for field in benchmark["fields"] if field["label"] == "基准代码")
+    assert code["status"] == "same"
+    assert code["baseline"] == code["candidate"] == "000300.SH"

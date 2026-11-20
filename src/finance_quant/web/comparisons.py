@@ -15,9 +15,12 @@ result store (summary, metadata and provenance).
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+
+from finance_quant.data.symbols import from_qlib
 
 SAME = "same"
 DIFFERENT = "different"
@@ -248,7 +251,7 @@ def _pointers(metadata: dict) -> list[str]:
 
 
 def _benchmark_code(metadata: dict) -> Any:
-    """Benchmark code from modern or legacy paths; a mapping is read, not compared raw."""
+    """Benchmark code from modern or legacy paths, in one canonical form."""
 
     value = _first(
         metadata,
@@ -258,10 +261,17 @@ def _benchmark_code(metadata: dict) -> Any:
         "config.benchmark",
     )
     if isinstance(value, dict):
-        return value.get("code")
-    if isinstance(value, (list, tuple, set)):
+        value = value.get("code")
+    if not isinstance(value, str) or not value.strip():
         return None
-    return value
+    code = value.strip()
+    # Legacy results kept Qlib's SH000300 form; compare it as 000300.SH.
+    if re.fullmatch(r"[A-Za-z]{2}\d{6}", code):
+        try:
+            return from_qlib(code.upper())
+        except ValueError:
+            return code
+    return code
 
 
 def _side(document: dict, identifier: str) -> dict[str, Any]:
@@ -632,6 +642,8 @@ def project_document(store, category: str, run_id: str) -> dict[str, Any]:
     if callable(project):
         return project(category, run_id)
     document = json.loads(store.path(category, run_id).read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise ValueError("result document is not an object")
     for key in DETAIL_KEYS:
         document.pop(key, None)
     return document
@@ -703,7 +715,7 @@ def comparison_router(store) -> APIRouter:
             document = project_document(store, "backtests", run_id)
         except FileNotFoundError:
             raise HTTPException(404, f"回测结果不存在：{run_id}") from None
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             document = None
         if (
             not isinstance(document, dict)
