@@ -6,6 +6,7 @@ import {
   GridComponent,
   LegendComponent,
   MarkLineComponent,
+  MarkPointComponent,
   TooltipComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
@@ -27,6 +28,7 @@ echarts.use([
   LegendComponent,
   DataZoomComponent,
   MarkLineComponent,
+  MarkPointComponent,
   CanvasRenderer,
 ]);
 
@@ -173,8 +175,8 @@ export function EquityChart({
       height={360}
       group={group}
       onDateClick={onDateClick}
-      ariaLabel="策略净值与基准净值走势，点击某日查看当日持仓"
-      deps={[items]}
+      ariaLabel="策略净值与基准净值走势，期初基准点仅作起点，点击区间内日期查看持仓"
+      deps={[items, anchorDate]}
       build={(p) => ({
         ...base(p),
         color: [p.primary, p.benchmark, p.accent],

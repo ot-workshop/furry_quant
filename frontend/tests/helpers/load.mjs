@@ -6,8 +6,8 @@ import { build } from "esbuild";
 const project = path.dirname(fileURLToPath(new URL("../../package.json", import.meta.url)));
 const localRequire = createRequire(new URL("../../package.json", import.meta.url));
 
-/** Bundle TypeScript modules for Node; charts are replaced because jsdom has no canvas. */
-export async function load(entries) {
+/** Bundle TypeScript for Node; most component tests do not need a chart renderer. */
+export async function load(entries, { stubCharts = true, requireModule = localRequire } = {}) {
   const contents = Object.entries(entries)
     .map(([name, file]) => `export * as ${name} from "${file}";`)
     .join("\n");
@@ -20,7 +20,7 @@ export async function load(entries) {
     write: false,
     jsx: "automatic",
     loader: { ".css": "empty" },
-    plugins: [
+    plugins: stubCharts ? [
       {
         name: "stub-charts",
         setup(builder) {
@@ -33,9 +33,9 @@ export async function load(entries) {
           }));
         },
       },
-    ],
+    ] : [],
   });
   const module = { exports: {} };
-  new Function("require", "module", "exports", bundled.outputFiles[0].text)(localRequire, module, module.exports);
+  new Function("require", "module", "exports", bundled.outputFiles[0].text)(requireModule, module, module.exports);
   return module.exports;
 }

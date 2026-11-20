@@ -56,18 +56,6 @@ const { ConfigProvider, App } = await import("antd");
 const { workspace } = await load({
   workspace: "./src/pages/BacktestDetailPage",
 });
-const markers = [];
-class MockChart extends dom.window.HTMLElement {
-  setOption(option) {
-    if (option.series?.[0]?.markPoint) markers.push(option.series[0].markPoint);
-  }
-  resize() {}
-  dispose() {}
-}
-dom.window.HTMLElement.prototype.setOption = MockChart.prototype.setOption;
-dom.window.HTMLElement.prototype.resize = MockChart.prototype.resize;
-dom.window.HTMLElement.prototype.dispose = MockChart.prototype.dispose;
-
 const detail = {
   id: "legacy-anchor",
   name: "锚点显示回归",
@@ -136,7 +124,7 @@ async function waitFor(check) {
   }
 }
 
-test("backtest workspace keeps the anchor on chart and out of position dates", async () => {
+test("backtest workspace excludes the anchor from the position date dropdown", async () => {
   const root = createRoot(document.getElementById("root"));
   await act(async () =>
     root.render(

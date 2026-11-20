@@ -101,7 +101,7 @@ export default function BacktestDetailPage({
         <Flex vertical gap={16}>
           <Section
             title="净值与回撤"
-            description="点击曲线上的某一天，可直接查看当日持仓"
+            description="期初基准点仅作起点，点击区间内日期查看当日持仓"
           >
             {equity.data === null ? (
               equity.error ? (
