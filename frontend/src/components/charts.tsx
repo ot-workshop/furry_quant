@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Typography } from "antd";
 import * as echarts from "echarts/core";
 import { BarChart, LineChart } from "echarts/charts";
 import {
   DataZoomComponent,
+  GraphicComponent,
   GridComponent,
   LegendComponent,
   MarkLineComponent,
@@ -23,6 +25,7 @@ import { factorLabel, formatNumber, formatPercent } from "../utils/format";
 echarts.use([
   LineChart,
   BarChart,
+  GraphicComponent,
   GridComponent,
   TooltipComponent,
   LegendComponent,
@@ -504,45 +507,81 @@ export function GroupReturnsChart({
 }: {
   groups: Array<{ group: number; mean_return: number | null }>;
 }) {
+  const values = groups.map((row) =>
+    typeof row.mean_return === "number" && Number.isFinite(row.mean_return)
+      ? row.mean_return
+      : null,
+  );
+  const missing = values.filter((value) => value === null).length;
+  const hasValues = values.some((value) => value !== null);
   return (
-    <Chart
-      height={200}
-      ariaLabel="因子分组平均收益"
-      deps={[groups]}
-      build={(p) => ({
-        ...base(p),
-        grid: { left: 8, right: 16, top: 16, bottom: 8, containLabel: true },
-        tooltip: {
-          ...(base(p).tooltip as object),
-          valueFormatter: (value) =>
-            typeof value === "number" ? formatPercent(value) : "—",
-        },
-        xAxis: {
-          ...axis(
-            p,
-            groups.map((row) => `Q${row.group}`),
-          ),
-          boundaryGap: true,
-        },
-        yAxis: valueAxis(p, {
-          scale: false,
-          axisLabel: {
-            color: p.muted,
-            formatter: (v: number) => formatPercent(v, 1),
+    <div className="chart-with-note">
+      <Chart
+        height={200}
+        ariaLabel={
+          hasValues
+            ? "因子分组平均收益"
+            : "因子分组平均收益：暂无可展示的数据，缺失的组未按 0 显示"
+        }
+        deps={[groups]}
+        build={(p) => ({
+          ...base(p),
+          grid: { left: 8, right: 16, top: 16, bottom: 8, containLabel: true },
+          // With no finite value the plot keeps its axes and says so inside the
+          // drawing area instead of leaving an unexplained blank box.
+          graphic: hasValues
+            ? undefined
+            : [
+                {
+                  type: "text" as const,
+                  left: "center",
+                  top: "middle",
+                  style: {
+                    text: "暂无可展示的分组收益",
+                    fill: p.muted,
+                    fontSize: 13,
+                  },
+                },
+              ],
+          tooltip: {
+            ...(base(p).tooltip as object),
+            valueFormatter: (value) =>
+              typeof value === "number" ? formatPercent(value) : "—",
           },
-        }),
-        series: [
-          {
-            name: "平均收益",
-            type: "bar",
-            barMaxWidth: 40,
-            data: groups.map((row) => ({
-              value: row.mean_return,
-              itemStyle: { color: (row.mean_return ?? 0) >= 0 ? p.up : p.down },
-            })),
+          xAxis: {
+            ...axis(
+              p,
+              groups.map((row) => `Q${row.group}`),
+            ),
+            boundaryGap: true,
           },
-        ],
-      })}
-    />
+          yAxis: valueAxis(p, {
+            scale: false,
+            axisLabel: {
+              color: p.muted,
+              formatter: (v: number) => formatPercent(v, 1),
+            },
+          }),
+          series: [
+            {
+              name: "平均收益",
+              type: "bar",
+              barMaxWidth: 40,
+              data: values.map((value) => ({
+                value,
+                itemStyle: { color: (value ?? 0) >= 0 ? p.up : p.down },
+              })),
+            },
+          ],
+        })}
+      />
+      {hasValues && missing === 0 ? null : (
+        <Typography.Text type="secondary" className="chart-note">
+          {hasValues
+            ? `有 ${missing} 组缺少有效收益，未按 0 显示。`
+            : `共 ${groups.length} 组均无有效收益，未按 0 显示。`}
+        </Typography.Text>
+      )}
+    </div>
   );
 }

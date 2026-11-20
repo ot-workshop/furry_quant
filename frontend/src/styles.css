@@ -415,6 +415,17 @@ body {
   width: 100%;
 }
 
+.chart-with-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.chart-note {
+  font-size: 12px;
+}
+
 /* Wide tables scroll inside their own focusable region so the page never grows
    wider than the viewport and keyboard users can reach the last column. */
 .table-scroll-host {
@@ -448,7 +459,6 @@ body {
 .table-scroll-hint {
   font-size: 12px;
 }
-
 .notes .ant-collapse-header {
   padding-inline: 0 !important;
 }
