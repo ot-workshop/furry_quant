@@ -59,3 +59,16 @@ test("constant_score is named only on that evidence and mixed days stay generic"
     null,
   );
 });
+
+test("missing daily or a row without a date falls back instead of claiming a cause", () => {
+  assert.equal(page.groupEmptyReason(undefined, 2, 3), null);
+  assert.equal(page.groupEmptyReason(null, 2, 3), null);
+  assert.equal(page.groupEmptyReason([], 2, 3), null);
+  const withoutDate = [
+    row("2025-02-03"),
+    { ...row("2025-02-04"), date: undefined },
+  ];
+  assert.equal(page.groupEmptyReason(withoutDate, 2, 3), null);
+  const emptyDate = [row("2025-02-03"), { ...row("2025-02-04"), date: "" }];
+  assert.equal(page.groupEmptyReason(emptyDate, 2, 3), null);
+});

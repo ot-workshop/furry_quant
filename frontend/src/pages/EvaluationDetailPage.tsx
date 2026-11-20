@@ -62,15 +62,18 @@ export default function EvaluationDetailPage({ id }: { id: string }) {
 }
 
 export function groupEmptyReason(
-  daily: FactorDailyDiagnostic[],
+  daily: FactorDailyDiagnostic[] | null | undefined,
   signalDates: number | null | undefined,
   minCrossSection: number | null | undefined,
 ): string | null {
   // Only report a cause that the whole stored series proves: the daily records
-  // must cover the summary's signal dates exactly once. Partial evidence falls
-  // back to the generic wording instead of claiming a whole-period cause.
-  if (!daily.length) return null;
-  const uniqueDates = new Set(daily.map((row) => row.date));
+  // must be an array, every row must carry a date, and the dates must cover the
+  // summary's signal dates exactly once. Anything less keeps the generic note.
+  if (!Array.isArray(daily) || daily.length === 0) return null;
+  const dates = daily.map((row) => row?.date);
+  if (dates.some((date) => typeof date !== "string" || date.length === 0))
+    return null;
+  const uniqueDates = new Set(dates);
   if (uniqueDates.size !== daily.length) return null;
   // Without a usable signal-date count the series cannot be shown complete.
   if (typeof signalDates !== "number" || signalDates <= 0) return null;
