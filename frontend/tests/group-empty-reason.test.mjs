@@ -72,3 +72,13 @@ test("missing daily or a row without a date falls back instead of claiming a cau
   const emptyDate = [row("2025-02-03"), { ...row("2025-02-04"), date: "" }];
   assert.equal(page.groupEmptyReason(emptyDate, 2, 3), null);
 });
+
+test("a whitespace-only date counts as missing", () => {
+  const spaced = [row("2025-02-03"), { ...row("2025-02-04"), date: "   " }];
+  assert.equal(page.groupEmptyReason(spaced, 2, 3), null);
+  const trimmed = [
+    row("2025-02-03"),
+    { ...row("2025-02-04"), date: " 2025-02-04 " },
+  ];
+  assert.match(page.groupEmptyReason(trimmed, 2, 3) ?? "", /同时具备有效评分/);
+});

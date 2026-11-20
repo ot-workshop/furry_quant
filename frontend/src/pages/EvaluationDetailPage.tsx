@@ -70,9 +70,11 @@ export function groupEmptyReason(
   // must be an array, every row must carry a date, and the dates must cover the
   // summary's signal dates exactly once. Anything less keeps the generic note.
   if (!Array.isArray(daily) || daily.length === 0) return null;
-  const dates = daily.map((row) => row?.date);
-  if (dates.some((date) => typeof date !== "string" || date.length === 0))
-    return null;
+  const dates = daily.map((row) =>
+    typeof row?.date === "string" ? row.date.trim() : "",
+  );
+  // A blank or whitespace-only date is not a stored day.
+  if (dates.some((date) => date.length === 0)) return null;
   const uniqueDates = new Set(dates);
   if (uniqueDates.size !== daily.length) return null;
   // Without a usable signal-date count the series cannot be shown complete.
