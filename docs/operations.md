@@ -214,6 +214,10 @@ docker compose logs --tail=100 db storage-init migrate api worker
 
 无论选哪条，迁移前先做一次一致备份并记录；将来若有迁移修改既有表结构，本节口径需重写，不能沿用。
 
+**不要用整栈 `docker compose up -d` 回滚跳迁移的版本**：compose 的 `migrate` 服务会随 `up` 重建并执行旧镜像里的 `alembic upgrade head`，而库已停在更新的版本，旧代码里没有那个 revision，会报 `Can't locate revision identified by ...` 并非零退出；而 api/worker 依赖 `migrate` 成功，于是整栈起不来（比 503 更早、更容易误判成环境故障）。正确顺序是：先把库处理到目标镜像声明的版本（降级或恢复备份）→ 只替换目标服务（如 `docker compose ... up -d --no-deps --pull never api`）→ 冒烟 200。
+
+失败处理：看到 `migrate` 容器非零退出且日志里有 `Can't locate revision`，含义是“镜像与库的迁移版本不匹配”；处置是回滚库版本或换回匹配镜像，不是重建数据库。
+
 发布记录除原有字段外，一并写明本次的迁移头（或“未变”），不要靠事后推断。
 
 先完成[发布准入与版本核对](#发布准入与版本核对)，确认没有运行中的任务；在同一专用 Bash 终端沿已核函数继续。以下是发布专用停写步骤，不用例行备份替代。任一步失败立即退出，保留现场并由负责人处理；新开终端重新初始化及核验目标。
