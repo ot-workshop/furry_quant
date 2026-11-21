@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { RightOutlined } from "@ant-design/icons";
 import { poolLabel } from "../utils/format";
 import {
   App,
@@ -214,18 +215,20 @@ export function TaskDetail({ task }: { task: ResearchTask }) {
       {!isExperimentTask(task) &&
       task.status !== "queued" &&
       task.status !== "cancelled" ? (
-        <Steps
-          size="small"
-          current={stageIndex(task)}
-          status={
-            failed
-              ? "error"
-              : task.status === "succeeded"
-                ? "finish"
-                : "process"
-          }
-          items={RESEARCH_STAGES.map((stage) => ({ title: stage.title }))}
-        />
+        <div className="task-detail-steps">
+          <Steps
+            size="small"
+            current={stageIndex(task)}
+            status={
+              failed
+                ? "error"
+                : task.status === "succeeded"
+                  ? "finish"
+                  : "process"
+            }
+            items={RESEARCH_STAGES.map((stage) => ({ title: stage.title }))}
+          />
+        </div>
       ) : null}
       {failure ? (
         <Typography.Text
@@ -319,6 +322,13 @@ export function TaskTable({
     }
   }
 
+  function toggleDetail(taskId: string) {
+    setExpandedDetails((prev) => ({
+      ...prev,
+      [taskId]: !prev[taskId],
+    }));
+  }
+
   return (
     <div className="task-list-wrap">
       <div className="task-list" role="list">
@@ -331,17 +341,71 @@ export function TaskTable({
             task.status === "failed" && failure?.tone !== "neutral";
           const isActive =
             task.status === "queued" || task.status === "running";
+          const detailId = `task-detail-${task.id}`;
 
           return (
             <div
               key={task.id}
               role="listitem"
               data-task-id={task.id}
-              className={`task-row${isFailureAccent ? " task-row-failed" : ""}`}
+              tabIndex={compact ? undefined : 0}
+              className={`task-row${compact ? "" : " task-row-interactive"}${isFailureAccent ? " task-row-failed" : ""}${detailOpen ? " task-row-open" : ""}`}
+              onClick={
+                compact
+                  ? undefined
+                  : (event) => {
+                      const target = event.target as HTMLElement | null;
+                      if (target?.closest("a,button,input,.task-row-detail")) {
+                        return;
+                      }
+                      toggleDetail(task.id);
+                    }
+              }
+              onKeyDown={
+                compact
+                  ? undefined
+                  : (event) => {
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        toggleDetail(task.id);
+                      } else if (event.key === "Escape" && detailOpen) {
+                        event.preventDefault();
+                        setExpandedDetails((prev) => ({
+                          ...prev,
+                          [task.id]: false,
+                        }));
+                      }
+                    }
+              }
             >
               <div className="task-row-main">
-                <div className="task-row-info">
+                <div className="task-row-top">
                   <div className="task-row-head">
+                    {!compact ? (
+                      <button
+                        type="button"
+                        className={`task-row-expand-btn${detailOpen ? " is-open" : ""}`}
+                        aria-expanded={detailOpen}
+                        aria-controls={detailId}
+                        aria-label={
+                          detailOpen
+                            ? `收起任务 ${task.name} 详情`
+                            : `展开任务 ${task.name} 详情`
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleDetail(task.id);
+                        }}
+                      >
+                        <span
+                          className="task-row-expand-circle"
+                          aria-hidden="true"
+                        >
+                          <RightOutlined />
+                        </span>
+                      </button>
+                    ) : null}
                     <div className="task-row-title-wrap">
                       <Typography.Text
                         strong
@@ -356,6 +420,67 @@ export function TaskTable({
                       {isExperimentTask(task) ? <Tag>方案比较</Tag> : null}
                     </span>
                   </div>
+                  <div className="task-row-actions">
+                    {task.status === "queued" ? (
+                      <Popconfirm
+                        title="取消这个排队任务？"
+                        onConfirm={() => void cancel(task)}
+                      >
+                        <Button size="small" type="link" danger>
+                          取消
+                        </Button>
+                      </Popconfirm>
+                    ) : null}
+                    {!compact && !isExperimentTask(task) ? (
+                      <Button
+                        size="small"
+                        type="link"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          navigate(paths.newResearch(task.id));
+                        }}
+                      >
+                        复用配置
+                      </Button>
+                    ) : null}
+                    {!compact && task.kind === "research" ? (
+                      <Button
+                        size="small"
+                        type="link"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          navigate(
+                            `${paths.newExperiment()}?mode=comparison&from=${encodeURIComponent(task.id)}`,
+                          );
+                        }}
+                      >
+                        收益来源对照
+                      </Button>
+                    ) : null}
+                    {!compact ? (
+                      <Button
+                        size="small"
+                        type="link"
+                        aria-expanded={detailOpen}
+                        aria-controls={detailId}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleDetail(task.id);
+                        }}
+                      >
+                        {detailOpen ? "收起详情" : "详情"}
+                      </Button>
+                    ) : null}
+                  </div>
+                  <div className="task-row-spacer" aria-hidden="true" />
+                </div>
+                <div
+                  className={
+                    compact
+                      ? "task-row-sub"
+                      : "task-row-sub task-row-sub-indented"
+                  }
+                >
                   {failure ? (
                     <div className="task-row-reason">
                       <div
@@ -388,12 +513,13 @@ export function TaskTable({
                           type="button"
                           className="task-reason-toggle"
                           aria-expanded={reasonOpen}
-                          onClick={() =>
+                          onClick={(event) => {
+                            event.stopPropagation();
                             setExpandedReasons((prev) => ({
                               ...prev,
                               [task.id]: !prev[task.id],
-                            }))
-                          }
+                            }));
+                          }}
                         >
                           {reasonOpen ? "收起原因" : "查看完整原因"}
                         </button>
@@ -426,58 +552,13 @@ export function TaskTable({
                     </div>
                   ) : null}
                 </div>
-                <div className="task-row-actions">
-                  {task.status === "queued" ? (
-                    <Popconfirm
-                      title="取消这个排队任务？"
-                      onConfirm={() => void cancel(task)}
-                    >
-                      <Button size="small" type="link" danger>
-                        取消
-                      </Button>
-                    </Popconfirm>
-                  ) : null}
-                  {!compact && !isExperimentTask(task) ? (
-                    <Button
-                      size="small"
-                      type="link"
-                      onClick={() => navigate(paths.newResearch(task.id))}
-                    >
-                      复用配置
-                    </Button>
-                  ) : null}
-                  {!compact && task.kind === "research" ? (
-                    <Button
-                      size="small"
-                      type="link"
-                      onClick={() =>
-                        navigate(
-                          `${paths.newExperiment()}?mode=comparison&from=${encodeURIComponent(task.id)}`,
-                        )
-                      }
-                    >
-                      收益来源对照
-                    </Button>
-                  ) : null}
-                  {!compact ? (
-                    <Button
-                      size="small"
-                      type="link"
-                      aria-expanded={detailOpen}
-                      onClick={() =>
-                        setExpandedDetails((prev) => ({
-                          ...prev,
-                          [task.id]: !prev[task.id],
-                        }))
-                      }
-                    >
-                      {detailOpen ? "收起详情" : "详情"}
-                    </Button>
-                  ) : null}
-                </div>
               </div>
               {detailOpen ? (
-                <div className="task-row-detail">
+                <div
+                  id={detailId}
+                  className={`task-row-detail${isFailureAccent ? " task-row-detail-failed" : ""}`}
+                  onClick={(event) => event.stopPropagation()}
+                >
                   <TaskDetail task={task} />
                 </div>
               ) : null}
