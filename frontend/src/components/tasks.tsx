@@ -212,6 +212,11 @@ export function TaskDetail({ task }: { task: ResearchTask }) {
   const failure = describeTaskFailure(task);
   return (
     <Flex vertical gap={12} className="task-detail-panel">
+      <div className="task-detail-header">
+        <Typography.Text strong className="task-detail-title">
+          {task.name}
+        </Typography.Text>
+      </div>
       {!isExperimentTask(task) &&
       task.status !== "queued" &&
       task.status !== "cancelled" ? (

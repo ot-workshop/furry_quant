@@ -994,12 +994,25 @@ body {
 }
 
 @media (min-width: 768px) {
+  .task-row-top {
+    align-items: flex-start;
+  }
+  .task-row-head {
+    align-items: flex-start;
+  }
+  .task-row-title-wrap {
+    padding-top: 5px;
+  }
   .task-row-title {
     display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
+    line-height: 1.45;
     max-width: 100%;
+  }
+  .task-row-badges {
+    margin-top: 4px;
   }
   .task-row-actions .ant-btn-sm {
     min-height: 32px;
@@ -1010,7 +1023,7 @@ body {
 
 @media (min-width: 768px) and (max-width: 1199px) {
   .task-row-title-wrap {
-    max-width: 360px;
+    max-width: 380px;
   }
   .task-row-top {
     gap: 8px 12px;
@@ -1124,6 +1137,14 @@ body {
 
 .task-detail-panel {
   min-width: 0;
+}
+
+.task-detail-title {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-height: 1.45;
 }
 
 .task-detail-steps {

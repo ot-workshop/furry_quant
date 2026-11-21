@@ -136,6 +136,10 @@ test("TaskTable restores head arrow button, single-toggle row click, keyboard En
     assert.equal(arrowBtn.getAttribute("aria-expanded"), "true");
     const detail = document.getElementById(controlsId);
     assert.ok(detail, "Expected detail panel matching aria-controls");
+    assert.equal(
+      detail.querySelector(".task-detail-title")?.textContent,
+      sampleTasks[0].name,
+    );
     assert.ok(detail.querySelector(".task-detail-steps"));
 
     await act(async () => arrowBtn.click());
