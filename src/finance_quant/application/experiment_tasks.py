@@ -69,8 +69,13 @@ def _pin_candidates(research: dict, execution: dict, plan: ExperimentPlan, data_
         execution["financials"] = binding.as_dict()
 
 
-def validate_experiment_request(document: dict, data_root, runs_root, *, result_store=None) -> tuple[dict, dict]:
-    """Validate everything the worker will need before anything is queued or written."""
+def validate_experiment_document(document: dict):
+    """Cheap, request-path checks only: shape, plan, and the comparison/factor rule.
+
+    Everything expensive (pinning, selection inputs, preflight, industry context) stays in
+    `validate_experiment_request`, which the worker runs in its `prepare` stage before any
+    artefact is written.
+    """
 
     _fields(
         document,
@@ -82,6 +87,13 @@ def validate_experiment_request(document: dict, data_root, runs_root, *, result_
     plan = _plan(document)
     if plan.comparison and document.get("factor_selection"):
         raise ValueError("收益来源对照不参与MILP样本外方案选择，请使用分段比较")
+    return plan
+
+
+def validate_experiment_inputs(document: dict, data_root, runs_root, *, result_store=None) -> tuple[dict, dict]:
+    """Validate everything the worker will need before anything is queued or written."""
+
+    plan = validate_experiment_document(document)
     bound = selection_validation(result_store, document, plan, data_root, runs_root)
     research, execution = validate_request(
         _research_document(document, plan),
@@ -141,6 +153,17 @@ def validate_experiment_request(document: dict, data_root, runs_root, *, result_
     return normalized, execution
 
 
+def validate_experiment_request(document: dict, data_root, runs_root, *, result_store=None) -> tuple[dict, dict]:
+    """Cheap checks plus the heavy ones, for callers that must validate before queueing.
+
+    `submit_experiment` no longer uses this: it queues after `validate_experiment_document`
+    and the worker runs `validate_experiment_inputs` at its `prepare` stage.
+    """
+
+    validate_experiment_document(document)
+    return validate_experiment_inputs(document, data_root, runs_root, result_store=result_store)
+
+
 def _data_config(manifest: dict, codes) -> DataConfig:
 
     return DataConfig(
@@ -169,6 +192,17 @@ def experiment_total(document: dict) -> int:
 
 
 def run_experiment_task(context, request: dict, execution: dict) -> dict:
+
+    if execution.get("prepare_state") == "pending":
+        # New-style task: the request in the row is the raw document; the authoritative
+        # request/execution pair is computed here, before any artefact is written. Tasks
+        # queued before this change carry a frozen execution and take the old path.
+        request, execution = validate_experiment_inputs(
+            request,
+            context.data_root,
+            context.runs_root,
+            result_store=context.result_store_factory(None),
+        )
 
     plan = _plan(request)
     evidence = execution.get("factor_selection")

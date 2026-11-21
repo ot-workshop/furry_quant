@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from test_managed_data import Provider
 
+from finance_quant.application import experiment_tasks
 from finance_quant.application import experiment_workflow as workflow
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
 from finance_quant.data.financials import financial_root
@@ -299,6 +300,72 @@ def experiment_request(snapshot_id):
     }
 
 
+def test_web_experiment_with_discontiguous_periods_queues_then_fails_at_prepare(tmp_path):
+    """Ranges need the trading calendar, so the check belongs to the worker's prepare stage."""
+
+    data, runs = tmp_path / "data", tmp_path / "runs"
+    manifest = publish_fixture_snapshot(
+        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
+    )
+    seed_earnings(financial_root(data), ("600000.SH", "000001.SZ", "600519.SH"))
+    service = make_service(runs, data)
+    client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
+
+    invalid = json.loads(json.dumps(experiment_request(manifest["id"])))
+    invalid["plan"]["periods"]["validation"]["start"] = "2025-01-21"
+    response = client.post(
+        "/api/v1/research/experiments", json=invalid, headers={"Idempotency-Key": "experiment-bad-2"}
+    )
+    assert response.status_code == 202, response.text
+    task = response.json()
+    assert service.store.claim() == task["id"]
+    finished = run_claimed(service, task["id"])
+    assert finished["status"] == "failed"
+    assert "首尾相接" in (finished["error"] or "")
+
+
+def test_web_experiment_submit_never_touches_heavy_paths(tmp_path, monkeypatch):
+    """A comparison submission must only do cheap checks: every heavy path is a sentinel."""
+
+    data, runs = tmp_path / "data", tmp_path / "runs"
+    manifest = publish_fixture_snapshot(
+        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
+    )
+    seed_earnings(financial_root(data), ("600000.SH", "000001.SZ", "600519.SH"))
+    service = make_service(runs, data)
+    client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
+
+    touched = []
+
+    def sentinel(name):
+        def boom(*_args, **_kwargs):
+            touched.append(name)
+            raise AssertionError(f"{name} must not run during submit")
+
+        return boom
+
+    for name in (
+        "snapshot_registry",
+        "validate_comparison_inputs",
+        "dynamic_preflight",
+        "_preflight",
+        "selection_validation",
+        "validate_selection_inputs",
+        "_pin_candidates",
+    ):
+        if hasattr(experiment_tasks, name):
+            monkeypatch.setattr(experiment_tasks, name, sentinel(name))
+
+    response = client.post(
+        "/api/v1/research/experiments",
+        json=experiment_request(manifest["id"]),
+        headers={"Idempotency-Key": "experiment-cheap-1"},
+    )
+    assert response.status_code == 202, response.text
+    assert touched == []
+    assert service.store.list()["total"] == 1
+
+
 def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path):
 
     data, runs = tmp_path / "data", tmp_path / "runs"
@@ -309,12 +376,13 @@ def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path)
     service = make_service(runs, data)
     client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
     body = experiment_request(manifest["id"])
-    invalid = json.loads(json.dumps(body))
-    invalid["plan"]["periods"]["validation"]["start"] = "2025-01-21"
+    # Structural errors are still rejected by the cheap request-path validation.
+    structural = json.loads(json.dumps(body))
+    structural["plan"]["candidates"] = structural["plan"]["candidates"][:1]
     response = client.post(
-        "/api/v1/research/experiments", json=invalid, headers={"Idempotency-Key": "experiment-bad-1"}
+        "/api/v1/research/experiments", json=structural, headers={"Idempotency-Key": "experiment-bad-1"}
     )
-    assert response.status_code == 422 and "首尾相接" in response.json()["detail"]
+    assert response.status_code == 422
     assert service.store.list()["total"] == 0 and not runs.exists()
     response = client.post("/api/v1/research/experiments", json=body, headers={"Idempotency-Key": "experiment-ok-1"})
     assert response.status_code == 202, response.text
