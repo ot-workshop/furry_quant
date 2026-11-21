@@ -193,6 +193,17 @@ def experiment_total(document: dict) -> int:
 
 def run_experiment_task(context, request: dict, execution: dict) -> dict:
 
+    if execution.get("prepare_state") == "pending":
+        # New-style task: the request in the row is the raw document; the authoritative
+        # request/execution pair is computed here, before any artefact is written. Tasks
+        # queued before this change carry a frozen execution and take the old path.
+        request, execution = validate_experiment_inputs(
+            request,
+            context.data_root,
+            context.runs_root,
+            result_store=context.result_store_factory(None),
+        )
+
     plan = _plan(request)
     evidence = execution.get("factor_selection")
     verify_queued_selection(context.result_store_factory(None), evidence)

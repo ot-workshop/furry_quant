@@ -9,7 +9,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from finance_quant.application.experiment_tasks import experiment_total, validate_experiment_request
+from finance_quant.application.experiment_tasks import (
+    experiment_total,
+    validate_experiment_document,
+)
 from finance_quant.application.research_requests import validate_request
 from finance_quant.task_contracts import TaskConflict as TaskConflict
 from finance_quant.task_contracts import TaskStore
@@ -32,7 +35,8 @@ class TaskService:
 
     def submit_experiment(self, document: dict, key: str, *, result_store=None) -> dict[str, Any]:
 
-        request, execution = validate_experiment_request(
-            document, self.data_root, self.runs_root, result_store=result_store
-        )
-        return self.store.create_experiment(request, execution, key, total=experiment_total(request))
+        # Cheap checks only: the expensive validation runs in the worker's prepare stage,
+        # so a comparison submission returns as soon as it is queued.
+        validate_experiment_document(document)
+        execution = {"prepare_state": "pending"}
+        return self.store.create_experiment(document, execution, key, total=experiment_total(document))
