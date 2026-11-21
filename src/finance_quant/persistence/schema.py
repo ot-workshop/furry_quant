@@ -323,6 +323,109 @@ run_artifact = Table(
     Column("format", String(20), nullable=False),
 )
 
+
+# ---------------------------------------------------------------- forward registration
+# Two tables only. Evidence lives inside the registration row (registration proof and the
+# score snapshot) and inside each attempt row (the attempt's own evidence), so there is no
+# separate evidence table. See docs/forward-registration.md for the time model.
+
+forward_registration = Table(
+    "forward_registration",
+    metadata,
+    Column("id", String(40), primary_key=True),
+    Column("idempotency_key", String(80), nullable=False, unique=True),
+    Column("fingerprint", String(64), nullable=False),
+    Column("request", JSONB, nullable=False),
+    Column("name", Text, nullable=False),
+    Column("status", String(24), nullable=False),
+    Column("signal_date", Date, nullable=False),
+    Column("entry_date", Date, nullable=False),
+    Column("exit_date", Date, nullable=False),
+    Column("calendar_version", String(40), nullable=False),
+    Column("calendar_fingerprint", String(64), nullable=False),
+    Column("pool_codes", JSONB, nullable=False),
+    Column("pool_size", Integer, nullable=False),
+    Column("top_k", Integer, nullable=False),
+    Column("factor", String(32), nullable=False),
+    Column("factor_window", Integer, nullable=False),
+    Column("factor_direction", String(8), nullable=False),
+    Column("data_rules", JSONB, nullable=False),
+    Column("strategy_rules", JSONB, nullable=False),
+    Column("dataset_id", String(100)),
+    Column("code_sha256", String(64), nullable=False),
+    # registration proof (two-phase, see docs): lock-seen sample, staging sample, sealed sample
+    timestamp("written_at"),
+    timestamp("staging_at"),
+    timestamp("confirmed_at"),
+    Column("confirmed_evidence_sha256", String(64)),
+    # snapshots bound later: score data captured after the signal close, labels after maturity
+    Column("score_snapshot", JSONB),
+    Column("label_snapshot", JSONB),
+    Column("result", JSONB),
+    timestamp("result_recorded_at"),
+    Column("invalid_reason", Text),
+    timestamp("created_at", nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "status IN ('registered','awaiting_score','scoring','scored','awaiting_exit',"
+        "'awaiting_quote','verifying','verified','missed','expired','failed')",
+        name="ck_forward_registration_status",
+    ),
+    CheckConstraint("pool_size > 0 AND top_k > 0 AND top_k < pool_size", name="ck_forward_registration_k"),
+    CheckConstraint("factor_direction IN ('high','low')", name="ck_forward_registration_direction"),
+    CheckConstraint("signal_date < entry_date AND entry_date <= exit_date", name="ck_forward_registration_dates"),
+)
+Index("ix_forward_registration_status", forward_registration.c.status, forward_registration.c.created_at)
+Index("ix_forward_registration_signal", forward_registration.c.signal_date)
+
+forward_attempt = Table(
+    "forward_attempt",
+    metadata,
+    Column("id", String(40), primary_key=True),
+    Column("registration_id", String(40), ForeignKey("forward_registration.id"), nullable=False),
+    Column("kind", String(10), nullable=False),
+    Column("attempt_no", Integer, nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("idempotency_key", String(80), nullable=False, unique=True),
+    Column("task_id", String(40), ForeignKey("research_task.id")),
+    timestamp("deadline_at", nullable=False),
+    timestamp("lock_seen_at"),
+    timestamp("staging_at"),
+    timestamp("sealed_at"),
+    Column("evidence_sha256", String(64)),
+    Column("evidence_row_id", String(64)),
+    Column("evidence", JSONB),
+    Column("error", Text),
+    timestamp("created_at", nullable=False, server_default=func.now()),
+    CheckConstraint("kind IN ('score','verify')", name="ck_forward_attempt_kind"),
+    CheckConstraint(
+        "status IN ('queued','running','succeeded','failed','missed','cancelled','interrupted')",
+        name="ck_forward_attempt_status",
+    ),
+    CheckConstraint("attempt_no > 0", name="ck_forward_attempt_no"),
+)
+Index(
+    "uq_forward_attempt_active",
+    forward_attempt.c.registration_id,
+    forward_attempt.c.kind,
+    unique=True,
+    postgresql_where=forward_attempt.c.status.in_(("queued", "running")),
+)
+Index(
+    "uq_forward_attempt_succeeded",
+    forward_attempt.c.registration_id,
+    forward_attempt.c.kind,
+    unique=True,
+    postgresql_where=forward_attempt.c.status == "succeeded",
+)
+Index(
+    "uq_forward_attempt_no",
+    forward_attempt.c.registration_id,
+    forward_attempt.c.kind,
+    forward_attempt.c.attempt_no,
+    unique=True,
+)
+Index("uq_forward_attempt_queue", forward_attempt.c.status, forward_attempt.c.created_at)
+
 MARKET_TABLES = {
     t.name: t
     for t in (

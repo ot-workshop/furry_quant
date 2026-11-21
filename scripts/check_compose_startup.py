@@ -48,6 +48,9 @@ def execute(arguments, *, input_text=None, check=True, timeout=240):
     return result
 
 
+HEAD_REVISION = "0002_forward_registration"
+
+
 class Stack:
     def __init__(self, directory, image, label):
         self.root = directory / label
@@ -128,7 +131,7 @@ class Stack:
         rows = json.loads(raw) if raw.startswith("[") else [json.loads(line) for line in raw.splitlines()]
         return {row["Service"]: row for row in rows}
 
-    def ready(self, revision="0001_postgres"):
+    def ready(self, revision=HEAD_REVISION):
         deadline = time.monotonic() + 75
         while time.monotonic() < deadline:
             states = self.states()
@@ -194,7 +197,7 @@ def upgrade_image(directory, image):
 import sqlalchemy as sa
 
 revision = "startup_probe_v2"
-down_revision = "0001_postgres"
+down_revision = "0002_forward_registration"
 branch_labels = None
 depends_on = None
 
@@ -211,7 +214,7 @@ def downgrade():
 FROM ${BASE_IMAGE}
 USER root
 COPY 9000_startup_probe.py /app/alembic/versions/
-RUN python -c "from pathlib import Path; p = Path('/app/src/finance_quant/persistence/database.py'); p.write_text(p.read_text().replace('0001_postgres', 'startup_probe_v2'))"
+RUN python -c "from pathlib import Path; p = Path('/app/src/finance_quant/persistence/database.py'); p.write_text(p.read_text().replace('0002_forward_registration', 'startup_probe_v2'))"
 USER quant
 """,
         encoding="utf-8",
@@ -221,9 +224,32 @@ USER quant
     return tag
 
 
+def _report_service_failure(stack, service):
+    """A failed `up` hides the container output; print it so CI logs carry the reason."""
+    try:
+        print(f"--- docker compose logs {service} ---", flush=True)
+        print(stack.run("logs", "--no-color", "--tail", "200", service).stdout, flush=True)
+    except BaseException as error:  # noqa: BLE001 - diagnostics must never mask the failure
+        print(f"(logs unavailable: {error})", flush=True)
+    try:
+        identifier = stack.run("ps", "--all", "-q", service).stdout.strip()
+        if identifier:
+            detail = execute(
+                ["docker", "inspect", identifier, "--format", "{{.State.ExitCode}} {{.State.Error}}"]
+            ).stdout.strip()
+            print(f"--- {service} exit: {detail} ---", flush=True)
+    except BaseException as error:  # noqa: BLE001
+        print(f"(inspect unavailable: {error})", flush=True)
+
+
 def startup_and_upgrade(stack, directory):
     print("Checking fresh startup, password literals and writable volumes...", flush=True)
-    stack.run("up", "-d")
+    try:
+        stack.run("up", "-d")
+    except BaseException:
+        _report_service_failure(stack, "migrate")
+        _report_service_failure(stack, "api")
+        raise
     stack.ready()
     stack.sql(
         "CREATE TABLE compose_startup_probe (value text NOT NULL); INSERT INTO compose_startup_probe VALUES ('kept');"

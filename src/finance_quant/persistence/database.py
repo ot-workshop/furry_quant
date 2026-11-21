@@ -8,7 +8,7 @@ from functools import lru_cache
 from sqlalchemy import URL, create_engine, text
 from sqlalchemy.engine import Engine
 
-SCHEMA_REVISION = "0001_postgres"
+SCHEMA_REVISION = "0002_forward_registration"
 
 
 def database_url(environment=None):

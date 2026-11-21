@@ -39,6 +39,7 @@ from finance_quant.data.shared_market import configure_store
 from finance_quant.persistence.market import MarketRepository
 from finance_quant.persistence.results import PgResultStore
 from finance_quant.persistence.tasks import PgTaskStore
+from finance_quant.task_contracts import TaskConflict
 
 LOGGER = logging.getLogger(__name__)
 
@@ -90,6 +91,18 @@ def runtime_failure_details(error, stage, identifier):
     }
 
 
+def _finish_or_log(store, identifier, status, **values):
+    """Write a terminal state, but never let a lost race kill the worker.
+
+    A task that is already terminal (cancelled elsewhere, recovered, or finished twice)
+    raises TaskConflict; that is not a worker failure, so it is logged and swallowed.
+    """
+    try:
+        store.finish(identifier, status, **values)
+    except TaskConflict as conflict:
+        LOGGER.warning("Task %s already left the running state: %s", identifier, conflict)
+
+
 def run_task(
     runs_root: Path,
     data_root: Path,
@@ -113,7 +126,7 @@ def run_task(
                 return execute(store, task, root=storage_root)
             except Exception as error:
                 details = runtime_failure_details(error, "download", identifier)
-                store.finish(identifier, "failed", error=details["summary"], error_details=details)
+                _finish_or_log(store, identifier, "failed", error=details["summary"], error_details=details)
                 return
         if kind == "data_update":
             return run_data_update_task(store, task, data_root)
@@ -133,11 +146,11 @@ def run_task(
                 result = _run_historical(context, task["request"], task["execution"])
             else:
                 result = _run_snapshot(context, task["request"], task["execution"])
-            store.finish(identifier, "succeeded", result=result)
+            _finish_or_log(store, identifier, "succeeded", result=result)
         except Exception as error:
             details = runtime_failure_details(error, store.get(identifier)["stage"], identifier)
             LOGGER.error("Task %s failed at %s: %s", identifier, details["stage"], details["summary"])
-            store.finish(identifier, "failed", error=details["summary"], error_details=details)
+            _finish_or_log(store, identifier, "failed", error=details["summary"], error_details=details)
 
 
 def _run_historical(context: TaskContext, request: dict, execution: dict) -> dict:
@@ -214,7 +227,7 @@ def run_download_task(store, task, data_root):
     identifier = task["id"]
     root = Path(task["execution"]["root"]).resolve()
     if not root.is_relative_to(data_root.resolve()):
-        store.finish(identifier, "failed", error="下载目录超出数据根目录")
+        _finish_or_log(store, identifier, "failed", error="下载目录超出数据根目录")
         return
     try:
         store.stage(identifier, "download", "下载并检查数据", 0)
@@ -234,7 +247,7 @@ def run_download_task(store, task, data_root):
         )
     except Exception as error:
         details = runtime_failure_details(error, "download", identifier)
-        store.finish(identifier, "failed", error=details["summary"], error_details=details)
+        _finish_or_log(store, identifier, "failed", error=details["summary"], error_details=details)
 
 
 def run_data_update_task(store, task, data_root):
@@ -261,7 +274,7 @@ def run_data_update_task(store, task, data_root):
         )
     except Exception as error:
         details = runtime_failure_details(error, "download", identifier)
-        store.finish(identifier, "failed", error=details["summary"], error_details=details)
+        _finish_or_log(store, identifier, "failed", error=details["summary"], error_details=details)
 
 
 def run_financial_download_task(store, task, data_root):
@@ -284,7 +297,7 @@ def run_financial_download_task(store, task, data_root):
         )
     except Exception as error:
         details = runtime_failure_details(error, "download", identifier)
-        store.finish(identifier, "failed", error=details["summary"], error_details=details)
+        _finish_or_log(store, identifier, "failed", error=details["summary"], error_details=details)
 
 
 def run_industry_download_task(store, task):
@@ -320,7 +333,7 @@ def run_industry_download_task(store, task):
         )
     except Exception as error:
         details = runtime_failure_details(error, "download", identifier)
-        store.finish(identifier, "failed", error=details["summary"], error_details=details)
+        _finish_or_log(store, identifier, "failed", error=details["summary"], error_details=details)
 
 
 def main():
