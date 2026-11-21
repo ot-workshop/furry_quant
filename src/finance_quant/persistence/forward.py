@@ -28,10 +28,13 @@ from finance_quant.checksums import sha256_text
 from .schema import forward_attempt
 
 
+def canonical_json(payload: object) -> str:
+    """Stable text form of a payload; the digest is taken over exactly this text."""
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def canonical_sha256(payload: object) -> str:
-    """Stable digest for an evidence payload."""
-    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return sha256_text(blob)
+    return sha256_text(canonical_json(payload))
 
 
 @dataclass(frozen=True)
@@ -107,7 +110,11 @@ def seal_success(  # phase B
         return Confirmation(True, row["sealed_at"], "already-sealed")
     if row["staging_at"] is None:
         return Confirmation(False, None, "no-staging-proof")
-    if row["evidence_sha256"] != row["evidence_sha256"]:
+    if row["evidence"] is None or row["evidence_sha256"] is None:
+        return Confirmation(False, None, "no-evidence")
+    if sha256_text(canonical_json(row["evidence"])) != row["evidence_sha256"]:
+        # The stored payload no longer matches the digest bound at staging time: the proof
+        # is unusable, so this can never be sealed as success.
         return Confirmation(False, None, "evidence-mismatch")
 
     sampled = connection.execute(text("select clock_timestamp()")).scalar_one()
