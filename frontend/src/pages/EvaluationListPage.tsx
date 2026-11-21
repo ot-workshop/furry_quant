@@ -9,6 +9,7 @@ import {
   Resource,
   Section,
   TableScroll,
+  WrapTag,
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import type { EvaluationMetadata } from "../types";
@@ -52,10 +53,10 @@ export default function EvaluationListPage() {
                     </span>,
                   ],
                   tags: row.factor_config.map((f) => (
-                    <Tag key={f.id ?? f.name}>
-                      {factorLabel(f.name)}
-                      {f.window ? ` ${f.window}日` : ""}
-                    </Tag>
+                    <WrapTag
+                      key={f.id ?? f.name}
+                      text={`${factorLabel(f.name)}${f.window ? ` ${f.window}日` : ""}`}
+                    />
                   )),
                   onClick: () => navigate(paths.evaluation(row.id)),
                 }))}

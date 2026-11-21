@@ -71,33 +71,38 @@ export default function BacktestListPage() {
           {() =>
             isMobile ? (
               <MobileCardList
-                items={items.map((row) => ({
-                  key: row.id,
-                  title: row.name,
-                  badges: <Tag>{STRATEGIES[row.strategy] ?? row.strategy}</Tag>,
-                  meta: [
-                    <span key="ret">
-                      总收益{" "}
-                      <Signed
-                        value={row.metrics?.total_return}
-                        format={(v) => formatPercent(v)}
-                      />
-                    </span>,
-                    <span key="dd">
-                      回撤{" "}
-                      <span className="numeric-token">
-                        {formatPercent(row.metrics?.max_drawdown)}
-                      </span>
-                    </span>,
-                    <span key="range" className="numeric-token">
-                      {row.start_date} ~ {row.end_date}
-                    </span>,
-                    <span key="created" className="numeric-token">
-                      {formatDateTime(row.created_at)}
-                    </span>,
-                  ],
-                  onClick: () => navigate(paths.backtest(row.id)),
-                }))}
+                resetKey={query}
+                items={items.map((row) => {
+                  const strategyLabel =
+                    STRATEGIES[row.strategy] ?? row.strategy;
+                  return {
+                    key: row.id,
+                    title: row.name,
+                    subBadges: <Tag>{strategyLabel}</Tag>,
+                    meta: [
+                      <span key="ret">
+                        总收益{" "}
+                        <Signed
+                          value={row.metrics?.total_return}
+                          format={(v) => formatPercent(v)}
+                        />
+                      </span>,
+                      <span key="dd">
+                        回撤{" "}
+                        <span className="numeric-token">
+                          {formatPercent(row.metrics?.max_drawdown)}
+                        </span>
+                      </span>,
+                      <span key="range" className="numeric-token">
+                        {row.start_date} ~ {row.end_date}
+                      </span>,
+                      <span key="created" className="numeric-token">
+                        {formatDateTime(row.created_at)}
+                      </span>,
+                    ],
+                    onClick: () => navigate(paths.backtest(row.id)),
+                  };
+                })}
               />
             ) : (
               <TableScroll label="回测列表">

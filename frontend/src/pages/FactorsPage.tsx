@@ -6,7 +6,6 @@ import {
   Flex,
   Segmented,
   Select,
-  Space,
   Statistic,
   Table,
   Tabs,
@@ -16,6 +15,7 @@ import {
 import { DownloadOutlined } from "@ant-design/icons";
 import { api } from "../api/client";
 import { setSearch } from "../app/routes";
+import { useMediaQuery } from "../app/useMediaQuery";
 import { TemporalAuditPanel } from "../components/audit";
 import { MISSING_POLICY_LABELS } from "../components/FactorMissingPolicy";
 import { FactorCalculationDetails } from "../components/FactorCalculationDetails";
@@ -31,6 +31,7 @@ import {
   Resource,
   Section,
   TableScroll,
+  WrapTag,
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import type { FactorRun, FactorScore, FactorScoresResponse } from "../types";
@@ -85,6 +86,17 @@ function FactorWorkspace({
   run: FactorRun;
   search: URLSearchParams;
 }) {
+  const isNarrowSelect = useMediaQuery("(max-width: 479px)");
+  const summaryById = useMemo(
+    () =>
+      new Map(
+        runs.map((item) => [
+          item.id,
+          `${item.factor_config?.length ?? 1} 个因子 · ${item.sample_size} 只`,
+        ]),
+      ),
+    [runs],
+  );
   const dates = run.available_dates?.length ? run.available_dates : [run.as_of];
   const requestedDate = search.get("date");
   const date =
@@ -128,6 +140,11 @@ function FactorWorkspace({
                 value: item.id,
                 label: `${item.as_of} · ${item.sample_size} 只 · ${item.factor_config?.map((f) => factorLabel(f.name)).join("+") ?? item.scheme}`,
               }))}
+              labelRender={(option) =>
+                isNarrowSelect
+                  ? (summaryById.get(String(option.value)) ?? option.label)
+                  : option.label
+              }
               showSearch
               optionFilterProp="label"
               style={{ width: "100%" }}
@@ -145,15 +162,14 @@ function FactorWorkspace({
               style={{ width: "min(160px, 100%)", maxWidth: "100%" }}
             />
           </Flex>
-          <Space wrap>
+          <div className="factor-tags-wrap">
             {run.factor_config?.map((factor) => (
-              <Tag key={factor.id ?? factor.name}>
-                {factorLabel(factor.name)}
-                {factor.window ? ` ${factor.window}日` : ""} ·{" "}
-                {formatPercent(factor.weight, 0)}
-              </Tag>
+              <WrapTag
+                key={factor.id ?? factor.name}
+                text={`${factorLabel(factor.name)}${factor.window ? ` ${factor.window}日` : ""} · ${formatPercent(factor.weight, 0)}`}
+              />
             ))}
-          </Space>
+          </div>
         </Flex>
       </Card>
       <Tabs

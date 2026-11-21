@@ -394,10 +394,26 @@ export function Hint({ text }: { text: ReactNode }) {
   );
 }
 
+export function WrapTag({
+  text,
+  maxChars = 40,
+}: {
+  text: string;
+  maxChars?: number;
+}) {
+  const clamped = Array.from(text).length > maxChars;
+  return (
+    <Tag title={clamped ? text : undefined}>
+      {clamped ? <span className="tag-text-clamp">{text}</span> : text}
+    </Tag>
+  );
+}
+
 export interface MobileCardItem {
   key: string;
-  title: ReactNode;
+  title: string;
   badges?: ReactNode;
+  subBadges?: ReactNode;
   meta?: Array<ReactNode | null | undefined | false>;
   tags?: ReactNode;
   onClick?: () => void;
@@ -408,15 +424,20 @@ const MOBILE_PAGE_SIZE = 20;
 export function MobileCardList({
   items,
   paginate = true,
+  resetKey,
 }: {
   items: MobileCardItem[];
   paginate?: boolean;
+  resetKey?: string;
 }) {
   const [page, setPage] = useState(1);
+  const maxPage = Math.max(1, Math.ceil(items.length / MOBILE_PAGE_SIZE));
   useEffect(() => {
     setPage(1);
-  }, [items.length]);
-  const maxPage = Math.max(1, Math.ceil(items.length / MOBILE_PAGE_SIZE));
+  }, [resetKey]);
+  useEffect(() => {
+    if (page > maxPage) setPage(maxPage);
+  }, [page, maxPage]);
   const activePage = Math.min(page, maxPage);
   const visible = paginate
     ? items.slice(
@@ -433,11 +454,18 @@ export function MobileCardList({
           const content = (
             <>
               <div className="list-card-head">
-                <div className="list-card-title">{item.title}</div>
+                <div className="list-card-title">
+                  <span className="list-card-title-clamp" title={item.title}>
+                    {item.title}
+                  </span>
+                </div>
                 {item.badges ? (
                   <div className="list-card-badges">{item.badges}</div>
                 ) : null}
               </div>
+              {item.subBadges ? (
+                <div className="list-card-subbadges">{item.subBadges}</div>
+              ) : null}
               {metaItems.length ? (
                 <div className="list-card-meta">
                   {metaItems.map((entry, idx) => (

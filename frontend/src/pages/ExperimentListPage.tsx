@@ -63,26 +63,28 @@ export default function ExperimentListPage() {
           {(data) =>
             isMobile ? (
               <MobileCardList
-                items={data.items.map((row) => ({
-                  key: row.id,
-                  title: row.name,
-                  badges: (
-                    <Tag>
-                      {row.validation_kind === "return_comparison"
-                        ? "收益来源对照"
-                        : "分段比较"}
-                    </Tag>
-                  ),
-                  meta: [
-                    <span key="candidate">
-                      选定方案 {row.selected_candidate ?? "—"}
-                    </span>,
-                    <span key="created" className="numeric-token">
-                      {formatDateTime(row.created_at)}
-                    </span>,
-                  ],
-                  onClick: () => navigate(paths.experiment(row.id)),
-                }))}
+                items={data.items.map((row) => {
+                  const kindLabel =
+                    row.validation_kind === "return_comparison"
+                      ? "收益来源对照"
+                      : "分段比较";
+                  const longAttr = Array.from(kindLabel).length >= 5;
+                  return {
+                    key: row.id,
+                    title: row.name,
+                    badges: longAttr ? undefined : <Tag>{kindLabel}</Tag>,
+                    subBadges: longAttr ? <Tag>{kindLabel}</Tag> : undefined,
+                    meta: [
+                      <span key="candidate">
+                        选定方案 {row.selected_candidate ?? "—"}
+                      </span>,
+                      <span key="created" className="numeric-token">
+                        {formatDateTime(row.created_at)}
+                      </span>,
+                    ],
+                    onClick: () => navigate(paths.experiment(row.id)),
+                  };
+                })}
               />
             ) : (
               <TableScroll label="方案比较列表">

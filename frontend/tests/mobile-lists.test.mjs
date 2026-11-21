@@ -119,7 +119,14 @@ const evaluationsFixture = {
       created_at: "2026-11-21T06:00:00Z",
       data_version: "snap-1",
       factor_run_id: "fr-1",
-      factor_config: [{ name: "momentum", window: 20, weight: 1 }],
+      factor_config: [
+        { name: "momentum", window: 20, weight: 1 },
+        {
+          name: "超长自定义多因子测试名称用于验证手机卡片内标签自动换行与两行截断Alpha001",
+          window: 60,
+          weight: 0.5,
+        },
+      ],
       evaluation: { horizons: [1, 5], quantiles: 5 },
       start: "2020-03-02",
       end: "2026-11-13",
@@ -258,6 +265,10 @@ test("mobile viewports render two-line cards instead of tables and preserve 0 vs
     await waitFor(() => assert.ok(document.querySelector(".list-card")));
     assert.equal(document.querySelectorAll("table").length, 0);
     assert.match(document.body.textContent, /2020-03-02 ~ 2026-11-13/);
+    assert.match(
+      document.querySelector(".list-card-subbadges")?.textContent || "",
+      /动态条件股票池/,
+    );
   } finally {
     await closeBt();
   }
@@ -267,8 +278,110 @@ test("mobile viewports render two-line cards instead of tables and preserve 0 vs
     await waitFor(() => assert.ok(document.querySelector(".list-card")));
     assert.equal(document.querySelectorAll("table").length, 0);
     assert.match(document.body.textContent, /4820 只/);
+    const clampedTag = document.querySelector(".list-card .tag-text-clamp");
+    assert.ok(clampedTag, "Expected >40-char factor tag to clamp with title");
+    assert.match(
+      clampedTag.closest(".ant-tag")?.getAttribute("title") || "",
+      /超长自定义多因子/,
+    );
   } finally {
     await closeEv();
+  }
+
+  const closeFactorsMobile = await mount(factors.default, {
+    search: new URLSearchParams(),
+  });
+  try {
+    await waitFor(() =>
+      assert.match(
+        document.querySelector(
+          ".ant-select-content, .ant-select-selection-item",
+        )?.textContent || "",
+        /1 个因子 · 50 只/,
+      ),
+    );
+  } finally {
+    await closeFactorsMobile();
+  }
+});
+
+test("TaskTable resetKey resets page on filter change and preserves page during list growth", async () => {
+  setViewport(390);
+  const makeTasks = (count) =>
+    Array.from({ length: count }, (_, idx) => ({
+      id: `t-${idx}`,
+      kind: "research",
+      name: `任务 ${idx + 1}`,
+      status: "succeeded",
+      stage: "finished",
+      message: "计算完成",
+      created_at: `2026-11-21T00:${String(idx % 60).padStart(2, "0")}:00Z`,
+      progress: { completed: 4, total: 4 },
+      request: {
+        name: `任务 ${idx + 1}`,
+        data: { mode: "market_warehouse" },
+        factors: [{ name: "momentum", window: 20, weight: 1 }],
+        backtest: { start: "2024-01-02", end: "2024-06-28" },
+      },
+      result: null,
+      error: null,
+      error_details: null,
+    }));
+
+  const root = createRoot(document.getElementById("root"));
+  const renderTasks = async (count, resetKey) => {
+    await act(async () =>
+      root.render(
+        React.createElement(
+          ConfigProvider,
+          null,
+          React.createElement(
+            App,
+            null,
+            React.createElement(tasksUi.TaskTable, {
+              tasks: makeTasks(count),
+              onChanged: () => {},
+              resetKey,
+            }),
+          ),
+        ),
+      ),
+    );
+  };
+  try {
+    await renderTasks(22, "all");
+    await waitFor(() =>
+      assert.ok(document.querySelector(".ant-pagination-item-2")),
+    );
+    await act(async () => {
+      const target =
+        document.querySelector(".ant-pagination-item-2 a") ??
+        document.querySelector(".ant-pagination-item-2");
+      target.click();
+    });
+    assert.ok(
+      document.querySelector(
+        ".ant-pagination-item-2.ant-pagination-item-active",
+      ),
+    );
+
+    await renderTasks(23, "all");
+    assert.ok(
+      document.querySelector(
+        ".ant-pagination-item-2.ant-pagination-item-active",
+      ),
+      "Background polling growth should keep active page 2",
+    );
+
+    await renderTasks(23, "succeeded");
+    assert.ok(
+      document.querySelector(
+        ".ant-pagination-item-1.ant-pagination-item-active",
+      ),
+      "Changing resetKey should reset pagination to page 1",
+    );
+  } finally {
+    await act(async () => root.unmount());
   }
 });
 

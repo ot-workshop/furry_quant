@@ -182,21 +182,22 @@ export default function DashboardPage() {
                 items={data.items.slice(0, 6).map((row) => ({
                   key: row.id,
                   title: row.name,
-                  badges: (
-                    <Signed
-                      value={row.metrics?.total_return}
-                      format={(v) => formatPercent(v)}
-                    />
-                  ),
                   meta: [
-                    <span key="range" className="numeric-token">
-                      {row.start_date} ~ {row.end_date}
+                    <span key="ret">
+                      总收益{" "}
+                      <Signed
+                        value={row.metrics?.total_return}
+                        format={(v) => formatPercent(v)}
+                      />
                     </span>,
                     <span key="dd">
                       回撤{" "}
                       <span className="numeric-token">
                         {formatPercent(row.metrics?.max_drawdown)}
                       </span>
+                    </span>,
+                    <span key="range" className="numeric-token">
+                      {row.start_date} ~ {row.end_date}
                     </span>,
                     <span key="created" className="numeric-token">
                       {formatDateTime(row.created_at)}

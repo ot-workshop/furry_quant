@@ -260,14 +260,17 @@ export function TaskTable({
   onChanged,
   compact = false,
   expandedId,
+  resetKey,
 }: {
   tasks: ResearchTask[];
   onChanged: () => void;
   compact?: boolean;
   expandedId?: string | null;
+  resetKey?: string;
 }) {
   const { message } = App.useApp();
   const [page, setPage] = useState(1);
+  const maxPage = Math.max(1, Math.ceil(tasks.length / PAGE_SIZE));
   const [expandedDetails, setExpandedDetails] = useState<
     Record<string, boolean>
   >(() => (expandedId ? { [expandedId]: true } : {}));
@@ -277,7 +280,11 @@ export function TaskTable({
 
   useEffect(() => {
     setPage(1);
-  }, [tasks.length]);
+  }, [resetKey]);
+
+  useEffect(() => {
+    if (page > maxPage) setPage(maxPage);
+  }, [page, maxPage]);
 
   useEffect(() => {
     if (expandedId) {
@@ -296,7 +303,6 @@ export function TaskTable({
     );
   }
 
-  const maxPage = Math.max(1, Math.ceil(tasks.length / PAGE_SIZE));
   const activePage = Math.min(page, maxPage);
   const visibleTasks = compact
     ? tasks
@@ -336,9 +342,15 @@ export function TaskTable({
               <div className="task-row-main">
                 <div className="task-row-info">
                   <div className="task-row-head">
-                    <Typography.Text strong className="task-row-title">
-                      {task.name}
-                    </Typography.Text>
+                    <div className="task-row-title-wrap">
+                      <Typography.Text
+                        strong
+                        className="task-row-title"
+                        title={task.name}
+                      >
+                        {task.name}
+                      </Typography.Text>
+                    </div>
                     <span className="task-row-badges">
                       <StatusTag status={task.status} />
                       {isExperimentTask(task) ? <Tag>方案比较</Tag> : null}
