@@ -403,6 +403,144 @@ test("CorrelationAnalysis treats daily series of all null correlations as empty 
   }
 });
 
+test("CorrelationAnalysis preserves detail button focus and reports accurate status on slow and failed switches", async () => {
+  analysisPayload = {
+    factor: "momentum",
+    horizon: 1,
+    window: 20,
+    min_periods: 20,
+    start: null,
+    end: null,
+    series: [],
+    summary: { ic: {}, rank_ic: {} },
+    correlations: {
+      names: ["momentum", "volatility"],
+      cells: [
+        {
+          first: "momentum",
+          second: "momentum",
+          value: 1,
+          mean_absolute: 1,
+          valid_dates: 60,
+        },
+        {
+          first: "momentum",
+          second: "volatility",
+          value: 0,
+          mean_absolute: 0.12,
+          valid_dates: 60,
+        },
+        {
+          first: "volatility",
+          second: "volatility",
+          value: 1,
+          mean_absolute: 1,
+          valid_dates: 60,
+        },
+      ],
+      pair: {
+        first: "momentum",
+        second: "volatility",
+        daily: [{ date: "2025-01-03", rank_correlation: 0 }],
+      },
+      method: "spearman",
+    },
+    methodology: {},
+  };
+
+  const originalFetch = globalThis.fetch;
+  let resolveSlow = null;
+  let failNext = false;
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(String(url), dom.window.location.origin);
+    requests.push(parsed);
+    const json = (value, status = 200) =>
+      new Response(JSON.stringify(value), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    if (parsed.pathname.endsWith("/analysis")) {
+      const first = parsed.searchParams.get("first");
+      const second = parsed.searchParams.get("second");
+      if (first === "volatility" && second === "volatility" && failNext) {
+        return json({ detail: "模拟后端超时" }, 500);
+      }
+      if (first === "momentum" && second === "momentum") {
+        await new Promise((resolve) => {
+          resolveSlow = resolve;
+        });
+      }
+      return json({
+        ...analysisPayload,
+        correlations: {
+          ...analysisPayload.correlations,
+          pair: {
+            first,
+            second,
+            daily: [{ date: "2025-01-03", rank_correlation: 0.5 }],
+          },
+        },
+      });
+    }
+    return originalFetch(url);
+  };
+
+  const unmount = await mount(correlation.CorrelationAnalysis, {
+    result: {
+      metadata: baseResult.metadata,
+      factors: { momentum: {}, volatility: {}, composite: {} },
+    },
+    horizon: "1",
+  });
+  try {
+    const btn = await waitFor(() => {
+      const el = document.querySelector(
+        'button[aria-label="查看 动量 与 动量 历史相关性"]',
+      );
+      assert.ok(el);
+      return el;
+    });
+    btn.focus();
+    assert.equal(document.activeElement, btn);
+
+    await act(async () => {
+      btn.click();
+    });
+    // While slow request is in flight, button stays mounted, focused, and status announces loading
+    await waitFor(() => assert.ok(resolveSlow));
+    assert.equal(document.activeElement, btn);
+    const statusNode = document.querySelector('[role="status"]');
+    assert.ok(statusNode);
+    assert.match(statusNode.textContent, /正在加载 动量 与 动量 历史相关性/);
+
+    await act(async () => {
+      resolveSlow();
+      resolveSlow = null;
+    });
+    await waitFor(() =>
+      assert.match(statusNode.textContent, /已切换历史相关性至 动量 与 动量/),
+    );
+    assert.equal(document.activeElement, btn);
+
+    // Next verify failed switch does not drop focus or claim success
+    const failBtn = document.querySelector(
+      'button[aria-label="查看 低波动 与 低波动 历史相关性"]',
+    );
+    assert.ok(failBtn);
+    failNext = true;
+    failBtn.focus();
+    await act(async () => {
+      failBtn.click();
+    });
+    await waitFor(() => assert.match(statusNode.textContent, /失败/));
+    assert.doesNotMatch(statusNode.textContent, /已切换/);
+    assert.equal(document.activeElement, failBtn);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await unmount();
+  }
+});
+
 after(() => {
   for (const channel of trackedChannels) {
     channel.port1.close();

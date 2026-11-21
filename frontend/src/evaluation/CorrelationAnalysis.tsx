@@ -1,5 +1,5 @@
 import { FactorSelectionPanel } from "./FactorSelectionPanel";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button, Flex, Select, Table, Typography } from "antd";
 import { api } from "../api/client";
 import {
@@ -15,7 +15,11 @@ import {
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import { correlationMatrixStats } from "../research/chart-options";
-import type { CorrelationCell, EvaluationResult } from "../types";
+import type {
+  CorrelationCell,
+  EvaluationAnalysis,
+  EvaluationResult,
+} from "../types";
 import { factorLabel, formatNumber } from "../utils/format";
 import { AnalysisDates, type AnalysisRange } from "./AnalysisDates";
 
@@ -34,6 +38,7 @@ export function CorrelationAnalysis({
     names[1] ?? names[0],
   ]);
   const [range, setRange] = useState<AnalysisRange>(null);
+  const contextKey = `${result.metadata.id}:${horizon}:${range?.[0] ?? ""}:${range?.[1] ?? ""}`;
   const resource = useApiResource(
     names.length
       ? (signal) =>
@@ -52,18 +57,79 @@ export function CorrelationAnalysis({
       : null,
     [result.metadata.id, horizon, pair, range],
   );
+  const [retained, setRetained] = useState<{
+    contextKey: string;
+    data: EvaluationAnalysis;
+  } | null>(null);
+  const [lastAction, setLastAction] = useState<{
+    requestKey: string;
+    first: string;
+    second: string;
+    switched: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (resource.data) {
+      setRetained({ contextKey, data: resource.data });
+    }
+  }, [contextKey, resource.data]);
+
   const labels = Object.fromEntries(
     names.map((key) => [
       key,
       factorLabel(key, result.metadata.factor_definitions),
     ]),
   );
-  const data = resource.data;
-  const matrixNames = data?.correlations.names.length
-    ? data.correlations.names
+  const displayData =
+    resource.data ??
+    (retained?.contextKey === contextKey ? retained.data : null);
+  const pairLoading = Boolean(
+    displayData && !resource.data && resource.refreshing,
+  );
+  const pairError =
+    displayData && !resource.data && !resource.refreshing
+      ? resource.error
+      : null;
+  const currentRequestKey = `${contextKey}|${pair[0]}|${pair[1]}`;
+  const activeAction =
+    lastAction?.requestKey === currentRequestKey ? lastAction : null;
+  const activeTargetLabel = activeAction
+    ? `${labels[activeAction.first] ?? activeAction.first} 与 ${labels[activeAction.second] ?? activeAction.second}`
+    : null;
+  const statusMessage = activeAction
+    ? resource.refreshing
+      ? `正在加载 ${activeTargetLabel} 历史相关性…`
+      : resource.error
+        ? `加载 ${activeTargetLabel} 历史相关性失败：${resource.error}`
+        : resource.data
+          ? activeAction.switched
+            ? `已切换历史相关性至 ${activeTargetLabel}`
+            : `当前已显示 ${activeTargetLabel} 历史相关性`
+          : null
+    : null;
+
+  function selectPair(first: string, second: string) {
+    const isSame = pair[0] === first && pair[1] === second;
+    setLastAction({
+      requestKey: `${contextKey}|${first}|${second}`,
+      first,
+      second,
+      switched: !isSame || Boolean(resource.error),
+    });
+    if (isSame) {
+      if (resource.error && !resource.refreshing) {
+        resource.reload();
+      }
+      return;
+    }
+    setPair([first, second]);
+  }
+
+  const matrixNames = displayData?.correlations.names.length
+    ? displayData.correlations.names
     : names;
-  const stats = data
-    ? correlationMatrixStats(matrixNames, data.correlations.cells)
+  const stats = displayData
+    ? correlationMatrixStats(matrixNames, displayData.correlations.cells)
     : null;
   return (
     <Flex vertical gap={16}>
@@ -81,7 +147,7 @@ export function CorrelationAnalysis({
       </Section>
       {!names.length ? (
         <EmptyState title="没有可分析的因子" />
-      ) : !data ? (
+      ) : !displayData ? (
         resource.error ? (
           <ErrorState message={resource.error} onRetry={resource.reload} />
         ) : (
@@ -107,9 +173,9 @@ export function CorrelationAnalysis({
                 ) : null}
                 <CorrelationHeatmap
                   names={matrixNames}
-                  cells={data.correlations.cells}
+                  cells={displayData.correlations.cells}
                   labels={labels}
-                  onSelect={(first, second) => setPair([first, second])}
+                  onSelect={(first, second) => selectPair(first, second)}
                 />
                 <Typography.Text
                   type="secondary"
@@ -140,17 +206,23 @@ export function CorrelationAnalysis({
                     label: labels[key],
                   }))}
                   onChange={(value) =>
-                    setPair(index ? [pair[0], value] : [value, pair[1]])
+                    selectPair(index ? pair[0] : value, index ? value : pair[1])
                   }
                 />
               ))}
             </Flex>
-            {data.correlations.pair.daily.some(
-              (point) =>
-                point.rank_correlation !== null &&
-                Number.isFinite(point.rank_correlation),
-            ) ? (
-              <CorrelationHistoryChart points={data.correlations.pair.daily} />
+            {pairLoading ? (
+              <Loading rows={4} />
+            ) : pairError ? (
+              <ErrorState message={pairError} onRetry={resource.reload} />
+            ) : displayData.correlations.pair.daily.some(
+                (point) =>
+                  point.rank_correlation !== null &&
+                  Number.isFinite(point.rank_correlation),
+              ) ? (
+              <CorrelationHistoryChart
+                points={displayData.correlations.pair.daily}
+              />
             ) : (
               <EmptyState
                 title="该因子对在所选范围无法计算相关性"
@@ -162,11 +234,23 @@ export function CorrelationAnalysis({
             title="相关性明细"
             description="平均绝对相关保留每天的相关强度，避免不同时期的正负相关互相抵消；可通过下方每行操作用键盘切换有效因子对历史。"
           >
+            <div
+              role="status"
+              aria-live="polite"
+              style={{ marginBottom: statusMessage ? 8 : 0 }}
+            >
+              {statusMessage ? (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {statusMessage}
+                </Typography.Text>
+              ) : null}
+            </div>
             <TableScroll label="相关性明细表">
               <Table<CorrelationCell>
                 size="small"
+                aria-label="相关性明细表"
                 rowKey={(item) => `${item.first}-${item.second}`}
-                dataSource={data.correlations.cells}
+                dataSource={displayData.correlations.cells}
                 pagination={{ pageSize: 15, showSizeChanger: false }}
                 columns={[
                   {
@@ -208,7 +292,7 @@ export function CorrelationAnalysis({
                           type="link"
                           size="small"
                           style={{ padding: 0, height: "auto" }}
-                          onClick={() => setPair([item.first, item.second])}
+                          onClick={() => selectPair(item.first, item.second)}
                           aria-label={`查看 ${firstLabel} 与 ${secondLabel} 历史相关性`}
                         >
                           查看历史
