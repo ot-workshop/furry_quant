@@ -30,6 +30,7 @@ def create_app(
     frontend_dist: Path | None = None,
     database_probe: Callable[[], dict[str, Any]] | None = None,
     market_status: Callable[[], dict[str, Any]] | None = None,
+    market_summary: Callable[[], dict[str, Any]] | None = None,
 ) -> FastAPI:
     """Build the app from injected services; nothing is selected from environment state."""
     store, service = result_store, task_service
@@ -45,14 +46,15 @@ def create_app(
     app = FastAPI(title="量化研究工作台", version="0.3.0", lifespan=lifespan)
     app.state.research_tasks = service
     app.include_router(research_router(service, result_store=store))
-    app.include_router(
-        system_router(
-            store,
-            service.data_root,
-            database_probe=database_probe,
-            market_status=market_status,
-        )
+    system = system_router(
+        store,
+        service.data_root,
+        database_probe=database_probe,
+        market_status=market_status,
+        market_summary=market_summary,
     )
+    app.include_router(system)
+    app.state.invalidate_dashboard_summary = getattr(system, "invalidate_summary_cache")
     app.include_router(factor_router(store))
     app.include_router(backtest_router(store))
     app.include_router(comparison_router(store))

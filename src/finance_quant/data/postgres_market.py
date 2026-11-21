@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, text
 
 from finance_quant.checksums import file_sha256, sha256_text
 from finance_quant.data.symbols import to_qlib
@@ -133,6 +133,46 @@ def status():
             if latest
             else None
         ),
+    }
+
+
+_DISTINCT_CODES_SKIP_SCAN = text(
+    """
+    WITH RECURSIVE distinct_codes AS (
+        (SELECT ts_code FROM daily_bar ORDER BY ts_code LIMIT 1)
+        UNION ALL
+        SELECT (
+            SELECT d.ts_code
+            FROM daily_bar AS d
+            WHERE d.ts_code > dc.ts_code
+            ORDER BY d.ts_code
+            LIMIT 1
+        )
+        FROM distinct_codes AS dc
+        WHERE dc.ts_code IS NOT NULL
+    )
+    SELECT COUNT(*) FROM distinct_codes WHERE ts_code IS NOT NULL
+    """
+)
+
+
+def market_summary():
+    """Lightweight market coverage summary without 8M-row table counts."""
+
+    min_date_q = select(daily_bar.c.trade_date).order_by(daily_bar.c.trade_date.asc()).limit(1).scalar_subquery()
+    max_date_q = select(daily_bar.c.trade_date).order_by(daily_bar.c.trade_date.desc()).limit(1).scalar_subquery()
+    with connection() as active:
+        min_date, max_date = active.execute(select(min_date_q, max_date_q)).one()
+        if min_date is None and max_date is None:
+            securities = 0
+        elif active.dialect.name == "postgresql":
+            securities = int(active.execute(_DISTINCT_CODES_SKIP_SCAN).scalar_one())
+        else:
+            securities = int(active.execute(select(func.count(func.distinct(daily_bar.c.ts_code)))).scalar_one())
+    return {
+        "securities": securities,
+        "coverage_start": min_date.isoformat() if min_date else None,
+        "coverage_end": max_date.isoformat() if max_date else None,
     }
 
 
