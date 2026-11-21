@@ -217,12 +217,50 @@ test("CorrelationAnalysis announces partial uncomputable factors, preserves real
         /3 个因子中 1 个（盈利收益率）无法计算相关性，其行列不参与比较/,
       ),
     );
-    assert.match(document.body.textContent, /动量 \/ 低波动00\.1260/);
-    assert.match(document.body.textContent, /动量 \/ 盈利收益率——0/);
+    assert.match(document.body.textContent, /动量 \/ 低波动00\.1260查看历史/);
+    assert.match(
+      document.body.textContent,
+      /动量 \/ 盈利收益率—无法计算相关系数（有效日期不足，或因子在区间内没有变化）—0不可切换/,
+    );
     assert.match(document.body.textContent, /斜纹\/点阵虚线格「—」/);
     assert.doesNotMatch(
       document.body.textContent,
       /当前条件下所有因子均无法计算相关性/,
+    );
+
+    const viewBtn = document.querySelector(
+      'button[aria-label="查看 动量 与 低波动 历史相关性"]',
+    );
+    assert.ok(
+      viewBtn,
+      "Expected keyboard-accessible detail button for valid pair",
+    );
+    assert.equal(
+      document.querySelector(
+        'button[aria-label="查看 动量 与 盈利收益率 历史相关性"]',
+      ),
+      null,
+    );
+    const reqsBefore = requests.length;
+    await act(async () => {
+      viewBtn.click();
+    });
+    await waitFor(() => assert.equal(requests.length, reqsBefore));
+    // Clicking "查看 动量 与 动量 历史相关性" actually triggers a new /analysis pair fetch.
+    const diagBtn = document.querySelector(
+      'button[aria-label="查看 动量 与 动量 历史相关性"]',
+    );
+    await act(async () => {
+      diagBtn.click();
+    });
+    await waitFor(() =>
+      assert.ok(
+        requests.some(
+          (u) =>
+            u.searchParams.get("first") === "momentum" &&
+            u.searchParams.get("second") === "momentum",
+        ),
+      ),
     );
 
     const stats = charts.correlationMatrixStats(
@@ -295,6 +333,70 @@ test("CorrelationAnalysis renders explicit empty state when all pairs are uncomp
     assert.doesNotMatch(
       document.body.textContent,
       /2 个因子中 2 个.*不参与比较/,
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+test("CorrelationAnalysis treats daily series of all null correlations as empty state", async () => {
+  analysisPayload = {
+    factor: "momentum",
+    horizon: 1,
+    window: 20,
+    min_periods: 20,
+    start: null,
+    end: null,
+    series: [],
+    summary: { ic: {}, rank_ic: {} },
+    correlations: {
+      names: ["momentum", "volatility", "value"],
+      cells: [
+        {
+          first: "momentum",
+          second: "momentum",
+          value: 1,
+          mean_absolute: 1,
+          valid_dates: 60,
+        },
+        {
+          first: "volatility",
+          second: "volatility",
+          value: 1,
+          mean_absolute: 1,
+          valid_dates: 60,
+        },
+        {
+          first: "momentum",
+          second: "value",
+          value: null,
+          mean_absolute: null,
+          valid_dates: 0,
+        },
+      ],
+      pair: {
+        first: "momentum",
+        second: "value",
+        daily: [
+          { date: "2025-01-03", rank_correlation: null },
+          { date: "2025-01-06", rank_correlation: null },
+        ],
+      },
+      method: "spearman",
+    },
+    methodology: {},
+  };
+
+  const unmount = await mount(correlation.CorrelationAnalysis, {
+    result: baseResult,
+    horizon: "1",
+  });
+  try {
+    await waitFor(() =>
+      assert.match(
+        document.body.textContent,
+        /该因子对在所选范围无法计算相关性/,
+      ),
     );
   } finally {
     await unmount();

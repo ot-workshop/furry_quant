@@ -106,6 +106,8 @@ export function correlationChartOption(
   const top = compact ? 16 : 24;
   const bottom = compact ? 96 : 112;
   const cellPx = (effectiveWidth - left - right) / Math.max(1, names.length);
+  const showNumericLabels = cellPx >= 36;
+  const showMissingDash = cellPx >= 18;
   const isDark = /^#(0|1|2)/i.test(palette.surface.trim());
   const noSampleFill = isDark ? "#262626" : "#eaedf1";
   const noSampleBorder = isDark ? "#595959" : "#bfbfbf";
@@ -184,12 +186,20 @@ export function correlationChartOption(
       renderMode: "richText",
       backgroundColor: palette.surface,
       borderColor: palette.border,
-      textStyle: { color: palette.text },
+      textStyle: { color: palette.text, fontSize: compact ? 11 : 12 },
       formatter: (params: unknown) => {
         const item = (params as { data: HeatmapItem }).data;
-        const pairTitle = `${labels[item.first] ?? item.first} / ${labels[item.second] ?? item.second}`;
+        const firstName = labels[item.first] ?? item.first;
+        const secondName = labels[item.second] ?? item.second;
+        const pairTitle =
+          compact && firstName.length + secondName.length > 10
+            ? `${firstName} /\n${secondName}`
+            : `${firstName} / ${secondName}`;
         if (item.noSample) {
-          return `${pairTitle}\n相关性：无法计算相关系数（有效日期不足，或因子在区间内没有变化）\n有效日期：${item.count}`;
+          const reason = compact
+            ? "相关性：无法计算相关系数\n（有效日期不足，或\n因子在区间内没有变化）"
+            : "相关性：无法计算相关系数\n（有效日期不足，或因子在区间内没有变化）";
+          return `${pairTitle}\n${reason}\n有效日期：${item.count}`;
         }
         return `${pairTitle}\n相关性：${Number(item.value[2]).toFixed(4)}\n有效日期：${item.count}`;
       },
@@ -244,7 +254,7 @@ export function correlationChartOption(
         type: "heatmap",
         data: validData,
         label: {
-          show: names.length <= 12,
+          show: showNumericLabels,
           color: palette.text,
           fontSize: compact ? 11 : 12,
           formatter: (params: unknown) =>
@@ -264,7 +274,7 @@ export function correlationChartOption(
           decal,
         },
         label: {
-          show: names.length <= 12,
+          show: showMissingDash,
           color: noSampleText,
           fontSize: compact ? 11 : 12,
           formatter: () => "—",

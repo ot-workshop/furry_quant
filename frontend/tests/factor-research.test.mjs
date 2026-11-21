@@ -179,8 +179,38 @@ test("heatmap renders complete aligned matrix, keeps real zero, and patterns unc
   assert.equal(option.series[1].label.formatter(), "—");
   assert.match(
     option.tooltip.formatter({ data: missingCell }),
-    /无法计算相关系数（有效日期不足，或因子在区间内没有变化）\n有效日期：0/,
+    /相关性：无法计算相关系数\n（有效日期不足，或因子在区间内没有变化）\n有效日期：0/,
   );
+
+  // 13 factors on desktop retain missing-cell "—" while 340px wraps tooltip lines concisely.
+  const thirteen = Array.from({ length: 13 }, (_, idx) => `f${idx}`);
+  const desktop13 = charts.correlationChartOption(
+    thirteen,
+    [{ first: "f0", second: "f0", value: 1, valid_dates: 40 }],
+    Object.fromEntries(thirteen.map((key, idx) => [key, `因子${idx}`])),
+    palette,
+    1126,
+  );
+  assert.equal(desktop13.series[0].label.show, true);
+  assert.equal(desktop13.series[1].label.show, true);
+
+  const narrow4 = charts.correlationChartOption(
+    ["momentum", "value"],
+    [{ first: "momentum", second: "value", value: null, valid_dates: 0 }],
+    { momentum: "动量因子", value: "盈利收益率" },
+    palette,
+    340,
+  );
+  const narrowTip = narrow4.tooltip.formatter({
+    data: narrow4.series[1].data[0],
+  });
+  assert.ok(narrowTip.includes("\n（有效日期不足，或\n因子在区间内没有变化）"));
+  assert.ok(narrowTip.split("\n").every((line) => line.length <= 14));
+
+  const twenty = Array.from({ length: 20 }, (_, idx) => `f${idx}`);
+  const narrow20 = charts.correlationChartOption(twenty, [], {}, palette, 300);
+  assert.equal(narrow20.series[0].label.show, false);
+  assert.equal(narrow20.series[1].label.show, false);
 });
 
 test("chart metrics use backend fields without connecting missing values or annualizing IR", () => {

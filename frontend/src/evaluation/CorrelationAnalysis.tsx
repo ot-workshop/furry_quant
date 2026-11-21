@@ -1,12 +1,18 @@
 import { FactorSelectionPanel } from "./FactorSelectionPanel";
 import { useState } from "react";
-import { Flex, Select, Table, Typography } from "antd";
+import { Button, Flex, Select, Table, Typography } from "antd";
 import { api } from "../api/client";
 import {
   CorrelationHeatmap,
   CorrelationHistoryChart,
 } from "../components/research-charts";
-import { EmptyState, ErrorState, Loading, Section } from "../components/ui";
+import {
+  EmptyState,
+  ErrorState,
+  Loading,
+  Section,
+  TableScroll,
+} from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import { correlationMatrixStats } from "../research/chart-options";
 import type { CorrelationCell, EvaluationResult } from "../types";
@@ -139,7 +145,11 @@ export function CorrelationAnalysis({
                 />
               ))}
             </Flex>
-            {data.correlations.pair.daily.length ? (
+            {data.correlations.pair.daily.some(
+              (point) =>
+                point.rank_correlation !== null &&
+                Number.isFinite(point.rank_correlation),
+            ) ? (
               <CorrelationHistoryChart points={data.correlations.pair.daily} />
             ) : (
               <EmptyState
@@ -150,30 +160,72 @@ export function CorrelationAnalysis({
           </Section>
           <Section
             title="相关性明细"
-            description="平均绝对相关保留每天的相关强度，避免不同时期的正负相关互相抵消。"
+            description="平均绝对相关保留每天的相关强度，避免不同时期的正负相关互相抵消；可通过下方每行操作用键盘切换有效因子对历史。"
           >
-            <Table<CorrelationCell>
-              size="small"
-              rowKey={(item) => `${item.first}-${item.second}`}
-              dataSource={data.correlations.cells}
-              pagination={{ pageSize: 15, showSizeChanger: false }}
-              columns={[
-                {
-                  title: "因子对",
-                  render: (_, item) =>
-                    `${labels[item.first]} / ${labels[item.second]}`,
-                },
-                {
-                  title: "平均秩相关",
-                  render: (_, item) => formatNumber(item.value, 4),
-                },
-                {
-                  title: "平均绝对相关",
-                  render: (_, item) => formatNumber(item.mean_absolute, 4),
-                },
-                { title: "有效日期", dataIndex: "valid_dates" },
-              ]}
-            />
+            <TableScroll label="相关性明细表">
+              <Table<CorrelationCell>
+                size="small"
+                rowKey={(item) => `${item.first}-${item.second}`}
+                dataSource={data.correlations.cells}
+                pagination={{ pageSize: 15, showSizeChanger: false }}
+                columns={[
+                  {
+                    title: "因子对",
+                    render: (_, item) =>
+                      `${labels[item.first] ?? item.first} / ${labels[item.second] ?? item.second}`,
+                  },
+                  {
+                    title: "平均秩相关",
+                    render: (_, item) =>
+                      item.value !== null && Number.isFinite(item.value) ? (
+                        formatNumber(item.value, 4)
+                      ) : (
+                        <Flex vertical gap={2}>
+                          <span>—</span>
+                          <Typography.Text
+                            type="secondary"
+                            style={{ fontSize: 12 }}
+                          >
+                            无法计算相关系数（有效日期不足，或因子在区间内没有变化）
+                          </Typography.Text>
+                        </Flex>
+                      ),
+                  },
+                  {
+                    title: "平均绝对相关",
+                    render: (_, item) => formatNumber(item.mean_absolute, 4),
+                  },
+                  { title: "有效日期", dataIndex: "valid_dates" },
+                  {
+                    title: "历史走势",
+                    render: (_, item) => {
+                      const firstLabel = labels[item.first] ?? item.first;
+                      const secondLabel = labels[item.second] ?? item.second;
+                      const isValid =
+                        item.value !== null && Number.isFinite(item.value);
+                      return isValid ? (
+                        <Button
+                          type="link"
+                          size="small"
+                          style={{ padding: 0, height: "auto" }}
+                          onClick={() => setPair([item.first, item.second])}
+                          aria-label={`查看 ${firstLabel} 与 ${secondLabel} 历史相关性`}
+                        >
+                          查看历史
+                        </Button>
+                      ) : (
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          不可切换
+                        </Typography.Text>
+                      );
+                    },
+                  },
+                ]}
+              />
+            </TableScroll>
           </Section>
         </>
       )}
