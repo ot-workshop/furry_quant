@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from test_managed_data import Provider
 
+from finance_quant.application import experiment_tasks
 from finance_quant.application import experiment_workflow as workflow
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
 from finance_quant.data.financials import financial_root
@@ -325,8 +326,6 @@ def test_web_experiment_with_discontiguous_periods_queues_then_fails_at_prepare(
 
 def test_web_experiment_submit_never_touches_heavy_paths(tmp_path, monkeypatch):
     """A comparison submission must only do cheap checks: every heavy path is a sentinel."""
-
-    from finance_quant.application import experiment_tasks
 
     data, runs = tmp_path / "data", tmp_path / "runs"
     manifest = publish_fixture_snapshot(
