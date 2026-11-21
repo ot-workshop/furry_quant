@@ -14,6 +14,8 @@
 
 发布 workflow 是 `docker.yml`，触发为 `master` push、`v*` tag 或手动派发；测试 workflow 与 PR 检查见[测试指南](testing.md)。手动派发沿仓库支持的入口和当前授权执行，不能用 API 绕过权限。发布记录给出完整提交和 run 链接，不自动部署最新分支。
 
+发布说明（Release 正文/公开公告）的正文先落成纯文本文件再提交，推送前按字节自检：完整提交与镜像 `digest` 存在、无 C0 控制字符（`[\x00-\x08\x0B\x0C\x0E-\x1F]`）、代码片段用反引号。PowerShell 的双引号字符串会把反引号加字母当成转义（反引号加 a 是 BEL），会把以反引号开头的摘要静默改成控制字符加残缺文本；写正文用单引号 here-string，并在写盘后复查。
+
 ## 发布准入与版本核对
 
 由发布维护者固定提交，技术评审者审核条件，运维执行部署，测试做部署后冒烟。开始前必须具备：
@@ -453,6 +455,27 @@ docker compose --env-file .env -f docker-compose.yaml restart api worker
 
 `docker compose down` 停止并删除本项目容器和网络，主机上的数据库、业务、备份和恢复目录继续保留。重建试运行数据库见下文。
 
+### 任务失败与内存判读
+
+任务失败时先看任务中心行内的 `原因：…`（含阶段与退出码），再看 `STORAGE_ROOT/logs/<任务 id>.log` 里的子进程输出。退出码语义见[前端结构与接口](frontend-contract.md#任务失败原因与退出码)；**没有 cgroup 证据时不要写“内存不足”**。
+
+可能吃内存的长任务（长区间回测、多因子、方案比较、完整备份）在开始前与结束后各读一次 worker 容器的 cgroup 计数：
+
+```sh
+c=$(docker inspect --format '{{.Id}}' finance-quant-worker-1 | tr -d '-')
+d=/sys/fs/cgroup/system.slice/docker-$c.scope   # 具体路径以宿主为准
+cat $d/memory.current $d/memory.peak $d/memory.max
+cat $d/memory.events
+cat $d/memory.stat | grep -E '^(anon|file|file_dirty|file_writeback) '
+```
+
+判读规则：
+
+- `memory.current` 包含页缓存。数值高时要看 `memory.stat` 的 `anon` 与 `file`：`file` 是内核可回收的缓存，`anon` 才是进程真实占用；`file_dirty` / `file_writeback` 大量未落盘时也不宜同时跑重任务。
+- `memory.peak` 是 cgroup 生命周期内的历史最大值，不是本次任务的峰值：跑完比基准大只能说“至少用到了这个值”，没变时要记“未超过此前峰值”，**不能记成 0**。需要本次真实峰值就低频（如每 5 秒）采样 `memory.current` 取最大。
+- `memory.events` 的 `oom_kill` 增量为 0 时，不得把失败归因为内存不足；`docker stats` 读数或“容器仍在运行”也不能单独证明原因。
+- 容器重建会重置这些计数，两次读数只能比较同一 cgroup 生命周期；同时记下容器 id、`StartedAt`、镜像 id 与两次读数时的 `queued/running`。
+
 ## Windows 访问
 
 API 只发布到服务器回环地址。Windows PowerShell 建立隧道：
@@ -468,6 +491,8 @@ ssh -N -L 8000:127.0.0.1:8000 用户名@服务器地址
 ## 备份
 
 网页“数据管理 → 备份与恢复”提供创建、校验和恢复入口，风格与其他数据页面一致。后台任务与行情更新共用串行 worker，备份执行期间阻止 API 写入；无需在网页操作时停掉 worker。下列命令行方式则需要先停止 API 与 worker。
+
+创建备份**不做跨请求去重**：每次提交都会新建一个任务与一个归档，重复点击会在串行 worker 里排队执行多次完整备份，占用相应时间与磁盘。需要单份归档时，先确认前一条已完成再提交；窗口内不要把重复备份当成“同一条任务”。
 
 下面是**例行备份**：完成后恢复原服务，不用于发布停写窗口。发布时使用上文[更新镜像](#更新镜像)的专用顺序。停止 API 与 worker 后执行；数据库保持运行。备份命令会检查 worker 互斥锁并阻止 API 写入，不会仅凭“当前没有运行中的任务”判断一致性：
 
