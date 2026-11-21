@@ -406,6 +406,23 @@ def test_dashboard_summary_fails_on_inaccessible_inventory_and_blocks_inflight_r
     assert TestClient(app_err, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary").status_code == 503
     monkeypatch.undo()
 
+    # 1b. EACCES reading an existing manifest.json must also return HTTP 503, never invalid/empty 200.
+    real_read_text = Path.read_text
+
+    def deny_manifest_read(self, *args, **kwargs):
+        if self.name == "manifest.json":
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", deny_manifest_read)
+    app_manifest_err = make_app(
+        runs,
+        data_root=data,
+        market_summary=lambda: {"securities": 10, "coverage_start": "2024-01-02", "coverage_end": "2024-01-05"},
+    )
+    assert TestClient(app_manifest_err, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary").status_code == 503
+    monkeypatch.undo()
+
     # 2. Explicit invalidation while an inventory scan is in-flight must prevent stale cache repopulation.
     entered = threading.Event()
     release = threading.Event()
@@ -474,6 +491,54 @@ def test_dashboard_summary_rejects_ancestor_symlink_redirected_outside_root(tmp_
     res = TestClient(app, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary")
     assert res.status_code == 200
     assert res.json()["counts"] == {"fixed": 0, "historical": 0, "market": 0, "invalid": 0}
+
+
+def test_dashboard_summary_skips_warehouse_roots_when_versions_ancestor_escapes_root(tmp_path, monkeypatch):
+    runs, data, outside = tmp_path / "runs", tmp_path / "data", tmp_path / "outside"
+    ext_wh = outside / "versions/v1/index-view"
+    (ext_wh / "reference").mkdir(parents=True, exist_ok=True)
+    (ext_wh / "reference/calendar.parquet").write_bytes(b"cal")
+    (ext_wh.parent / "version.json").write_text("{}", encoding="utf-8")
+    _write_json(
+        ext_wh / "manifest.json",
+        {
+            "schema_version": "historical-index-warehouse-v1",
+            "assets": {"000001.SZ": {"file": "a.parquet", "sha256": "x"}},
+            "reference_files": {"calendar.parquet": "abc"},
+        },
+    )
+
+    versions_link = data / "shared-market/versions"
+    versions_link.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        web_system,
+        "_path_escaped_root",
+        lambda p, r: Path(p) == versions_link or not Path(p).resolve().is_relative_to(r),
+    )
+
+    def must_not_call_warehouses(_root):
+        raise AssertionError("warehouse_roots must not be called when shared-market/versions escapes data_root")
+
+    monkeypatch.setattr(market_download, "warehouse_roots", must_not_call_warehouses)
+    monkeypatch.setattr(web_system, "market_roots", lambda _root: [ext_wh.resolve()])
+
+    app = make_app(
+        runs, data_root=data, market_summary=lambda: {"securities": 0, "coverage_start": None, "coverage_end": None}
+    )
+    res = TestClient(app, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary")
+    assert res.status_code == 200
+    assert res.json()["counts"] == {"fixed": 0, "historical": 0, "market": 0, "invalid": 0}
+
+    # Even if versions dir itself is inside root, any warehouse root resolving outside data_root is ignored.
+    monkeypatch.undo()
+    monkeypatch.setattr(market_download, "warehouse_roots", lambda _root: [ext_wh.resolve()])
+    monkeypatch.setattr(web_system, "market_roots", lambda _root: [ext_wh.resolve()])
+    app2 = make_app(
+        runs, data_root=data, market_summary=lambda: {"securities": 0, "coverage_start": None, "coverage_end": None}
+    )
+    res2 = TestClient(app2, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary")
+    assert res2.status_code == 200
+    assert res2.json()["counts"] == {"fixed": 0, "historical": 0, "market": 0, "invalid": 0}
 
 
 class _DummyCtx:

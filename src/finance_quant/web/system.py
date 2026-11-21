@@ -72,11 +72,15 @@ def historical_indices(data_root) -> list[dict]:
 
 
 def _load_manifest_object(path: Path) -> dict | None:
-    """Parse a JSON file and require a JSON object (reject arrays/scalars/corrupt text)."""
+    """Parse a JSON object; ignore missing/malformed JSON while propagating storage read errors."""
 
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
+        raw = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, IsADirectoryError):
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
         return None
     return parsed if isinstance(parsed, dict) else None
 
@@ -143,7 +147,12 @@ def _valid_warehouse_header(wh_root: Path, expected_schema: str) -> bool:
     ref_files = manifest.get("reference_files")
     calendar_sha = ref_files.get("calendar.parquet") if isinstance(ref_files, dict) else None
     calendar_path = wh_root / "reference/calendar.parquet"
-    return isinstance(calendar_sha, str) and bool(calendar_sha) and calendar_path.is_file()
+    if not isinstance(calendar_sha, str) or not calendar_sha:
+        return False
+    try:
+        return stat.S_ISREG(os.stat(calendar_path).st_mode)
+    except FileNotFoundError:
+        return False
 
 
 def _confined_dir_stat(path: Path, root: Path) -> tuple[Path, os.stat_result] | None:
@@ -255,32 +264,74 @@ def _scan_fixed_snapshots(root: Path) -> tuple[set[str], int]:
     return fixed_ids, invalid
 
 
+def _path_escaped_root(path: Path, root: Path) -> bool:
+    """Return True when `path` exists (lstat) and its resolved target escapes `root`."""
+
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    try:
+        return not path.resolve().is_relative_to(root)
+    except FileNotFoundError:
+        return False
+
+
+def _versions_tree_state(root: Path) -> str:
+    """Verify shared-market/versions confinement and surface EACCES before calling glob-based readers."""
+
+    shared_dir = root / "shared-market"
+    versions_dir = shared_dir / "versions"
+    if _path_escaped_root(shared_dir, root) or _path_escaped_root(versions_dir, root):
+        return "escaped"
+    ver_info = _confined_dir_stat(versions_dir, root)
+    if ver_info is None:
+        return "missing"
+    with os.scandir(ver_info[0]) as versions:
+        for ver in versions:
+            if not ver.is_dir(follow_symlinks=True):
+                continue
+            ver_path = Path(ver.path)
+            if not ver_path.resolve().is_relative_to(root):
+                continue
+            for view_name in ("index-view", "market-view"):
+                view_path = ver_path / view_name
+                if _confined_dir_stat(view_path, root) is not None:
+                    with os.scandir(view_path):
+                        pass
+    return "confined"
+
+
 def _dataset_counts(data_root: Path) -> dict[str, int]:
     """Count published datasets from validated publisher manifests only (not revalidated payloads)."""
 
     root = Path(data_root).resolve()
     fixed_ids, invalid = _scan_fixed_snapshots(root)
 
-    # Probe shared-market/versions accessibility so EACCES fails loudly instead of returning 200 false zero.
-    if _confined_dir_stat(root / "shared-market", root) is not None:
-        ver_info = _confined_dir_stat(root / "shared-market/versions", root)
-        if ver_info is not None:
-            with os.scandir(ver_info[0]):
-                pass
-
     historical = 0
-    for wh_root in market_download.warehouse_roots(root):
-        if _valid_warehouse_header(wh_root, "historical-index-warehouse-v1"):
-            historical += 1
-        else:
-            invalid += 1
-
     market = 0
-    for m_root in market_roots(root):
-        if _valid_warehouse_header(m_root, "historical-market-warehouse-v1"):
-            market += 1
-        else:
-            invalid += 1
+    if _versions_tree_state(root) != "escaped":
+        for wh_root in market_download.warehouse_roots(root):
+            try:
+                if not Path(wh_root).resolve().is_relative_to(root):
+                    continue
+            except OSError:
+                continue
+            if _valid_warehouse_header(wh_root, "historical-index-warehouse-v1"):
+                historical += 1
+            else:
+                invalid += 1
+
+        for m_root in market_roots(root):
+            try:
+                if not Path(m_root).resolve().is_relative_to(root):
+                    continue
+            except OSError:
+                continue
+            if _valid_warehouse_header(m_root, "historical-market-warehouse-v1"):
+                market += 1
+            else:
+                invalid += 1
 
     return {"fixed": len(fixed_ids), "historical": historical, "market": market, "invalid": invalid}
 
