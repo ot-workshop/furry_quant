@@ -48,6 +48,9 @@ def execute(arguments, *, input_text=None, check=True, timeout=240):
     return result
 
 
+HEAD_REVISION = "0002_forward_registration"
+
+
 class Stack:
     def __init__(self, directory, image, label):
         self.root = directory / label
@@ -128,7 +131,7 @@ class Stack:
         rows = json.loads(raw) if raw.startswith("[") else [json.loads(line) for line in raw.splitlines()]
         return {row["Service"]: row for row in rows}
 
-    def ready(self, revision="0001_postgres"):
+    def ready(self, revision=HEAD_REVISION):
         deadline = time.monotonic() + 75
         while time.monotonic() < deadline:
             states = self.states()
@@ -194,7 +197,7 @@ def upgrade_image(directory, image):
 import sqlalchemy as sa
 
 revision = "startup_probe_v2"
-down_revision = "0001_postgres"
+down_revision = HEAD_REVISION
 branch_labels = None
 depends_on = None
 
@@ -211,7 +214,7 @@ def downgrade():
 FROM ${BASE_IMAGE}
 USER root
 COPY 9000_startup_probe.py /app/alembic/versions/
-RUN python -c "from pathlib import Path; p = Path('/app/src/finance_quant/persistence/database.py'); p.write_text(p.read_text().replace('0001_postgres', 'startup_probe_v2'))"
+RUN python -c "from pathlib import Path; p = Path('/app/src/finance_quant/persistence/database.py'); p.write_text(p.read_text().replace('0002_forward_registration', 'startup_probe_v2'))"
 USER quant
 """,
         encoding="utf-8",
