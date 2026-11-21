@@ -14,11 +14,14 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from finance_quant.application import market_download
 from finance_quant.application.research_requests import snapshot_registry
+from finance_quant.checksums import file_sha256
 from finance_quant.data.historical_warehouse import warehouse_option
 from finance_quant.data.market_universe import market_option, market_roots
 
 SYNTHETIC_NOTICE = "合成样本，仅验证系统流程，不代表真实股票表现"
 _SNAPSHOT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
+_FIXED_SCHEMAS = {"market-v1", "market-v2", "market-v3", "market-v4-shared"}
+_FIXED_FILES = {"market.parquet", "benchmark.parquet", "calendar.parquet"}
 _SUMMARY_CACHE_TTL_SECONDS = 30.0
 
 
@@ -67,53 +70,108 @@ def historical_indices(data_root) -> list[dict]:
     return items
 
 
+def _load_manifest_object(path: Path) -> dict | None:
+    """Parse a JSON file and require a JSON object (reject arrays/scalars/corrupt text)."""
+
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _valid_fixed_snapshot(path: Path, root: Path, manifest: dict) -> str | None:
+    """Verify fixed snapshot header integrity without loading parquet frames.
+
+    Unlike `/api/v1/data-status`, this intentionally avoids decoding Parquet tables
+    to check adjustment continuity or row contents, while matching header schema,
+    quarantine status, required file presence, and SHA-256 digests.
+    """
+
+    try:
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root) or (resolved / "rejected.json").exists():
+            return None
+        if "projection" in manifest:
+            return None
+        identifier = manifest.get("id")
+        if not isinstance(identifier, str) or not _SNAPSHOT_ID_RE.fullmatch(identifier):
+            return None
+        if manifest.get("schema_version") not in _FIXED_SCHEMAS:
+            return None
+        files = manifest.get("files")
+        if not isinstance(files, dict) or set(files) != _FIXED_FILES:
+            return None
+        for name, expected in files.items():
+            file_path = resolved / name
+            if not isinstance(expected, str) or not file_path.is_file():
+                return None
+            if file_sha256(file_path) != expected:
+                return None
+        return identifier
+    except OSError:
+        return None
+
+
+def _valid_warehouse_header(wh_root: Path, expected_schema: str) -> bool:
+    """Verify warehouse manifest object and calendar checksum without parsing frames."""
+
+    manifest = _load_manifest_object(wh_root / "manifest.json")
+    if manifest is None:
+        return False
+    if manifest.get("schema_version") != expected_schema:
+        return False
+    assets = manifest.get("assets")
+    if not isinstance(assets, dict) or not assets:
+        return False
+    ref_files = manifest.get("reference_files")
+    calendar_sha = ref_files.get("calendar.parquet") if isinstance(ref_files, dict) else None
+    calendar_path = wh_root / "reference/calendar.parquet"
+    if not isinstance(calendar_sha, str) or not calendar_path.is_file():
+        return False
+    try:
+        return file_sha256(calendar_path) == calendar_sha
+    except OSError:
+        return False
+
+
 def _dataset_counts(data_root: Path) -> dict[str, int]:
-    """Count published datasets from headers only without loading parquet frames."""
+    """Count published datasets from validated headers only; separate invalid manifests."""
 
     root = Path(data_root).resolve()
     fixed_ids: set[str] = set()
+    invalid = 0
     for path in sorted(root.glob("research/downloads/*/snapshots/*")):
-        try:
-            manifest_path = path / "manifest.json"
-            if not path.resolve().is_relative_to(root) or not manifest_path.is_file():
-                continue
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            identifier = manifest.get("id")
-            if not isinstance(identifier, str) or not _SNAPSHOT_ID_RE.fullmatch(identifier):
-                continue
-            if "projection" in manifest:
-                continue
-            fixed_ids.add(identifier)
-        except (OSError, ValueError, TypeError):
+        manifest_path = path / "manifest.json"
+        if not manifest_path.is_file():
             continue
+        manifest = _load_manifest_object(manifest_path)
+        if manifest is None:
+            invalid += 1
+            continue
+        if "projection" in manifest:
+            continue
+        identifier = _valid_fixed_snapshot(path, root, manifest)
+        if identifier is not None:
+            fixed_ids.add(identifier)
+        else:
+            invalid += 1
 
     historical = 0
     for wh_root in market_download.warehouse_roots(root):
-        try:
-            manifest = json.loads((wh_root / "manifest.json").read_text(encoding="utf-8"))
-            if (
-                manifest.get("schema_version") == "historical-index-warehouse-v1"
-                and manifest.get("assets")
-                and (wh_root / "reference/calendar.parquet").is_file()
-            ):
-                historical += 1
-        except (OSError, ValueError, TypeError):
-            continue
+        if _valid_warehouse_header(wh_root, "historical-index-warehouse-v1"):
+            historical += 1
+        else:
+            invalid += 1
 
     market = 0
     for m_root in market_roots(root):
-        try:
-            manifest = json.loads((m_root / "manifest.json").read_text(encoding="utf-8"))
-            if (
-                manifest.get("schema_version") == "historical-market-warehouse-v1"
-                and manifest.get("assets")
-                and (m_root / "reference/calendar.parquet").is_file()
-            ):
-                market += 1
-        except (OSError, ValueError, TypeError):
-            continue
+        if _valid_warehouse_header(m_root, "historical-market-warehouse-v1"):
+            market += 1
+        else:
+            invalid += 1
 
-    return {"fixed": len(fixed_ids), "historical": historical, "market": market}
+    return {"fixed": len(fixed_ids), "historical": historical, "market": market, "invalid": invalid}
 
 
 def system_router(
@@ -128,7 +186,7 @@ def system_router(
     router = APIRouter(prefix="/api/v1")
     cache_lock = threading.Lock()
     cache_expires: float = 0.0
-    cache_value: dict | None = None
+    cache_value: tuple[dict | None, str] | None = None
 
     @router.get("/health")
     def health():
@@ -140,14 +198,14 @@ def system_router(
                 raise HTTPException(503, "数据库连接或版本检查未通过") from None
         return {"status": "ok", "read_only": False, "task_execution": "postgres_worker", **database}
 
-    def read_database_summary() -> dict | None:
+    def read_database_summary() -> tuple[dict | None, str]:
         nonlocal cache_expires, cache_value
         loader = market_summary
         if loader is None and market_status is None:
-            return None
+            return None, datetime.now(UTC).isoformat()
         now = time.monotonic()
         with cache_lock:
-            if summary_cache_ttl > 0 and now < cache_expires:
+            if summary_cache_ttl > 0 and now < cache_expires and cache_value is not None:
                 return cache_value
         raw = loader() if loader is not None else market_status()
         summary = {
@@ -155,19 +213,21 @@ def system_router(
             "coverage_start": raw.get("coverage_start"),
             "coverage_end": raw.get("coverage_end"),
         }
+        sampled_at = datetime.now(UTC).isoformat()
         with cache_lock:
             if summary_cache_ttl > 0:
-                cache_value = summary
+                cache_value = (summary, sampled_at)
                 cache_expires = time.monotonic() + summary_cache_ttl
-        return summary
+        return summary, sampled_at
 
     @router.get("/dashboard/summary")
     def dashboard_summary():
         try:
+            database, sampled_at = read_database_summary()
             return {
-                "database": read_database_summary(),
+                "database": database,
                 "counts": _dataset_counts(data_root),
-                "as_of": datetime.now(UTC).isoformat(),
+                "as_of": sampled_at,
             }
         except (SQLAlchemyError, OSError, ValueError):
             raise HTTPException(503, "工作台摘要暂时无法读取，请检查数据库连接与存储目录") from None

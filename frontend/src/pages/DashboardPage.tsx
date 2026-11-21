@@ -124,6 +124,9 @@ export default function DashboardPage() {
             <Typography.Text type="secondary" style={{ fontSize: 13 }}>
               固定股票池 {counts.fixed} · 沪深300历史成分 {counts.historical} ·
               条件筛选 {counts.market}
+              {(counts.invalid ?? 0) > 0
+                ? ` · 已跳过 ${counts.invalid} 个无效清单`
+                : ""}
             </Typography.Text>
           ) : null}
         </Card>

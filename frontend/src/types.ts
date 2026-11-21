@@ -480,6 +480,7 @@ export interface DashboardSummary {
     fixed: number;
     historical: number;
     market: number;
+    invalid?: number;
   };
   as_of: string;
 }

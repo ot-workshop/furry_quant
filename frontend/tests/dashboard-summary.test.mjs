@@ -210,12 +210,12 @@ test("DashboardPage separates loading, error+retry, disconnected DB, and empty m
     await closeDisconnected();
   }
 
-  // 200 with connected database but null coverage_start -> no market data label only.
+  // 200 with connected database, null coverage_start, and invalid manifests excluded from valid count.
   summaryHandler = async () =>
     new Response(
       JSON.stringify({
         database: { securities: 0, coverage_start: null, coverage_end: null },
-        counts: { fixed: 0, historical: 0, market: 0 },
+        counts: { fixed: 1, historical: 0, market: 0, invalid: 2 },
         as_of: "2026-11-22T00:00:00Z",
       }),
       { headers: { "Content-Type": "application/json" } },
@@ -223,6 +223,7 @@ test("DashboardPage separates loading, error+retry, disconnected DB, and empty m
   const closeNoMarket = await mount(dashboard.default);
   try {
     await waitFor(() => assert.match(document.body.textContent, /暂无行情/));
+    assert.match(document.body.textContent, /已跳过 2 个无效清单/);
     assert.doesNotMatch(document.body.textContent, /数据库未连接/);
   } finally {
     await closeNoMarket();
