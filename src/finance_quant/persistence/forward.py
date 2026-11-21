@@ -17,12 +17,13 @@ returned by RETURNING.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import Connection, text
+
+from finance_quant.checksums import sha256_text
 
 from .schema import forward_attempt
 
@@ -30,7 +31,7 @@ from .schema import forward_attempt
 def canonical_sha256(payload: object) -> str:
     """Stable digest for an evidence payload."""
     blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    return sha256_text(blob)
 
 
 @dataclass(frozen=True)
@@ -56,7 +57,16 @@ def stage_evidence(  # phase A
     deadline: datetime,
     evidence: dict,
 ) -> Confirmation:
-    """Lock, read the evidence, sample once, and record the staging proof if it is early."""
+    """Lock, read the evidence, sample once, and record the staging proof if it is early.
+
+    Evidence is embedded in the attempt row itself, so `evidence_row_id` names that row (the
+    attempt id) and `evidence_sha256` pins the canonical payload digest — the pair identifies
+    exactly which bytes were read when the sample was taken.
+
+    When the single sample is not strictly before the deadline the attempt is marked
+    `missed` **but the evidence stays**: a missed attempt keeps its payload for audit, while
+    `status=missed` makes it unusable for success. Callers must not clear it.
+    """
     row = _lock_row(connection, forward_attempt, attempt_id)
     if row is None:
         return Confirmation(False, None, "attempt-missing")

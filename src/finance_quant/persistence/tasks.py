@@ -133,35 +133,34 @@ class PgTaskStore:
         so the caller must not do slow I/O before committing. The queue-limit count sees
         uncommitted rows of the same transaction on purpose; do not add caching here.
         """
-        if True:
-            connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SUBMISSION_LOCK})
-            existing = connection.execute(select(task).where(task.c.idempotency_key == key)).mappings().first()
-            if existing:
-                if existing["fingerprint"] != fingerprint:
-                    raise conflict("同一次提交的参数已改变，请重新提交")
-                return self._public(existing)
-            count = connection.execute(
-                select(func.count()).select_from(task).where(task.c.status.in_(["queued", "running"]))
-            ).scalar_one()
-            if count >= 20:
-                raise conflict("排队任务已达20个，请等待或取消排队任务")
-            identifier = "task-" + uuid.uuid4().hex
-            connection.execute(
-                task.insert().values(
-                    id=identifier,
-                    idempotency_key=key,
-                    fingerprint=fingerprint,
-                    kind=kind,
-                    request=request,
-                    execution=execution,
-                    name=request.get("name", "数据更新"),
-                    status="queued",
-                    stage="queued",
-                    message="等待运行",
-                    completed=0,
-                    total=total,
-                )
+        connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SUBMISSION_LOCK})
+        existing = connection.execute(select(task).where(task.c.idempotency_key == key)).mappings().first()
+        if existing:
+            if existing["fingerprint"] != fingerprint:
+                raise conflict("同一次提交的参数已改变，请重新提交")
+            return self._public(existing)
+        count = connection.execute(
+            select(func.count()).select_from(task).where(task.c.status.in_(["queued", "running"]))
+        ).scalar_one()
+        if count >= 20:
+            raise conflict("排队任务已达20个，请等待或取消排队任务")
+        identifier = "task-" + uuid.uuid4().hex
+        connection.execute(
+            task.insert().values(
+                id=identifier,
+                idempotency_key=key,
+                fingerprint=fingerprint,
+                kind=kind,
+                request=request,
+                execution=execution,
+                name=request.get("name", "数据更新"),
+                status="queued",
+                stage="queued",
+                message="等待运行",
+                completed=0,
+                total=total,
             )
+        )
         # Same connection: the caller's transaction has not committed yet, so a fresh
         # connection would not see this row.
         row = connection.execute(select(task).where(task.c.id == identifier)).mappings().first()

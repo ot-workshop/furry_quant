@@ -61,10 +61,10 @@ class MemoryTaskStore:
             rows = sorted(self._rows.values(), key=lambda r: (r["created_at"], r["id"]), reverse=True)
             return {"items": [self._public(row) for row in rows[:100]], "total": len(rows)}
 
-    def create(self, request, execution, key):
+    def create(self, request, execution, key, *, connection=None):
         return self._create("research", request, execution, key, 4)
 
-    def create_download(self, kind, request, execution, key, *, total=1):
+    def create_download(self, kind, request, execution, key, *, total=1, connection=None):
         if kind not in {"market_download", "financial_download", "industry_download", "data_update", "maintenance"}:
             raise ValueError("Unsupported download task kind")
         return self._create(kind, request, execution, key, total)
