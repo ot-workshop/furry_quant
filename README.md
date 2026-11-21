@@ -189,6 +189,8 @@ chmod 600 .env
 
 ```dotenv
 APP_IMAGE=ghcr.io/ot-workshop/furry_quant@sha256:实际已验digest
+# 可选：只给 api 单独指定镜像（例如只更新 API）；未设置时回落到 APP_IMAGE
+# API_IMAGE=ghcr.io/ot-workshop/furry_quant@sha256:实际已验digest
 POSTGRES_USER=quant
 POSTGRES_DB=finance_quant
 POSTGRES_PASSWORD='替换为数据库密码'
@@ -202,7 +204,8 @@ RESTORE_ROOT=./restores
 
 | 配置项 | 说明 |
 | --- | --- |
-| `APP_IMAGE` | 应用镜像的 `sha-*` 标签或 digest，来自 GitHub Actions 构建结果 |
+| `APP_IMAGE` | 应用镜像的 `sha-*` 标签或 digest，来自 GitHub Actions 构建结果；api 与 worker 默认都用它 |
+| `API_IMAGE` | 可选。只给 api 容器指定镜像，未设置时回落到 `APP_IMAGE`；只改 `APP_IMAGE` 不会改变已单独钉住的 api。两个服务实际使用的 digest 要分开记录 |
 | `POSTGRES_USER` / `POSTGRES_DB` | 首次初始化时创建的用户和数据库，默认 `quant` / `finance_quant` |
 | `POSTGRES_PASSWORD` | 数据库密码；包含 `$`、`#` 等字符时使用单引号包裹 |
 | `TUSHARE_TOKEN` | 行情和财务数据下载所需的官方 Tushare Token；未配置时仍可启动服务 |

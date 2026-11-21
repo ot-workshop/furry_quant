@@ -138,6 +138,8 @@ finance-quant/
 
 ```dotenv
 APP_IMAGE=ghcr.io/ot-workshop/furry_quant@sha256:实际已验digest
+# 可选：只给 api 单独指定镜像；未设置时回落到 APP_IMAGE
+# API_IMAGE=ghcr.io/ot-workshop/furry_quant@sha256:实际已验digest
 TUSHARE_TOKEN=官方TushareToken
 POSTGRES_DB=finance_quant
 POSTGRES_USER=quant
@@ -194,6 +196,19 @@ docker compose logs --tail=100 db storage-init migrate api worker
 ## 更新镜像
 
 首版流程仅适用于**现有 Compose 结构、数据库镜像、迁移定义、数据布局及运行身份兼容的应用镜像更新**。对照线上版本与最终完整候选提交的 Compose、Dockerfile、迁移及路径/检查实现，确认既有数据库已满足候选所需 schema，目录已按候选实际非 root 身份就绪，才可跳过执行 migrate/storage-init。首次部署或任一条件不满足时走单独验证的准备/迁移流程；不能先覆盖线上 Compose 再记录旧配置。
+
+只换 api 之前先证明 worker 路径没有差异：
+
+```sh
+git diff --stat <旧提交> <新提交> -- src/finance_quant/research src/finance_quant/application src/finance_quant/server.py
+```
+
+输出为空（无改动）才可只换 api；否则必须连同 worker 一起更新。只换 api 时用 `API_IMAGE` 钉住 api 容器，`APP_IMAGE` 仍供 worker 与 migrate 使用；两个服务实际运行的 digest 要分别核对、分别记录。
+
+两条容易踩的坑：
+
+- **显式 `-f docker-compose.yaml` 时，Compose 不会自动叠加 `docker-compose.override.yml`**。想让 override 生效，要么不加 `-f` 让 Compose 自己发现它，要么在命令行显式写成 `-f docker-compose.yaml -f docker-compose.override.yml`。不要假定“目录里有 override 就生效”，否则会以为改了 api 镜像、实际没改。
+- 仓库里的 `docker-compose.yaml`/`.env` 与目标机上的实际文件要保持一致，差异只能是已登记的占位值。仓库改了而机器没改（或反之），下一次 `up -d` 就会默默回到旧行为。
 
 ### 含新迁移的版本
 
@@ -344,7 +359,7 @@ prod_compose exec -T worker python -c 'from finance_quant.provenance import sour
 
 测试负责人在约定窗口执行线上冒烟：原有回测/评估/评分数量与部署前对照、`/api/v1/data-status` 的原数据版本未意外变化、既有回测 KPI 与 API 一致、研究/比较入口正常。财务兼容修复须打开 `/evaluations/<原运行ID>` 并对照详情 API 与 JSON 下载，不能仅检查评估列表；无原始观测的 IC/分组收益仍为空，冻结文件不变。新增临时研究在隔离环境完成，生产写入另按明确验收范围执行。页面无法访问时记录未验项，不以 HTTP 或组件测试冒充浏览器验收。
 
-将部署提交、发布 run、镜像 digest、备份校验、迁移、版本核对与冒烟结论写入发布记录。检查失败时由执行人保留日志，发布维护者与技术评审者判断继续修复或回滚，不能只重启后宣称通过。
+将部署提交、发布 run、镜像 digest、备份校验、迁移、版本核对与冒烟结论写入发布记录。镜像 digest 按服务分别记：api 与 worker 可能因 `API_IMAGE` 而不一致，要写清各自实际运行的那一份，并注明判断“能否只换 api”的依据。检查失败时由执行人保留日志，发布维护者与技术评审者判断继续修复或回滚，不能只重启后宣称通过。
 
 ### 更新后继续未完成下载
 
