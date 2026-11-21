@@ -205,6 +205,12 @@ git diff --stat <旧提交> <新提交> -- src/finance_quant/research src/financ
 
 输出为空（无改动）才可只换 api；否则必须连同 worker 一起更新。只换 api 时用 `API_IMAGE` 钉住 api 容器，`APP_IMAGE` 仍供 worker 与 migrate 使用；两个服务实际运行的 digest 要分别核对、分别记录。
 
+`API_IMAGE` 的用法（Compose 里 api 行是 `image: ${API_IMAGE:-${APP_IMAGE:?Set APP_IMAGE in .env}}`）：
+
+- **什么时候用**：只更新界面与接口（不改 worker/migrate）时在 `.env` 里设 `API_IMAGE=<已验 digest 或 sha-* 标签>`，worker 保持不动；
+- **默认行为**：不设 `API_IMAGE` 时 api 与 worker 用同一个 `APP_IMAGE`；两者都为空时仍报 `Set APP_IMAGE in .env`，不会静默启动一个空镜像；
+- **与迁移的关系**：含迁移的版本仍必须“先 `alembic upgrade head` 再换镜像”，不能用 `API_IMAGE` 绕过迁移；详见[含新迁移的版本](#含新迁移的版本)。
+
 两条容易踩的坑：
 
 - **显式 `-f docker-compose.yaml` 时，Compose 不会自动叠加 `docker-compose.override.yml`**。想让 override 生效，要么不加 `-f` 让 Compose 自己发现它，要么在命令行显式写成 `-f docker-compose.yaml -f docker-compose.override.yml`。不要假定“目录里有 override 就生效”，否则会以为改了 api 镜像、实际没改。

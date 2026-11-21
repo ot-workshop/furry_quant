@@ -65,6 +65,7 @@ services:
         condition: service_completed_successfully
 
   api:
+    image: ${API_IMAGE:-${APP_IMAGE:?Set APP_IMAGE in .env}}
     <<: *app
     command: [python, -m, finance_quant.server, api]
     restart: unless-stopped
