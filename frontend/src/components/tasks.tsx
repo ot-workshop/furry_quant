@@ -28,7 +28,7 @@ import {
   REBALANCE_LABELS,
 } from "../utils/format";
 import { describeTaskFailure } from "../utils/taskFailure";
-import { AppLink, StatusTag } from "./ui";
+import { AppLink, EmptyState, StatusTag } from "./ui";
 
 const RESEARCH_STAGES = [
   { key: "prepare", title: "准备数据" },
@@ -276,12 +276,25 @@ export function TaskTable({
   >({});
 
   useEffect(() => {
+    setPage(1);
+  }, [tasks.length]);
+
+  useEffect(() => {
     if (expandedId) {
       setExpandedDetails((prev) =>
         prev[expandedId] ? prev : { ...prev, [expandedId]: true },
       );
     }
   }, [expandedId]);
+
+  if (!tasks.length) {
+    return (
+      <EmptyState
+        title="没有符合条件的任务"
+        description="切换筛选条件或新建研究后，任务会显示在这里。"
+      />
+    );
+  }
 
   const maxPage = Math.max(1, Math.ceil(tasks.length / PAGE_SIZE));
   const activePage = Math.min(page, maxPage);
@@ -326,8 +339,10 @@ export function TaskTable({
                     <Typography.Text strong className="task-row-title">
                       {task.name}
                     </Typography.Text>
-                    <StatusTag status={task.status} />
-                    {isExperimentTask(task) ? <Tag>方案比较</Tag> : null}
+                    <span className="task-row-badges">
+                      <StatusTag status={task.status} />
+                      {isExperimentTask(task) ? <Tag>方案比较</Tag> : null}
+                    </span>
                   </div>
                   {failure ? (
                     <div className="task-row-reason">

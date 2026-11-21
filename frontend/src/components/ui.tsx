@@ -12,6 +12,7 @@ import {
   Collapse,
   Empty,
   Flex,
+  Pagination,
   Result,
   Skeleton,
   Tag,
@@ -390,5 +391,98 @@ export function Hint({ text }: { text: ReactNode }) {
     <Tooltip title={text}>
       <InfoCircleOutlined className="hint-icon" />
     </Tooltip>
+  );
+}
+
+export interface MobileCardItem {
+  key: string;
+  title: ReactNode;
+  badges?: ReactNode;
+  meta?: Array<ReactNode | null | undefined | false>;
+  tags?: ReactNode;
+  onClick?: () => void;
+}
+
+const MOBILE_PAGE_SIZE = 20;
+
+export function MobileCardList({
+  items,
+  paginate = true,
+}: {
+  items: MobileCardItem[];
+  paginate?: boolean;
+}) {
+  const [page, setPage] = useState(1);
+  useEffect(() => {
+    setPage(1);
+  }, [items.length]);
+  const maxPage = Math.max(1, Math.ceil(items.length / MOBILE_PAGE_SIZE));
+  const activePage = Math.min(page, maxPage);
+  const visible = paginate
+    ? items.slice(
+        (activePage - 1) * MOBILE_PAGE_SIZE,
+        activePage * MOBILE_PAGE_SIZE,
+      )
+    : items;
+
+  return (
+    <div className="list-cards-wrap">
+      <div className="list-cards" role="list">
+        {visible.map((item) => {
+          const metaItems = (item.meta ?? []).filter(Boolean);
+          const content = (
+            <>
+              <div className="list-card-head">
+                <div className="list-card-title">{item.title}</div>
+                {item.badges ? (
+                  <div className="list-card-badges">{item.badges}</div>
+                ) : null}
+              </div>
+              {metaItems.length ? (
+                <div className="list-card-meta">
+                  {metaItems.map((entry, idx) => (
+                    <span key={idx} className="list-card-meta-item">
+                      {entry}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {item.tags ? (
+                <div className="list-card-tags">{item.tags}</div>
+              ) : null}
+            </>
+          );
+          if (item.onClick) {
+            return (
+              <div key={item.key} role="listitem" className="list-card">
+                <button
+                  type="button"
+                  className="list-card-trigger"
+                  onClick={item.onClick}
+                >
+                  {content}
+                </button>
+              </div>
+            );
+          }
+          return (
+            <div key={item.key} role="listitem" className="list-card">
+              {content}
+            </div>
+          );
+        })}
+      </div>
+      {paginate && items.length > MOBILE_PAGE_SIZE ? (
+        <Flex justify="end" style={{ marginTop: 12 }}>
+          <Pagination
+            current={activePage}
+            pageSize={MOBILE_PAGE_SIZE}
+            total={items.length}
+            onChange={setPage}
+            showSizeChanger={false}
+          />
+        </Flex>
+      ) : null}
+    </div>
   );
 }

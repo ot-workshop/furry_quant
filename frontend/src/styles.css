@@ -100,10 +100,19 @@ body {
 
 .app-content-inner {
   max-width: 1440px;
+  min-width: 0;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.app-layout .ant-layout {
+  min-width: 0;
+}
+
+.ant-tabs {
+  min-width: 0;
 }
 
 .settings-popover {
@@ -540,6 +549,9 @@ body {
     flex-wrap: wrap;
     gap: 8px;
   }
+  .section-card .ant-card-head-title {
+    flex: 1 1 auto;
+  }
   .section-card .ant-card-extra {
     margin-inline-start: 0;
     min-width: 0;
@@ -598,10 +610,122 @@ body {
 
 .task-row-head {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 6px 8px;
   min-width: 0;
+}
+
+.task-row-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.task-row-badges .ant-tag,
+.list-card-badges .ant-tag {
+  margin-inline-end: 0;
+  white-space: nowrap;
+}
+
+/* ----------------------------------------------------- mobile list cards */
+
+.list-cards-wrap {
+  min-width: 0;
+}
+
+.list-cards {
+  display: flex;
+  flex-direction: column;
+}
+
+.list-card {
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--ant-color-border-secondary);
+  min-width: 0;
+}
+
+.list-card:last-child {
+  border-bottom: 0;
+}
+
+.list-card-trigger {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.list-card-trigger:focus-visible {
+  outline: 2px solid var(--ant-color-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.list-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.list-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--ant-color-text);
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.list-card-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.list-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ant-color-text-secondary);
+  min-width: 0;
+}
+
+.list-card-meta-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+
+.list-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.list-card-tags .ant-tag {
+  margin-inline-end: 0;
 }
 
 .task-row-title {
