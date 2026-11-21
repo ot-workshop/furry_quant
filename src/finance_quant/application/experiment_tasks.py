@@ -90,7 +90,7 @@ def validate_experiment_document(document: dict):
     return plan
 
 
-def validate_experiment_request(document: dict, data_root, runs_root, *, result_store=None) -> tuple[dict, dict]:
+def validate_experiment_inputs(document: dict, data_root, runs_root, *, result_store=None) -> tuple[dict, dict]:
     """Validate everything the worker will need before anything is queued or written."""
 
     plan = validate_experiment_document(document)
@@ -151,6 +151,17 @@ def validate_experiment_request(document: dict, data_root, runs_root, *, result_
         normalized["factor_selection"] = bound["selection"]["reference"]
         execution["factor_selection"] = bound["selection"]
     return normalized, execution
+
+
+def validate_experiment_request(document: dict, data_root, runs_root, *, result_store=None) -> tuple[dict, dict]:
+    """Cheap checks plus the heavy ones, for callers that must validate before queueing.
+
+    `submit_experiment` no longer uses this: it queues after `validate_experiment_document`
+    and the worker runs `validate_experiment_inputs` at its `prepare` stage.
+    """
+
+    validate_experiment_document(document)
+    return validate_experiment_inputs(document, data_root, runs_root, result_store=result_store)
 
 
 def _data_config(manifest: dict, codes) -> DataConfig:
