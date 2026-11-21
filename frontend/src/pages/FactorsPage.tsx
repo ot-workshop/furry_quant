@@ -6,7 +6,6 @@ import {
   Flex,
   Segmented,
   Select,
-  Space,
   Statistic,
   Table,
   Tabs,
@@ -16,6 +15,7 @@ import {
 import { DownloadOutlined } from "@ant-design/icons";
 import { api } from "../api/client";
 import { setSearch } from "../app/routes";
+import { useMediaQuery } from "../app/useMediaQuery";
 import { TemporalAuditPanel } from "../components/audit";
 import { MISSING_POLICY_LABELS } from "../components/FactorMissingPolicy";
 import { FactorCalculationDetails } from "../components/FactorCalculationDetails";
@@ -30,6 +30,8 @@ import {
   PageHeader,
   Resource,
   Section,
+  TableScroll,
+  WrapTag,
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import type { FactorRun, FactorScore, FactorScoresResponse } from "../types";
@@ -84,6 +86,17 @@ function FactorWorkspace({
   run: FactorRun;
   search: URLSearchParams;
 }) {
+  const isNarrowSelect = useMediaQuery("(max-width: 479px)");
+  const summaryById = useMemo(
+    () =>
+      new Map(
+        runs.map((item) => [
+          item.id,
+          `${item.factor_config?.length ?? 1} 个因子 · ${item.sample_size} 只`,
+        ]),
+      ),
+    [runs],
+  );
   const dates = run.available_dates?.length ? run.available_dates : [run.as_of];
   const requestedDate = search.get("date");
   const date =
@@ -112,7 +125,11 @@ function FactorWorkspace({
       />
       <Card>
         <Flex gap={16} wrap align="flex-end">
-          <Flex vertical gap={4} style={{ flex: "1 1 360px" }}>
+          <Flex
+            vertical
+            gap={4}
+            style={{ flex: "1 1 260px", minWidth: 0, maxWidth: "100%" }}
+          >
             <Typography.Text type="secondary">评分批次</Typography.Text>
             <Select
               value={run.id}
@@ -123,11 +140,17 @@ function FactorWorkspace({
                 value: item.id,
                 label: `${item.as_of} · ${item.sample_size} 只 · ${item.factor_config?.map((f) => factorLabel(f.name)).join("+") ?? item.scheme}`,
               }))}
+              labelRender={(option) =>
+                isNarrowSelect
+                  ? (summaryById.get(String(option.value)) ?? option.label)
+                  : option.label
+              }
               showSearch
               optionFilterProp="label"
+              style={{ width: "100%" }}
             />
           </Flex>
-          <Flex vertical gap={4}>
+          <Flex vertical gap={4} style={{ minWidth: 0, maxWidth: "100%" }}>
             <Typography.Text type="secondary">评分日期</Typography.Text>
             <Select
               value={date}
@@ -136,18 +159,17 @@ function FactorWorkspace({
                 .reverse()
                 .map((day) => ({ value: day, label: day }))}
               showSearch
-              style={{ width: 160 }}
+              style={{ width: "min(160px, 100%)", maxWidth: "100%" }}
             />
           </Flex>
-          <Space wrap>
+          <div className="factor-tags-wrap">
             {run.factor_config?.map((factor) => (
-              <Tag key={factor.id ?? factor.name}>
-                {factorLabel(factor.name)}
-                {factor.window ? ` ${factor.window}日` : ""} ·{" "}
-                {formatPercent(factor.weight, 0)}
-              </Tag>
+              <WrapTag
+                key={factor.id ?? factor.name}
+                text={`${factorLabel(factor.name)}${factor.window ? ` ${factor.window}日` : ""} · ${formatPercent(factor.weight, 0)}`}
+              />
             ))}
-          </Space>
+          </div>
         </Flex>
       </Card>
       <Tabs
@@ -223,88 +245,91 @@ function Ranking({ run, date }: { run: FactorRun; date: string }) {
         }
       >
         {(data) => (
-          <Table<FactorScore>
-            size="small"
-            rowKey="instrument"
-            dataSource={data.items}
-            rowClassName={() => "clickable-row"}
-            onRow={(row) => ({
-              onClick: () =>
-                setSearch({ tab: "stock", instrument: row.instrument }),
-            })}
-            scroll={{ x: "max-content" }}
-            onChange={(_, __, sorter) => {
-              const single = Array.isArray(sorter) ? sorter[0] : sorter;
-              if (single?.columnKey && single.order) {
-                setSort({
-                  by: String(single.columnKey),
-                  descending: single.order === "descend",
-                });
-                setPage(1);
-              }
-            }}
-            pagination={{
-              current: page,
-              pageSize: PAGE,
-              total: data.total,
-              onChange: setPage,
-              hideOnSinglePage: true,
-              showSizeChanger: false,
-            }}
-            columns={[
-              { title: "排名", dataIndex: "rank", width: 70, align: "right" },
-              {
-                title: "股票",
-                fixed: "left",
-                render: (_, row) => (
-                  <Flex vertical>
-                    <Typography.Text strong>{row.name}</Typography.Text>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {row.instrument}
+          <TableScroll label="横截面排名表">
+            <Table<FactorScore>
+              size="small"
+              rowKey="instrument"
+              dataSource={data.items}
+              rowClassName={() => "clickable-row"}
+              onRow={(row) => ({
+                onClick: () =>
+                  setSearch({ tab: "stock", instrument: row.instrument }),
+              })}
+              onChange={(_, __, sorter) => {
+                const single = Array.isArray(sorter) ? sorter[0] : sorter;
+                if (single?.columnKey && single.order) {
+                  setSort({
+                    by: String(single.columnKey),
+                    descending: single.order === "descend",
+                  });
+                  setPage(1);
+                }
+              }}
+              pagination={{
+                current: page,
+                pageSize: PAGE,
+                total: data.total,
+                onChange: setPage,
+                hideOnSinglePage: true,
+                showSizeChanger: false,
+              }}
+              columns={[
+                { title: "排名", dataIndex: "rank", width: 70, align: "right" },
+                {
+                  title: "股票",
+                  render: (_, row) => (
+                    <Flex vertical>
+                      <Typography.Text strong>{row.name}</Typography.Text>
+                      <Typography.Text
+                        type="secondary"
+                        style={{ fontSize: 12 }}
+                      >
+                        {row.instrument}
+                      </Typography.Text>
+                    </Flex>
+                  ),
+                },
+                {
+                  title: "行业",
+                  render: (_, row) =>
+                    row.industry_status
+                      ? (row.industry_name ?? "未知")
+                      : (row.industry ?? "—"),
+                },
+                ...keys.map((key) => ({
+                  title: factorLabel(key, definitions),
+                  key,
+                  align: "right" as const,
+                  sorter: true,
+                  sortOrder:
+                    sort.by === key
+                      ? sort.descending
+                        ? ("descend" as const)
+                        : ("ascend" as const)
+                      : null,
+                  render: (_: unknown, row: FactorScore) =>
+                    formatNumber(row.scores?.[key], 1),
+                })),
+                {
+                  title: "综合分",
+                  key: "composite",
+                  align: "right",
+                  sorter: true,
+                  sortOrder:
+                    sort.by === "composite"
+                      ? sort.descending
+                        ? "descend"
+                        : "ascend"
+                      : null,
+                  render: (_, row) => (
+                    <Typography.Text strong>
+                      {formatNumber(row.composite, 2)}
                     </Typography.Text>
-                  </Flex>
-                ),
-              },
-              {
-                title: "行业",
-                render: (_, row) =>
-                  row.industry_status
-                    ? (row.industry_name ?? "未知")
-                    : (row.industry ?? "—"),
-              },
-              ...keys.map((key) => ({
-                title: factorLabel(key, definitions),
-                key,
-                align: "right" as const,
-                sorter: true,
-                sortOrder:
-                  sort.by === key
-                    ? sort.descending
-                      ? ("descend" as const)
-                      : ("ascend" as const)
-                    : null,
-                render: (_: unknown, row: FactorScore) =>
-                  formatNumber(row.scores?.[key], 1),
-              })),
-              {
-                title: "综合分",
-                key: "composite",
-                align: "right",
-                sorter: true,
-                sortOrder:
-                  sort.by === "composite"
-                    ? sort.descending
-                      ? "descend"
-                      : "ascend"
-                    : null,
-                render: (_, row) => (
-                  <Typography.Text strong>
-                    {formatNumber(row.composite, 2)}
-                  </Typography.Text>
-                ),
-              },
-            ]}
-          />
+                  ),
+                },
+              ]}
+            />
+          </TableScroll>
         )}
       </Resource>
     </Section>
@@ -379,7 +404,7 @@ function StockDetail({
             onSearch={setQuery}
             onChange={(value: string) => setSearch({ instrument: value })}
             options={options}
-            style={{ width: 280 }}
+            style={{ width: "min(280px, 100%)", maxWidth: "100%" }}
             loading={instruments.loading}
           />
           {score ? (
@@ -482,76 +507,78 @@ function FactorBreakdown({
           。下表列出各因子的原始值与排除原因。
         </Typography.Paragraph>
       ) : null}
-      <Table
-        size="small"
-        rowKey="key"
-        pagination={false}
-        dataSource={rows}
-        scroll={{ x: "max-content" }}
-        columns={[
-          {
-            title: "因子",
-            render: (_, { key, definition }) => (
-              <Flex vertical>
-                <Typography.Text>{definition.label}</Typography.Text>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {definition.direction === "lower" ? "越低越好" : "越高越好"} ·
-                  回看 {definition.lookback} 日 · {key}
-                </Typography.Text>
-              </Flex>
-            ),
-          },
-          {
-            title: "原始值",
-            align: "right",
-            render: (_, { key }) =>
-              formatNumber(score?.raw?.[key] ?? exclusion?.raw?.[key], 6),
-          },
-          {
-            title: "得分",
-            align: "right",
-            render: (_, { key }) => formatNumber(score?.scores?.[key], 2),
-          },
-          ...(neutral
-            ? [
-                {
-                  title: "处理前得分",
-                  align: "right" as const,
-                  render: (_: unknown, { key }: { key: string }) =>
-                    formatNumber(score?.before_scores?.[key], 2),
-                },
-                {
-                  title: "行业残差",
-                  align: "right" as const,
-                  render: (_: unknown, { key }: { key: string }) =>
-                    formatNumber(score?.processed?.[key], 4),
-                },
-              ]
-            : []),
-          {
-            title: "权重",
-            align: "right",
-            render: (_, { key }) => formatPercent(metadata?.weights?.[key], 0),
-          },
-          {
-            title: "贡献",
-            align: "right",
-            render: (_, { key }) =>
-              formatNumber(score?.contributions?.[key], 2),
-          },
-          {
-            title: "覆盖 / 状态",
-            render: (_, { key }) => {
-              const count = coverage?.factors[key];
-              const reason = exclusion?.reasons[key];
-              const detail =
-                score?.factor_details?.[key] ??
-                exclusion?.factor_details?.[key];
-              return `${count ? `${count.valid}/${coverage?.universe} 只真实有效${count.not_applicable ? `，${count.not_applicable}只不适用` : ""} · ` : ""}${detail?.status === "not_applicable" ? (score ? "行业不适用记50分" : "行业不适用；未参与本日评分") : detail?.imputed ? MISSING_POLICY_LABELS[detail.missing_policy] : (detail?.reason_label ?? (reason ? (REASONS[reason] ?? reason) : score ? "可用" : "—"))}`;
+      <TableScroll label="因子明细表">
+        <Table
+          size="small"
+          rowKey="key"
+          pagination={false}
+          dataSource={rows}
+          columns={[
+            {
+              title: "因子",
+              render: (_, { key, definition }) => (
+                <Flex vertical>
+                  <Typography.Text>{definition.label}</Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {definition.direction === "lower" ? "越低越好" : "越高越好"}{" "}
+                    · 回看 {definition.lookback} 日 · {key}
+                  </Typography.Text>
+                </Flex>
+              ),
             },
-          },
-        ]}
-      />
+            {
+              title: "原始值",
+              align: "right",
+              render: (_, { key }) =>
+                formatNumber(score?.raw?.[key] ?? exclusion?.raw?.[key], 6),
+            },
+            {
+              title: "得分",
+              align: "right",
+              render: (_, { key }) => formatNumber(score?.scores?.[key], 2),
+            },
+            ...(neutral
+              ? [
+                  {
+                    title: "处理前得分",
+                    align: "right" as const,
+                    render: (_: unknown, { key }: { key: string }) =>
+                      formatNumber(score?.before_scores?.[key], 2),
+                  },
+                  {
+                    title: "行业残差",
+                    align: "right" as const,
+                    render: (_: unknown, { key }: { key: string }) =>
+                      formatNumber(score?.processed?.[key], 4),
+                  },
+                ]
+              : []),
+            {
+              title: "权重",
+              align: "right",
+              render: (_, { key }) =>
+                formatPercent(metadata?.weights?.[key], 0),
+            },
+            {
+              title: "贡献",
+              align: "right",
+              render: (_, { key }) =>
+                formatNumber(score?.contributions?.[key], 2),
+            },
+            {
+              title: "覆盖 / 状态",
+              render: (_, { key }) => {
+                const count = coverage?.factors[key];
+                const reason = exclusion?.reasons[key];
+                const detail =
+                  score?.factor_details?.[key] ??
+                  exclusion?.factor_details?.[key];
+                return `${count ? `${count.valid}/${coverage?.universe} 只真实有效${count.not_applicable ? `，${count.not_applicable}只不适用` : ""} · ` : ""}${detail?.status === "not_applicable" ? (score ? "行业不适用记50分" : "行业不适用；未参与本日评分") : detail?.imputed ? MISSING_POLICY_LABELS[detail.missing_policy] : (detail?.reason_label ?? (reason ? (REASONS[reason] ?? reason) : score ? "可用" : "—"))}`;
+              },
+            },
+          ]}
+        />
+      </TableScroll>
       {Object.entries(
         score?.factor_details ?? exclusion?.factor_details ?? {},
       ).map(([key, detail]) => (

@@ -1,12 +1,21 @@
-import { Alert, Button, Table, Typography } from "antd";
+import { Alert, Button, Table, Tag, Typography } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import { experimentsApi, type ExperimentMetadata } from "../api/experiments";
 import { navigate, paths } from "../app/routes";
-import { EmptyState, PageHeader, Resource, Section } from "../components/ui";
+import { useMediaQuery } from "../app/useMediaQuery";
+import {
+  EmptyState,
+  MobileCardList,
+  PageHeader,
+  Resource,
+  Section,
+  TableScroll,
+} from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import { formatDateTime } from "../utils/format";
 
 export default function ExperimentListPage() {
+  const isMobile = useMediaQuery("(max-width: 767px)");
   const list = useApiResource((signal) => experimentsApi.list(signal), []);
   return (
     <>
@@ -51,56 +60,85 @@ export default function ExperimentListPage() {
             )
           }
         >
-          {(data) => (
-            <Table<ExperimentMetadata>
-              rowKey="id"
-              dataSource={data.items}
-              pagination={{ pageSize: 20, hideOnSinglePage: true }}
-              rowClassName={() => "clickable-row"}
-              onRow={(row) => ({
-                onClick: () => navigate(paths.experiment(row.id)),
-              })}
-              columns={[
-                {
-                  title: "名称",
-                  render: (_, row) => (
-                    <div>
-                      <Typography.Text strong>{row.name}</Typography.Text>
-                      <div>
-                        <Typography.Text
-                          type="secondary"
-                          style={{ fontSize: 12 }}
-                        >
-                          {row.id}
-                        </Typography.Text>
-                      </div>
-                    </div>
-                  ),
-                },
-                {
-                  title: "类型",
-                  render: (_, row) =>
+          {(data) =>
+            isMobile ? (
+              <MobileCardList
+                items={data.items.map((row) => {
+                  const kindLabel =
                     row.validation_kind === "return_comparison"
                       ? "收益来源对照"
-                      : "分段比较",
-                },
-                {
-                  title: "选定方案",
-                  render: (_, row) => row.selected_candidate ?? "—",
-                },
-                {
-                  title: "数据版本",
-                  dataIndex: "data_version",
-                  ellipsis: true,
-                },
-                {
-                  title: "创建时间",
-                  width: 170,
-                  render: (_, row) => formatDateTime(row.created_at),
-                },
-              ]}
-            />
-          )}
+                      : "分段比较";
+                  const longAttr = Array.from(kindLabel).length >= 5;
+                  return {
+                    key: row.id,
+                    title: row.name,
+                    badges: longAttr ? undefined : <Tag>{kindLabel}</Tag>,
+                    subBadges: longAttr ? <Tag>{kindLabel}</Tag> : undefined,
+                    meta: [
+                      <span key="candidate">
+                        选定方案 {row.selected_candidate ?? "—"}
+                      </span>,
+                      <span key="created" className="numeric-token">
+                        {formatDateTime(row.created_at)}
+                      </span>,
+                    ],
+                    onClick: () => navigate(paths.experiment(row.id)),
+                  };
+                })}
+              />
+            ) : (
+              <TableScroll label="方案比较列表">
+                <Table<ExperimentMetadata>
+                  rowKey="id"
+                  dataSource={data.items}
+                  pagination={{ pageSize: 20, hideOnSinglePage: true }}
+                  rowClassName={() => "clickable-row"}
+                  onRow={(row) => ({
+                    onClick: () => navigate(paths.experiment(row.id)),
+                  })}
+                  columns={[
+                    {
+                      title: "名称",
+                      render: (_, row) => (
+                        <div>
+                          <Typography.Text strong>{row.name}</Typography.Text>
+                          <div>
+                            <Typography.Text
+                              type="secondary"
+                              style={{ fontSize: 12 }}
+                            >
+                              {row.id}
+                            </Typography.Text>
+                          </div>
+                        </div>
+                      ),
+                    },
+                    {
+                      title: "类型",
+                      render: (_, row) =>
+                        row.validation_kind === "return_comparison"
+                          ? "收益来源对照"
+                          : "分段比较",
+                    },
+                    {
+                      title: "选定方案",
+                      render: (_, row) => row.selected_candidate ?? "—",
+                    },
+                    {
+                      title: "数据版本",
+                      dataIndex: "data_version",
+                      ellipsis: true,
+                    },
+                    {
+                      title: "创建时间",
+                      width: 170,
+                      render: (_, row) => formatDateTime(row.created_at),
+                    },
+                  ]}
+                />
+              </TableScroll>
+            )
+          }
         </Resource>
       </Section>
     </>

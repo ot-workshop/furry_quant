@@ -101,6 +101,7 @@ export default function TasksPage({ focus }: { focus: string | null }) {
               tasks={items}
               onChanged={tasks.reload}
               expandedId={focus}
+              resetKey={filter}
             />
           )}
         </Resource>

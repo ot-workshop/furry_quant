@@ -28,7 +28,7 @@ import {
   REBALANCE_LABELS,
 } from "../utils/format";
 import { describeTaskFailure } from "../utils/taskFailure";
-import { AppLink, StatusTag } from "./ui";
+import { AppLink, EmptyState, StatusTag } from "./ui";
 
 const RESEARCH_STAGES = [
   { key: "prepare", title: "准备数据" },
@@ -260,20 +260,31 @@ export function TaskTable({
   onChanged,
   compact = false,
   expandedId,
+  resetKey,
 }: {
   tasks: ResearchTask[];
   onChanged: () => void;
   compact?: boolean;
   expandedId?: string | null;
+  resetKey?: string;
 }) {
   const { message } = App.useApp();
   const [page, setPage] = useState(1);
+  const maxPage = Math.max(1, Math.ceil(tasks.length / PAGE_SIZE));
   const [expandedDetails, setExpandedDetails] = useState<
     Record<string, boolean>
   >(() => (expandedId ? { [expandedId]: true } : {}));
   const [expandedReasons, setExpandedReasons] = useState<
     Record<string, boolean>
   >({});
+
+  useEffect(() => {
+    setPage(1);
+  }, [resetKey]);
+
+  useEffect(() => {
+    if (page > maxPage) setPage(maxPage);
+  }, [page, maxPage]);
 
   useEffect(() => {
     if (expandedId) {
@@ -283,7 +294,15 @@ export function TaskTable({
     }
   }, [expandedId]);
 
-  const maxPage = Math.max(1, Math.ceil(tasks.length / PAGE_SIZE));
+  if (!tasks.length) {
+    return (
+      <EmptyState
+        title="没有符合条件的任务"
+        description="切换筛选条件或新建研究后，任务会显示在这里。"
+      />
+    );
+  }
+
   const activePage = Math.min(page, maxPage);
   const visibleTasks = compact
     ? tasks
@@ -323,11 +342,19 @@ export function TaskTable({
               <div className="task-row-main">
                 <div className="task-row-info">
                   <div className="task-row-head">
-                    <Typography.Text strong className="task-row-title">
-                      {task.name}
-                    </Typography.Text>
-                    <StatusTag status={task.status} />
-                    {isExperimentTask(task) ? <Tag>方案比较</Tag> : null}
+                    <div className="task-row-title-wrap">
+                      <Typography.Text
+                        strong
+                        className="task-row-title"
+                        title={task.name}
+                      >
+                        {task.name}
+                      </Typography.Text>
+                    </div>
+                    <span className="task-row-badges">
+                      <StatusTag status={task.status} />
+                      {isExperimentTask(task) ? <Tag>方案比较</Tag> : null}
+                    </span>
                   </div>
                   {failure ? (
                     <div className="task-row-reason">
