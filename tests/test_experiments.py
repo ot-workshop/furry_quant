@@ -323,6 +323,50 @@ def test_web_experiment_with_discontiguous_periods_queues_then_fails_at_prepare(
     assert "首尾相接" in (finished["error"] or "")
 
 
+def test_web_experiment_submit_never_touches_heavy_paths(tmp_path, monkeypatch):
+    """A comparison submission must only do cheap checks: every heavy path is a sentinel."""
+
+    from finance_quant.application import experiment_tasks
+
+    data, runs = tmp_path / "data", tmp_path / "runs"
+    manifest = publish_fixture_snapshot(
+        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
+    )
+    seed_earnings(financial_root(data), ("600000.SH", "000001.SZ", "600519.SH"))
+    service = make_service(runs, data)
+    client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
+
+    touched = []
+
+    def sentinel(name):
+        def boom(*_args, **_kwargs):
+            touched.append(name)
+            raise AssertionError(f"{name} must not run during submit")
+
+        return boom
+
+    for name in (
+        "snapshot_registry",
+        "validate_comparison_inputs",
+        "dynamic_preflight",
+        "_preflight",
+        "selection_validation",
+        "validate_selection_inputs",
+        "_pin_candidates",
+    ):
+        if hasattr(experiment_tasks, name):
+            monkeypatch.setattr(experiment_tasks, name, sentinel(name))
+
+    response = client.post(
+        "/api/v1/research/experiments",
+        json=experiment_request(manifest["id"]),
+        headers={"Idempotency-Key": "experiment-cheap-1"},
+    )
+    assert response.status_code == 202, response.text
+    assert touched == []
+    assert service.store.list()["total"] == 1
+
+
 def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path):
 
     data, runs = tmp_path / "data", tmp_path / "runs"
