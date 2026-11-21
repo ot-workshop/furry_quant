@@ -62,16 +62,18 @@ export default function TasksPage({ focus }: { focus: string | null }) {
       />
       <Section
         extra={
-          <Segmented<Filter>
-            value={filter}
-            onChange={setFilter}
-            options={[
-              { value: "all", label: `全部 ${counts.all}` },
-              { value: "active", label: `进行中 ${counts.active}` },
-              { value: "succeeded", label: `已完成 ${counts.succeeded}` },
-              { value: "failed", label: `失败/中断 ${counts.failed}` },
-            ]}
-          />
+          <div className="task-filter-wrap">
+            <Segmented<Filter>
+              value={filter}
+              onChange={setFilter}
+              options={[
+                { value: "all", label: `全部 ${counts.all}` },
+                { value: "active", label: `进行中 ${counts.active}` },
+                { value: "succeeded", label: `已完成 ${counts.succeeded}` },
+                { value: "failed", label: `失败/中断 ${counts.failed}` },
+              ]}
+            />
+          </div>
         }
         title="任务列表"
       >

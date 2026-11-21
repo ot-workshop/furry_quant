@@ -19,6 +19,7 @@ export type TaskStage =
   | "backtest"
   | "evaluation"
   | "experiment"
+  | "download"
   | "finished";
 
 export interface SnapshotCode {
@@ -259,7 +260,9 @@ export interface ResearchResult {
 
 export interface TaskErrorDetails {
   kind?: "runtime";
-  stage?: string;
+  stage?: string | null;
+  exit_code?: number | null;
+  oom_killed?: boolean | null;
   exception_type?: string;
   summary?: string;
   trace?: Array<{ file: string; function: string; line: number }>;

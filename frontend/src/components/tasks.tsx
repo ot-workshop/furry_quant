@@ -1,18 +1,18 @@
+import { useEffect, useState } from "react";
 import { poolLabel } from "../utils/format";
 import {
   App,
   Button,
   Descriptions,
   Flex,
+  Pagination,
   Popconfirm,
   Progress,
   Space,
   Steps,
-  Table,
   Tag,
   Typography,
 } from "antd";
-import type { ColumnsType } from "antd/es/table";
 import {
   isExperimentTask,
   researchApi,
@@ -27,6 +27,7 @@ import {
   formatDuration,
   REBALANCE_LABELS,
 } from "../utils/format";
+import { describeTaskFailure } from "../utils/taskFailure";
 import { AppLink, StatusTag } from "./ui";
 
 const RESEARCH_STAGES = [
@@ -207,8 +208,9 @@ function RequestSummary({ task }: { task: ResearchTask }) {
 
 export function TaskDetail({ task }: { task: ResearchTask }) {
   const failed = task.status === "failed" || task.status === "interrupted";
+  const failure = describeTaskFailure(task);
   return (
-    <Flex vertical gap={12} style={{ padding: "4px 8px" }}>
+    <Flex vertical gap={12} className="task-detail-panel">
       {!isExperimentTask(task) &&
       task.status !== "queued" &&
       task.status !== "cancelled" ? (
@@ -225,10 +227,15 @@ export function TaskDetail({ task }: { task: ResearchTask }) {
           items={RESEARCH_STAGES.map((stage) => ({ title: stage.title }))}
         />
       ) : null}
-      {task.error ? (
-        <Typography.Text type="danger">
-          {task.status === "interrupted" ? "已中断：" : "失败原因："}
-          {task.error}
+      {failure ? (
+        <Typography.Text
+          type={failure.tone === "neutral" ? "secondary" : undefined}
+          className="task-detail-reason"
+        >
+          <span className="task-reason-label">
+            {task.status === "interrupted" ? "已中断" : "失败原因"}
+          </span>{" "}
+          {failure.fullText}
         </Typography.Text>
       ) : null}
       {task.error_details?.trace?.length ? (
@@ -245,6 +252,8 @@ export function TaskDetail({ task }: { task: ResearchTask }) {
   );
 }
 
+const PAGE_SIZE = 20;
+
 export function TaskTable({
   tasks,
   onChanged,
@@ -257,6 +266,27 @@ export function TaskTable({
   expandedId?: string | null;
 }) {
   const { message } = App.useApp();
+  const [page, setPage] = useState(1);
+  const [expandedDetails, setExpandedDetails] = useState<
+    Record<string, boolean>
+  >(() => (expandedId ? { [expandedId]: true } : {}));
+  const [expandedReasons, setExpandedReasons] = useState<
+    Record<string, boolean>
+  >({});
+
+  useEffect(() => {
+    if (expandedId) {
+      setExpandedDetails((prev) =>
+        prev[expandedId] ? prev : { ...prev, [expandedId]: true },
+      );
+    }
+  }, [expandedId]);
+
+  const maxPage = Math.max(1, Math.ceil(tasks.length / PAGE_SIZE));
+  const activePage = Math.min(page, maxPage);
+  const visibleTasks = compact
+    ? tasks
+    : tasks.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE);
 
   async function cancel(task: ResearchTask) {
     try {
@@ -269,109 +299,173 @@ export function TaskTable({
     }
   }
 
-  const columns: ColumnsType<ResearchTask> = [
-    {
-      title: "任务",
-      key: "name",
-      render: (_, task) => (
-        <Flex vertical gap={2}>
-          <Space size={6}>
-            <Typography.Text strong>{task.name}</Typography.Text>
-            {isExperimentTask(task) ? <Tag>方案比较</Tag> : null}
-          </Space>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {formatDateTime(task.created_at)}
-          </Typography.Text>
-        </Flex>
-      ),
-    },
-    {
-      title: "状态",
-      key: "status",
-      width: 96,
-      render: (_, task) => <StatusTag status={task.status} />,
-    },
-    {
-      title: "进度",
-      key: "progress",
-      width: 220,
-      render: (_, task) => <TaskProgress task={task} />,
-    },
-    ...(compact
-      ? []
-      : [
-          {
-            title: "耗时",
-            key: "duration",
-            width: 110,
-            render: (_: unknown, task: ResearchTask) =>
-              formatDuration(task.started_at, task.finished_at),
-          },
-        ]),
-    {
-      title: "结果",
-      key: "result",
-      render: (_, task) => <ResultLinks task={task} />,
-    },
-    {
-      title: "",
-      key: "actions",
-      width: compact ? 90 : 170,
-      align: "right",
-      render: (_, task) => (
-        <Space size={4}>
-          {task.status === "queued" ? (
-            <Popconfirm
-              title="取消这个排队任务？"
-              onConfirm={() => void cancel(task)}
-            >
-              <Button size="small" type="link" danger>
-                取消
-              </Button>
-            </Popconfirm>
-          ) : null}
-          {!compact && !isExperimentTask(task) ? (
-            <Button
-              size="small"
-              type="link"
-              onClick={() => navigate(paths.newResearch(task.id))}
-            >
-              复用配置
-            </Button>
-          ) : null}
-          {!compact && task.kind === "research" ? (
-            <Button
-              size="small"
-              type="link"
-              onClick={() =>
-                navigate(
-                  `${paths.newExperiment()}?mode=comparison&from=${encodeURIComponent(task.id)}`,
-                )
-              }
-            >
-              收益来源对照
-            </Button>
-          ) : null}
-        </Space>
-      ),
-    },
-  ];
-
   return (
-    <Table<ResearchTask>
-      rowKey="id"
-      size={compact ? "small" : "middle"}
-      columns={columns}
-      dataSource={tasks}
-      pagination={compact ? false : { pageSize: 20, hideOnSinglePage: true }}
-      expandable={
-        compact
-          ? undefined
-          : {
-              expandedRowRender: (task) => <TaskDetail task={task} />,
-              defaultExpandedRowKeys: expandedId ? [expandedId] : [],
-            }
-      }
-    />
+    <div className="task-list-wrap">
+      <div className="task-list" role="list">
+        {visibleTasks.map((task) => {
+          const failure = describeTaskFailure(task);
+          const duration = formatDuration(task.started_at, task.finished_at);
+          const detailOpen = !compact && Boolean(expandedDetails[task.id]);
+          const reasonOpen = Boolean(expandedReasons[task.id]);
+          const isFailureAccent =
+            task.status === "failed" && failure?.tone !== "neutral";
+          const isActive =
+            task.status === "queued" || task.status === "running";
+
+          return (
+            <div
+              key={task.id}
+              role="listitem"
+              data-task-id={task.id}
+              className={`task-row${isFailureAccent ? " task-row-failed" : ""}`}
+            >
+              <div className="task-row-main">
+                <div className="task-row-info">
+                  <div className="task-row-head">
+                    <Typography.Text strong className="task-row-title">
+                      {task.name}
+                    </Typography.Text>
+                    <StatusTag status={task.status} />
+                    {isExperimentTask(task) ? <Tag>方案比较</Tag> : null}
+                  </div>
+                  {failure ? (
+                    <div className="task-row-reason">
+                      {failure.isEmpty ? (
+                        <span className="task-reason-empty">
+                          {failure.fullText}
+                        </span>
+                      ) : (
+                        <>
+                          <span className="task-reason-label">原因</span>
+                          <span
+                            className={`task-reason-body${failure.tone === "neutral" ? " task-reason-neutral" : ""}`}
+                          >
+                            <span>
+                              {failure.isLong && !reasonOpen
+                                ? failure.previewText
+                                : failure.headline}
+                            </span>
+                            {failure.exitCodeText ? (
+                              <span className="task-reason-code numeric-token">
+                                {failure.exitCodeText}
+                              </span>
+                            ) : null}
+                            {failure.isLong ? (
+                              <button
+                                type="button"
+                                className="task-reason-toggle"
+                                aria-expanded={reasonOpen}
+                                onClick={() =>
+                                  setExpandedReasons((prev) => ({
+                                    ...prev,
+                                    [task.id]: !prev[task.id],
+                                  }))
+                                }
+                              >
+                                {reasonOpen ? "收起原因" : "查看完整原因"}
+                              </button>
+                            ) : null}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                  <div className="task-row-meta">
+                    <span className="numeric-token">
+                      {formatDateTime(task.created_at)}
+                    </span>
+                    {!compact && duration !== "—" ? (
+                      <span>
+                        耗时 <span className="numeric-token">{duration}</span>
+                      </span>
+                    ) : null}
+                    {task.status === "failed" ||
+                    task.status === "interrupted" ? (
+                      <span className="numeric-token">
+                        进度 {task.progress.completed}/{task.progress.total}
+                      </span>
+                    ) : null}
+                    {task.status === "cancelled" ? (
+                      <span>{task.message}</span>
+                    ) : null}
+                    <ResultLinks task={task} />
+                  </div>
+                  {isActive ? (
+                    <div className="task-row-progress">
+                      <TaskProgress task={task} />
+                    </div>
+                  ) : null}
+                </div>
+                <div className="task-row-actions">
+                  {task.status === "queued" ? (
+                    <Popconfirm
+                      title="取消这个排队任务？"
+                      onConfirm={() => void cancel(task)}
+                    >
+                      <Button size="small" type="link" danger>
+                        取消
+                      </Button>
+                    </Popconfirm>
+                  ) : null}
+                  {!compact && !isExperimentTask(task) ? (
+                    <Button
+                      size="small"
+                      type="link"
+                      onClick={() => navigate(paths.newResearch(task.id))}
+                    >
+                      复用配置
+                    </Button>
+                  ) : null}
+                  {!compact && task.kind === "research" ? (
+                    <Button
+                      size="small"
+                      type="link"
+                      onClick={() =>
+                        navigate(
+                          `${paths.newExperiment()}?mode=comparison&from=${encodeURIComponent(task.id)}`,
+                        )
+                      }
+                    >
+                      收益来源对照
+                    </Button>
+                  ) : null}
+                  {!compact ? (
+                    <Button
+                      size="small"
+                      type="link"
+                      aria-expanded={detailOpen}
+                      onClick={() =>
+                        setExpandedDetails((prev) => ({
+                          ...prev,
+                          [task.id]: !prev[task.id],
+                        }))
+                      }
+                    >
+                      {detailOpen ? "收起详情" : "详情"}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+              {detailOpen ? (
+                <div className="task-row-detail">
+                  <TaskDetail task={task} />
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      {!compact && tasks.length > PAGE_SIZE ? (
+        <Flex justify="end" style={{ marginTop: 12 }}>
+          <Pagination
+            current={activePage}
+            pageSize={PAGE_SIZE}
+            total={tasks.length}
+            onChange={setPage}
+            showSizeChanger={false}
+          />
+        </Flex>
+      ) : null}
+    </div>
   );
 }

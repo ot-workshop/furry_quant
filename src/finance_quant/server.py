@@ -32,6 +32,63 @@ from finance_quant.persistence.results import PgResultStore
 from finance_quant.persistence.tasks import PgTaskStore, worker_lock
 from finance_quant.runtime import configure_runtime
 
+CGROUP_MEMORY_EVENTS = Path("/sys/fs/cgroup/memory.events")
+
+STAGE_LABELS = {
+    "prepare": "准备数据",
+    "factors": "计算因子",
+    "backtest": "回测",
+    "evaluation": "因子评估",
+    "experiment": "方案比较",
+    "download": "下载数据",
+}
+
+
+def read_oom_kill_count(events_path: Path | None = None) -> int | None:
+    """Return the cgroup v2 memory.events oom_kill counter when readable, else None."""
+    path = events_path or CGROUP_MEMORY_EVENTS
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition(" ")
+            if key == "oom_kill":
+                return int(value.strip())
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def exit_failure_details(
+    returncode: int,
+    stage: str | None,
+    identifier: str,
+    *,
+    oom_killed: bool | None = None,
+) -> tuple[str, str, dict]:
+    """Translate a child process exit code and captured stage into task status and details."""
+    known_stage = stage if stage in STAGE_LABELS else None
+    stage_prefix = f"在{STAGE_LABELS[known_stage]}阶段" if known_stage else ""
+    if returncode in (-15, 143):
+        status = "interrupted"
+        summary = f"{stage_prefix}被要求停止（退出码 {returncode}）"
+    elif returncode in (-9, 137):
+        status = "failed"
+        reason = "因内存不足被系统终止" if oom_killed is True else "被系统强制终止"
+        summary = f"{stage_prefix}{reason}（退出码 {returncode}）"
+    else:
+        status = "failed"
+        summary = f"{stage_prefix}异常退出（退出码 {returncode}），请查看任务日志"
+    details: dict = {
+        "kind": "runtime",
+        "job_id": identifier,
+        "issues": [],
+        "stage": known_stage,
+        "exit_code": returncode,
+        "summary": summary,
+    }
+    if returncode in (-9, 137) and oom_killed is not None:
+        details["oom_killed"] = oom_killed
+    return status, summary, details
+
 
 def paths():
 
@@ -124,6 +181,7 @@ def consume(store, root, runs, data, stop, lock_connection):
         ]
         process = None
         deadline = None
+        oom_before = read_oom_kill_count()
         try:
             with (root / "logs" / f"{identifier}.log").open("ab") as output:
                 process = subprocess.Popen(
@@ -143,14 +201,32 @@ def consume(store, root, runs, data, stop, lock_connection):
                         store.heartbeat(identifier)
                         next_heartbeat = time.monotonic() + 5
                     time.sleep(0.2)
-            if store.get(identifier)["status"] == "running":
-                store.finish(
-                    identifier,
-                    "interrupted" if stop.is_set() else "failed",
-                    error="服务停止，任务可使用原参数重新运行"
-                    if stop.is_set()
-                    else f"任务进程退出，代码 {process.returncode}，请查看任务日志",
-                )
+            current = store.get(identifier)
+            if current["status"] == "running":
+                last_stage = current.get("stage")
+                known_stage = last_stage if last_stage in STAGE_LABELS else None
+                if stop.is_set():
+                    summary = "服务停止，任务可使用原参数重新运行"
+                    details = {
+                        "kind": "runtime",
+                        "job_id": identifier,
+                        "issues": [],
+                        "stage": known_stage,
+                        "summary": summary,
+                    }
+                    if process.returncode is not None:
+                        details["exit_code"] = process.returncode
+                    store.finish(identifier, "interrupted", error=summary, error_details=details)
+                else:
+                    oom_killed = None
+                    if process.returncode in (-9, 137):
+                        oom_after = read_oom_kill_count()
+                        if oom_before is not None and oom_after is not None:
+                            oom_killed = oom_after > oom_before
+                    status, summary, details = exit_failure_details(
+                        process.returncode, known_stage, identifier, oom_killed=oom_killed
+                    )
+                    store.finish(identifier, status, error=summary, error_details=details)
         except BaseException:
             if process is not None:
                 terminate_group(process)
