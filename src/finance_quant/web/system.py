@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -79,6 +80,36 @@ def _load_manifest_object(path: Path) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _valid_fixed_snapshot_fields(
+    manifest: dict, present_files: set[str] | None = None, path: Path | None = None
+) -> str | None:
+    """Validate publisher fixed-snapshot header fields without opening parquet payloads."""
+
+    if "projection" in manifest:
+        return None
+    identifier = manifest.get("id")
+    if not isinstance(identifier, str) or not _SNAPSHOT_ID_RE.fullmatch(identifier):
+        return None
+    schema_version = manifest.get("schema_version")
+    if not isinstance(schema_version, str) or schema_version not in _FIXED_SCHEMAS:
+        return None
+    codes = manifest.get("codes")
+    if not isinstance(codes, list) or not codes:
+        return None
+    files = manifest.get("files")
+    if not isinstance(files, dict) or set(files) != _FIXED_FILES:
+        return None
+    for name, expected in files.items():
+        if not isinstance(expected, str) or not expected:
+            return None
+        if present_files is not None:
+            if name not in present_files:
+                return None
+        elif path is None or not (path / name).is_file():
+            return None
+    return identifier
+
+
 def _valid_fixed_snapshot(path: Path, root: Path, manifest: dict) -> str | None:
     """Verify fixed snapshot publisher manifest without opening or hashing payload files.
 
@@ -91,24 +122,7 @@ def _valid_fixed_snapshot(path: Path, root: Path, manifest: dict) -> str | None:
         resolved = path.resolve()
         if not resolved.is_relative_to(root) or (resolved / "rejected.json").exists():
             return None
-        if "projection" in manifest:
-            return None
-        identifier = manifest.get("id")
-        if not isinstance(identifier, str) or not _SNAPSHOT_ID_RE.fullmatch(identifier):
-            return None
-        schema_version = manifest.get("schema_version")
-        if not isinstance(schema_version, str) or schema_version not in _FIXED_SCHEMAS:
-            return None
-        codes = manifest.get("codes")
-        if not isinstance(codes, list) or not codes:
-            return None
-        files = manifest.get("files")
-        if not isinstance(files, dict) or set(files) != _FIXED_FILES:
-            return None
-        for name, expected in files.items():
-            if not isinstance(expected, str) or not expected or not (resolved / name).is_file():
-                return None
-        return identifier
+        return _valid_fixed_snapshot_fields(manifest, path=resolved)
     except OSError:
         return None
 
@@ -131,27 +145,96 @@ def _valid_warehouse_header(wh_root: Path, expected_schema: str) -> bool:
     return isinstance(calendar_sha, str) and bool(calendar_sha) and calendar_path.is_file()
 
 
-def _dataset_counts(data_root: Path) -> dict[str, int]:
-    """Count published datasets from validated headers only; separate invalid manifests."""
+def _inventory_container_signature(root: Path) -> tuple[tuple[str, int], ...]:
+    """O(container dirs) mtime signature so new/removed dataset folders invalidate cached counts."""
 
-    root = Path(data_root).resolve()
+    stamps: list[tuple[str, int]] = []
+    for rel in ("research/downloads", "shared-market/versions"):
+        base = root / rel
+        try:
+            stamps.append((rel, base.stat().st_mtime_ns))
+        except OSError:
+            stamps.append((rel, -1))
+            continue
+        if rel == "research/downloads":
+            try:
+                with os.scandir(base) as sources:
+                    for src in sorted(sources, key=lambda entry: entry.name):
+                        if not src.is_dir(follow_symlinks=True):
+                            continue
+                        snaps = Path(src.path) / "snapshots"
+                        try:
+                            stamps.append((f"{src.name}/snapshots", snaps.stat().st_mtime_ns))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+    return tuple(stamps)
+
+
+def _scan_fixed_snapshots(root: Path) -> tuple[set[str], int]:
+    """Scan fixed-pool snapshot headers via os.scandir without opening payload files."""
+
     fixed_ids: set[str] = set()
     invalid = 0
-    for path in sorted(root.glob("research/downloads/*/snapshots/*")):
-        manifest_path = path / "manifest.json"
-        if not manifest_path.is_file():
+    downloads_dir = root / "research" / "downloads"
+    if not downloads_dir.is_dir():
+        return fixed_ids, invalid
+    try:
+        with os.scandir(downloads_dir) as sources:
+            source_entries = sorted(sources, key=lambda entry: entry.name)
+    except OSError:
+        return fixed_ids, invalid
+    for src in source_entries:
+        if not src.is_dir(follow_symlinks=True):
             continue
-        manifest = _load_manifest_object(manifest_path)
-        if manifest is None:
-            invalid += 1
+        snaps_dir = Path(src.path) / "snapshots"
+        if not snaps_dir.is_dir():
             continue
-        if "projection" in manifest:
+        try:
+            with os.scandir(snaps_dir) as entries:
+                snap_entries = sorted(entries, key=lambda entry: entry.name)
+        except OSError:
             continue
-        identifier = _valid_fixed_snapshot(path, root, manifest)
-        if identifier is not None:
-            fixed_ids.add(identifier)
-        else:
-            invalid += 1
+        for entry in snap_entries:
+            if not entry.is_dir(follow_symlinks=True):
+                continue
+            snap_path = Path(entry.path)
+            if entry.is_symlink() or src.is_symlink():
+                try:
+                    if not snap_path.resolve().is_relative_to(root):
+                        continue
+                except OSError:
+                    continue
+            try:
+                with os.scandir(snap_path) as children:
+                    child_files = {child.name for child in children if child.is_file(follow_symlinks=True)}
+            except OSError:
+                continue
+            if "manifest.json" not in child_files:
+                continue
+            manifest = _load_manifest_object(snap_path / "manifest.json")
+            if manifest is None:
+                invalid += 1
+                continue
+            if "projection" in manifest:
+                continue
+            if "rejected.json" in child_files:
+                invalid += 1
+                continue
+            identifier = _valid_fixed_snapshot_fields(manifest, present_files=child_files)
+            if identifier is not None:
+                fixed_ids.add(identifier)
+            else:
+                invalid += 1
+    return fixed_ids, invalid
+
+
+def _dataset_counts(data_root: Path) -> dict[str, int]:
+    """Count published datasets from validated publisher manifests only (not revalidated payloads)."""
+
+    root = Path(data_root).resolve()
+    fixed_ids, invalid = _scan_fixed_snapshots(root)
 
     historical = 0
     for wh_root in market_download.warehouse_roots(root):
@@ -180,10 +263,29 @@ def system_router(
     summary_cache_ttl: float = _SUMMARY_CACHE_TTL_SECONDS,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
+    resolved_root = Path(data_root).resolve()
     cache_lock = threading.Lock()
     fetch_lock = threading.Lock()
     cache_expires: float = 0.0
     cache_value: tuple[dict | None, str] | None = None
+
+    counts_cache_lock = threading.Lock()
+    counts_fetch_lock = threading.Lock()
+    counts_cache_expires: float = 0.0
+    counts_cache_signature: tuple[tuple[str, int], ...] | None = None
+    counts_cache_value: tuple[dict[str, int], str] | None = None
+
+    def invalidate_summary_cache() -> None:
+        nonlocal cache_expires, cache_value, counts_cache_expires, counts_cache_signature, counts_cache_value
+        with cache_lock:
+            cache_expires = 0.0
+            cache_value = None
+        with counts_cache_lock:
+            counts_cache_expires = 0.0
+            counts_cache_signature = None
+            counts_cache_value = None
+
+    setattr(router, "invalidate_summary_cache", invalidate_summary_cache)
 
     @router.get("/health")
     def health():
@@ -195,20 +297,22 @@ def system_router(
                 raise HTTPException(503, "数据库连接或版本检查未通过") from None
         return {"status": "ok", "read_only": False, "task_execution": "postgres_worker", **database}
 
-    def read_database_summary() -> tuple[dict | None, str]:
+    def read_database_summary(*, force: bool = False) -> tuple[dict | None, str]:
         nonlocal cache_expires, cache_value
         loader = market_summary
         if loader is None and market_status is None:
             return None, datetime.now(UTC).isoformat()
         now = time.monotonic()
-        with cache_lock:
-            if summary_cache_ttl > 0 and now < cache_expires and cache_value is not None:
-                return cache_value
+        if not force and summary_cache_ttl > 0:
+            with cache_lock:
+                if now < cache_expires and cache_value is not None:
+                    return cache_value
         with fetch_lock:
             now = time.monotonic()
-            with cache_lock:
-                if summary_cache_ttl > 0 and now < cache_expires and cache_value is not None:
-                    return cache_value
+            if not force and summary_cache_ttl > 0:
+                with cache_lock:
+                    if now < cache_expires and cache_value is not None:
+                        return cache_value
             raw = loader() if loader is not None else market_status()
             summary = {
                 "securities": int(raw["securities"]),
@@ -222,14 +326,42 @@ def system_router(
                     cache_expires = time.monotonic() + summary_cache_ttl
             return summary, sampled_at
 
+    def read_dataset_counts(*, force: bool = False) -> tuple[dict[str, int], str]:
+        nonlocal counts_cache_expires, counts_cache_signature, counts_cache_value
+        sig = _inventory_container_signature(resolved_root) if summary_cache_ttl > 0 else ()
+        now = time.monotonic()
+        if not force and summary_cache_ttl > 0:
+            with counts_cache_lock:
+                if now < counts_cache_expires and counts_cache_value is not None and counts_cache_signature == sig:
+                    return counts_cache_value
+        with counts_fetch_lock:
+            sig = _inventory_container_signature(resolved_root) if summary_cache_ttl > 0 else ()
+            now = time.monotonic()
+            if not force and summary_cache_ttl > 0:
+                with counts_cache_lock:
+                    if now < counts_cache_expires and counts_cache_value is not None and counts_cache_signature == sig:
+                        return counts_cache_value
+            counts = _dataset_counts(resolved_root)
+            counts_sampled_at = datetime.now(UTC).isoformat()
+            with counts_cache_lock:
+                if summary_cache_ttl > 0:
+                    counts_cache_value = (counts, counts_sampled_at)
+                    counts_cache_signature = sig
+                    counts_cache_expires = time.monotonic() + summary_cache_ttl
+            return counts, counts_sampled_at
+
     @router.get("/dashboard/summary")
-    def dashboard_summary():
+    def dashboard_summary(refresh: bool = False):
         try:
-            database, sampled_at = read_database_summary()
+            database, sampled_at = read_database_summary(force=refresh)
+            counts, counts_sampled_at = read_dataset_counts(force=refresh)
             return {
                 "database": database,
-                "counts": _dataset_counts(data_root),
+                "counts": counts,
                 "as_of": sampled_at,
+                "counts_as_of": counts_sampled_at,
+                "counts_basis": "publisher_manifests",
+                "cache_ttl_seconds": summary_cache_ttl,
             }
         except (SQLAlchemyError, OSError, ValueError):
             raise HTTPException(503, "工作台摘要暂时无法读取，请检查数据库连接与存储目录") from None

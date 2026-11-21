@@ -200,6 +200,10 @@ test("DashboardPage separates loading, error+retry, disconnected DB, and empty m
         document.body.textContent,
         /固定股票池 1 · 沪深300历史成分 0 · 条件筛选 1/,
       );
+      assert.match(
+        document.body.textContent,
+        /按发布清单统计（未重验数据文件）/,
+      );
     });
   } finally {
     await closeLoading();

@@ -483,6 +483,9 @@ export interface DashboardSummary {
     invalid?: number;
   };
   as_of: string;
+  counts_as_of?: string;
+  counts_basis?: string;
+  cache_ttl_seconds?: number;
 }
 
 /* ------------------------------------------------------------ diagnostics */

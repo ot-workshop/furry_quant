@@ -153,6 +153,11 @@ export default function DashboardPage() {
                   </Typography.Text>
                 </div>
               ) : null}
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  按发布清单统计（未重验数据文件）
+                </Typography.Text>
+              </div>
             </div>
           ) : null}
         </Card>

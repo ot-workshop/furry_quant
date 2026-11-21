@@ -46,15 +46,15 @@ def create_app(
     app = FastAPI(title="量化研究工作台", version="0.3.0", lifespan=lifespan)
     app.state.research_tasks = service
     app.include_router(research_router(service, result_store=store))
-    app.include_router(
-        system_router(
-            store,
-            service.data_root,
-            database_probe=database_probe,
-            market_status=market_status,
-            market_summary=market_summary,
-        )
+    system = system_router(
+        store,
+        service.data_root,
+        database_probe=database_probe,
+        market_status=market_status,
+        market_summary=market_summary,
     )
+    app.include_router(system)
+    app.state.invalidate_dashboard_summary = getattr(system, "invalidate_summary_cache")
     app.include_router(factor_router(store))
     app.include_router(backtest_router(store))
     app.include_router(comparison_router(store))

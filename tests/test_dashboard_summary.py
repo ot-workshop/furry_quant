@@ -14,6 +14,7 @@ from finance_quant.application import market_download
 from finance_quant.checksums import sha256_bytes
 from finance_quant.data import market_universe, postgres_market
 from finance_quant.storage import ResultStore
+from finance_quant.web import system as web_system
 from support.fakes import make_app, make_service
 
 
@@ -316,6 +317,69 @@ def test_market_summary_avoids_full_table_scans_on_large_daily_bar_dataset(monke
     assert "order by ts_code limit 1" in skip_sql
     assert "order by d.ts_code limit 1" in skip_sql
     assert "count(distinct" not in skip_sql
+
+
+def test_dashboard_summary_caches_inventory_with_single_flight_and_explicit_invalidation(tmp_path, monkeypatch):
+    runs, data = tmp_path / "runs", tmp_path / "data"
+    _write_valid_fixed_snapshot(data / "research/downloads/b1/snapshots/s1", "snap-1")
+
+    scan_calls = {"count": 0}
+    real_scan = web_system._dataset_counts
+
+    def tracked_scan(root):
+        scan_calls["count"] += 1
+        time.sleep(0.03)
+        return real_scan(root)
+
+    monkeypatch.setattr(web_system, "_dataset_counts", tracked_scan)
+
+    app = make_app(
+        runs,
+        data_root=data,
+        market_summary=lambda: {"securities": 10, "coverage_start": "2024-01-02", "coverage_end": "2024-01-05"},
+    )
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        responses = list(pool.map(lambda _: client.get("/api/v1/dashboard/summary"), range(6)))
+
+    assert all(res.status_code == 200 for res in responses)
+    assert scan_calls["count"] == 1
+    first_body = responses[0].json()
+    assert first_body["counts_basis"] == "publisher_manifests"
+    assert first_body["cache_ttl_seconds"] == 30.0
+    assert len({res.json()["counts_as_of"] for res in responses}) == 1
+    assert first_body["counts"] == {"fixed": 1, "historical": 0, "market": 0, "invalid": 0}
+
+    # Hot repeated request within TTL reuses cached inventory without rescanning.
+    hot = client.get("/api/v1/dashboard/summary")
+    assert hot.status_code == 200
+    assert scan_calls["count"] == 1
+
+    # Adding a new published snapshot directory updates container mtime and auto-invalidates cache.
+    _write_valid_fixed_snapshot(data / "research/downloads/b1/snapshots/s2", "snap-2")
+    added = client.get("/api/v1/dashboard/summary")
+    assert added.status_code == 200
+    assert scan_calls["count"] == 2
+    assert added.json()["counts"]["fixed"] == 2
+
+    # In-place marker change (rejected.json inside existing dir) waits for TTL unless invalidated explicitly.
+    (data / "research/downloads/b1/snapshots/s2/rejected.json").write_text("{}", encoding="utf-8")
+    assert client.get("/api/v1/dashboard/summary").json()["counts"]["fixed"] == 2
+    assert scan_calls["count"] == 2
+
+    refreshed = client.get("/api/v1/dashboard/summary?refresh=true")
+    assert refreshed.status_code == 200
+    assert scan_calls["count"] == 3
+    assert refreshed.json()["counts"] == {"fixed": 1, "historical": 0, "market": 0, "invalid": 1}
+
+    # Direct invalidation hook resets caches as well.
+    (data / "research/downloads/b1/snapshots/s2/rejected.json").unlink()
+    app.state.invalidate_dashboard_summary()
+    after_hook = client.get("/api/v1/dashboard/summary")
+    assert after_hook.status_code == 200
+    assert scan_calls["count"] == 4
+    assert after_hook.json()["counts"] == {"fixed": 2, "historical": 0, "market": 0, "invalid": 0}
 
 
 class _DummyCtx:
