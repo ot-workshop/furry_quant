@@ -1,5 +1,8 @@
 import datetime as dt
+import errno
 import json
+import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -368,18 +371,109 @@ def test_dashboard_summary_caches_inventory_with_single_flight_and_explicit_inva
     assert client.get("/api/v1/dashboard/summary").json()["counts"]["fixed"] == 2
     assert scan_calls["count"] == 2
 
-    refreshed = client.get("/api/v1/dashboard/summary?refresh=true")
+    # Unauthenticated ?refresh=true does not bypass cache/single-flight across concurrent requests.
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        bypass_attempts = list(pool.map(lambda _: client.get("/api/v1/dashboard/summary?refresh=true"), range(6)))
+    assert all(res.status_code == 200 for res in bypass_attempts)
+    assert scan_calls["count"] == 2
+
+    # Direct invalidation hook resets caches and sees updated rejected.json immediately.
+    app.state.invalidate_dashboard_summary()
+    refreshed = client.get("/api/v1/dashboard/summary")
     assert refreshed.status_code == 200
     assert scan_calls["count"] == 3
     assert refreshed.json()["counts"] == {"fixed": 1, "historical": 0, "market": 0, "invalid": 1}
 
-    # Direct invalidation hook resets caches as well.
-    (data / "research/downloads/b1/snapshots/s2/rejected.json").unlink()
-    app.state.invalidate_dashboard_summary()
-    after_hook = client.get("/api/v1/dashboard/summary")
-    assert after_hook.status_code == 200
-    assert scan_calls["count"] == 4
-    assert after_hook.json()["counts"] == {"fixed": 2, "historical": 0, "market": 0, "invalid": 0}
+
+def test_dashboard_summary_fails_on_inaccessible_inventory_and_blocks_inflight_repopulation(tmp_path, monkeypatch):
+    runs, data = tmp_path / "runs", tmp_path / "data"
+    _write_valid_fixed_snapshot(data / "research/downloads/b1/snapshots/s1", "snap-1")
+
+    # 1. Top-level EACCES on inventory directory must return HTTP 503, never HTTP 200 with fixed=0.
+    real_scandir = os.scandir
+
+    def deny_downloads_scandir(target):
+        if Path(target).resolve() == (data / "research/downloads").resolve():
+            raise PermissionError(errno.EACCES, "Permission denied", str(target))
+        return real_scandir(target)
+
+    monkeypatch.setattr(os, "scandir", deny_downloads_scandir)
+    app_err = make_app(
+        runs,
+        data_root=data,
+        market_summary=lambda: {"securities": 10, "coverage_start": "2024-01-02", "coverage_end": "2024-01-05"},
+    )
+    assert TestClient(app_err, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary").status_code == 503
+    monkeypatch.undo()
+
+    # 2. Explicit invalidation while an inventory scan is in-flight must prevent stale cache repopulation.
+    entered = threading.Event()
+    release = threading.Event()
+    real_scan = web_system._dataset_counts
+    scan_calls = {"count": 0}
+
+    def gated_scan(root):
+        scan_calls["count"] += 1
+        result = real_scan(root)
+        if scan_calls["count"] == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(web_system, "_dataset_counts", gated_scan)
+    app = make_app(
+        runs,
+        data_root=data,
+        market_summary=lambda: {"securities": 10, "coverage_start": "2024-01-02", "coverage_end": "2024-01-05"},
+    )
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(lambda: client.get("/api/v1/dashboard/summary"))
+        assert entered.wait(timeout=5)
+        # In-place rejected.json keeps container sig identical; epoch must block stale repopulation.
+        (data / "research/downloads/b1/snapshots/s1/rejected.json").write_text("{}", encoding="utf-8")
+        app.state.invalidate_dashboard_summary()
+        release.set()
+        first = fut.result(timeout=5)
+
+    assert first.status_code == 200
+    assert first.json()["counts"]["fixed"] == 1
+    # Next request must NOT serve the invalidated stale count (1); it rescans and sees 0 valid / 1 invalid.
+    second = client.get("/api/v1/dashboard/summary")
+    assert second.status_code == 200
+    assert scan_calls["count"] == 2
+    assert second.json()["counts"] == {"fixed": 0, "historical": 0, "market": 0, "invalid": 1}
+
+
+def test_dashboard_summary_rejects_ancestor_symlink_redirected_outside_root(tmp_path, monkeypatch):
+    runs, data, outside = tmp_path / "runs", tmp_path / "data", tmp_path / "outside"
+    _write_valid_fixed_snapshot(outside / "snapshots/ext-1", "snap-outside")
+
+    snapshots_link = data / "research/downloads/b1/snapshots"
+    snapshots_link.parent.mkdir(parents=True, exist_ok=True)
+    # Simulate an ancestor (`snapshots` or `downloads`) whose resolved path escapes `data_root`.
+    real_confined = web_system._confined_dir_stat
+
+    def outside_ancestor(path, root):
+        if Path(path) == snapshots_link:
+            return None
+        return real_confined(path, root)
+
+    # Also test real symlink when host permits, falling back to monkeypatched resolution escape check.
+    try:
+        os.symlink(outside / "snapshots", snapshots_link, target_is_directory=True)
+    except OSError:
+        snapshots_link.mkdir(parents=True, exist_ok=True)
+        _write_valid_fixed_snapshot(snapshots_link / "ext-1", "snap-outside")
+        monkeypatch.setattr(web_system, "_confined_dir_stat", outside_ancestor)
+
+    app = make_app(
+        runs, data_root=data, market_summary=lambda: {"securities": 0, "coverage_start": None, "coverage_end": None}
+    )
+    res = TestClient(app, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary")
+    assert res.status_code == 200
+    assert res.json()["counts"] == {"fixed": 0, "historical": 0, "market": 0, "invalid": 0}
 
 
 class _DummyCtx:

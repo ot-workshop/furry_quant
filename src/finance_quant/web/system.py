@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import threading
 import time
 from datetime import UTC, datetime
@@ -145,30 +146,57 @@ def _valid_warehouse_header(wh_root: Path, expected_schema: str) -> bool:
     return isinstance(calendar_sha, str) and bool(calendar_sha) and calendar_path.is_file()
 
 
+def _confined_dir_stat(path: Path, root: Path) -> tuple[Path, os.stat_result] | None:
+    """Resolve `path` and stat it only if confined inside `root`; raise non-ENOENT OSErrors."""
+
+    try:
+        resolved = path.resolve()
+    except FileNotFoundError:
+        return None
+    if not resolved.is_relative_to(root):
+        return None
+    try:
+        st = os.stat(resolved)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISDIR(st.st_mode):
+        return None
+    return resolved, st
+
+
 def _inventory_container_signature(root: Path) -> tuple[tuple[str, int], ...]:
     """O(container dirs) mtime signature so new/removed dataset folders invalidate cached counts."""
 
     stamps: list[tuple[str, int]] = []
-    for rel in ("research/downloads", "shared-market/versions"):
-        base = root / rel
-        try:
-            stamps.append((rel, base.stat().st_mtime_ns))
-        except OSError:
-            stamps.append((rel, -1))
-            continue
-        if rel == "research/downloads":
-            try:
-                with os.scandir(base) as sources:
-                    for src in sorted(sources, key=lambda entry: entry.name):
-                        if not src.is_dir(follow_symlinks=True):
-                            continue
-                        snaps = Path(src.path) / "snapshots"
-                        try:
-                            stamps.append((f"{src.name}/snapshots", snaps.stat().st_mtime_ns))
-                        except OSError:
-                            pass
-            except OSError:
-                pass
+    if _confined_dir_stat(root / "research", root) is not None:
+        dl_info = _confined_dir_stat(root / "research/downloads", root)
+    else:
+        dl_info = None
+    if dl_info is None:
+        stamps.append(("research/downloads", -1))
+    else:
+        dl_dir, dl_st = dl_info
+        stamps.append(("research/downloads", dl_st.st_mtime_ns))
+        with os.scandir(dl_dir) as sources:
+            for src in sorted(sources, key=lambda entry: entry.name):
+                if not src.is_dir(follow_symlinks=True):
+                    continue
+                snaps_info = _confined_dir_stat(Path(src.path) / "snapshots", root)
+                if snaps_info is not None:
+                    stamps.append((f"{src.name}/snapshots", snaps_info[1].st_mtime_ns))
+
+    if _confined_dir_stat(root / "shared-market", root) is not None:
+        ver_info = _confined_dir_stat(root / "shared-market/versions", root)
+    else:
+        ver_info = None
+    if ver_info is None:
+        stamps.append(("shared-market/versions", -1))
+    else:
+        ver_dir, ver_st = ver_info
+        stamps.append(("shared-market/versions", ver_st.st_mtime_ns))
+        # Touch readable dir handle so EACCES on shared-market/versions surfaces loudly.
+        with os.scandir(ver_dir):
+            pass
     return tuple(stamps)
 
 
@@ -177,39 +205,36 @@ def _scan_fixed_snapshots(root: Path) -> tuple[set[str], int]:
 
     fixed_ids: set[str] = set()
     invalid = 0
-    downloads_dir = root / "research" / "downloads"
-    if not downloads_dir.is_dir():
+    if _confined_dir_stat(root / "research", root) is None:
         return fixed_ids, invalid
-    try:
-        with os.scandir(downloads_dir) as sources:
-            source_entries = sorted(sources, key=lambda entry: entry.name)
-    except OSError:
+    dl_info = _confined_dir_stat(root / "research" / "downloads", root)
+    if dl_info is None:
         return fixed_ids, invalid
+    downloads_dir, _ = dl_info
+    with os.scandir(downloads_dir) as sources:
+        source_entries = sorted(sources, key=lambda entry: entry.name)
     for src in source_entries:
         if not src.is_dir(follow_symlinks=True):
             continue
-        snaps_dir = Path(src.path) / "snapshots"
-        if not snaps_dir.is_dir():
+        if _confined_dir_stat(Path(src.path), root) is None:
             continue
-        try:
-            with os.scandir(snaps_dir) as entries:
-                snap_entries = sorted(entries, key=lambda entry: entry.name)
-        except OSError:
+        snaps_info = _confined_dir_stat(Path(src.path) / "snapshots", root)
+        if snaps_info is None:
             continue
+        snaps_dir, _ = snaps_info
+        with os.scandir(snaps_dir) as entries:
+            snap_entries = sorted(entries, key=lambda entry: entry.name)
         for entry in snap_entries:
             if not entry.is_dir(follow_symlinks=True):
                 continue
             snap_path = Path(entry.path)
             if entry.is_symlink() or src.is_symlink():
-                try:
-                    if not snap_path.resolve().is_relative_to(root):
-                        continue
-                except OSError:
+                if not snap_path.resolve().is_relative_to(root):
                     continue
             try:
                 with os.scandir(snap_path) as children:
                     child_files = {child.name for child in children if child.is_file(follow_symlinks=True)}
-            except OSError:
+            except FileNotFoundError:
                 continue
             if "manifest.json" not in child_files:
                 continue
@@ -235,6 +260,13 @@ def _dataset_counts(data_root: Path) -> dict[str, int]:
 
     root = Path(data_root).resolve()
     fixed_ids, invalid = _scan_fixed_snapshots(root)
+
+    # Probe shared-market/versions accessibility so EACCES fails loudly instead of returning 200 false zero.
+    if _confined_dir_stat(root / "shared-market", root) is not None:
+        ver_info = _confined_dir_stat(root / "shared-market/versions", root)
+        if ver_info is not None:
+            with os.scandir(ver_info[0]):
+                pass
 
     historical = 0
     for wh_root in market_download.warehouse_roots(root):
@@ -268,19 +300,24 @@ def system_router(
     fetch_lock = threading.Lock()
     cache_expires: float = 0.0
     cache_value: tuple[dict | None, str] | None = None
+    db_epoch: int = 0
 
     counts_cache_lock = threading.Lock()
     counts_fetch_lock = threading.Lock()
     counts_cache_expires: float = 0.0
     counts_cache_signature: tuple[tuple[str, int], ...] | None = None
     counts_cache_value: tuple[dict[str, int], str] | None = None
+    counts_epoch: int = 0
 
     def invalidate_summary_cache() -> None:
-        nonlocal cache_expires, cache_value, counts_cache_expires, counts_cache_signature, counts_cache_value
+        nonlocal cache_expires, cache_value, db_epoch
+        nonlocal counts_cache_expires, counts_cache_signature, counts_cache_value, counts_epoch
         with cache_lock:
+            db_epoch += 1
             cache_expires = 0.0
             cache_value = None
         with counts_cache_lock:
+            counts_epoch += 1
             counts_cache_expires = 0.0
             counts_cache_signature = None
             counts_cache_value = None
@@ -297,22 +334,22 @@ def system_router(
                 raise HTTPException(503, "数据库连接或版本检查未通过") from None
         return {"status": "ok", "read_only": False, "task_execution": "postgres_worker", **database}
 
-    def read_database_summary(*, force: bool = False) -> tuple[dict | None, str]:
+    def read_database_summary() -> tuple[dict | None, str]:
         nonlocal cache_expires, cache_value
         loader = market_summary
         if loader is None and market_status is None:
             return None, datetime.now(UTC).isoformat()
         now = time.monotonic()
-        if not force and summary_cache_ttl > 0:
+        if summary_cache_ttl > 0:
             with cache_lock:
                 if now < cache_expires and cache_value is not None:
                     return cache_value
         with fetch_lock:
             now = time.monotonic()
-            if not force and summary_cache_ttl > 0:
-                with cache_lock:
-                    if now < cache_expires and cache_value is not None:
-                        return cache_value
+            with cache_lock:
+                if summary_cache_ttl > 0 and now < cache_expires and cache_value is not None:
+                    return cache_value
+                start_epoch = db_epoch
             raw = loader() if loader is not None else market_status()
             summary = {
                 "securities": int(raw["securities"]),
@@ -321,40 +358,45 @@ def system_router(
             }
             sampled_at = datetime.now(UTC).isoformat()
             with cache_lock:
-                if summary_cache_ttl > 0:
+                if summary_cache_ttl > 0 and db_epoch == start_epoch:
                     cache_value = (summary, sampled_at)
                     cache_expires = time.monotonic() + summary_cache_ttl
             return summary, sampled_at
 
-    def read_dataset_counts(*, force: bool = False) -> tuple[dict[str, int], str]:
+    def read_dataset_counts() -> tuple[dict[str, int], str]:
         nonlocal counts_cache_expires, counts_cache_signature, counts_cache_value
         sig = _inventory_container_signature(resolved_root) if summary_cache_ttl > 0 else ()
         now = time.monotonic()
-        if not force and summary_cache_ttl > 0:
+        if summary_cache_ttl > 0:
             with counts_cache_lock:
                 if now < counts_cache_expires and counts_cache_value is not None and counts_cache_signature == sig:
                     return counts_cache_value
         with counts_fetch_lock:
             sig = _inventory_container_signature(resolved_root) if summary_cache_ttl > 0 else ()
             now = time.monotonic()
-            if not force and summary_cache_ttl > 0:
-                with counts_cache_lock:
-                    if now < counts_cache_expires and counts_cache_value is not None and counts_cache_signature == sig:
-                        return counts_cache_value
+            with counts_cache_lock:
+                if (
+                    summary_cache_ttl > 0
+                    and now < counts_cache_expires
+                    and counts_cache_value is not None
+                    and counts_cache_signature == sig
+                ):
+                    return counts_cache_value
+                start_epoch = counts_epoch
             counts = _dataset_counts(resolved_root)
             counts_sampled_at = datetime.now(UTC).isoformat()
             with counts_cache_lock:
-                if summary_cache_ttl > 0:
+                if summary_cache_ttl > 0 and counts_epoch == start_epoch:
                     counts_cache_value = (counts, counts_sampled_at)
                     counts_cache_signature = sig
                     counts_cache_expires = time.monotonic() + summary_cache_ttl
             return counts, counts_sampled_at
 
     @router.get("/dashboard/summary")
-    def dashboard_summary(refresh: bool = False):
+    def dashboard_summary():
         try:
-            database, sampled_at = read_database_summary(force=refresh)
-            counts, counts_sampled_at = read_dataset_counts(force=refresh)
+            database, sampled_at = read_database_summary()
+            counts, counts_sampled_at = read_dataset_counts()
             return {
                 "database": database,
                 "counts": counts,
