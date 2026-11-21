@@ -3,7 +3,10 @@ import sys
 import threading
 from unittest.mock import patch
 
+import pytest
+
 from finance_quant import server
+from finance_quant.application.tasks import TaskConflict
 from finance_quant.data.financials import financial_root
 from support.fakes import MemoryTaskStore
 
@@ -153,3 +156,118 @@ def test_missing_development_env_is_rejected_before_database_access(tmp_path, mo
         raise AssertionError("missing env file must stop startup")
 
     assert "env file does not exist" in capsys.readouterr().err
+
+
+def _run_child_exit(tmp_path, monkeypatch, *, returncode, stage=None, oom_counts=None):
+    store = MemoryTaskStore()
+    data, runs, root = tmp_path / "data", tmp_path / "runs", tmp_path / "storage"
+    (root / "logs").mkdir(parents=True)
+    task_id = store.create({"name": "测试研究"}, {"mode": "snapshot"}, f"exit-{returncode}-{stage}")["id"]
+    stop = threading.Event()
+    counts = iter(oom_counts or [])
+
+    class Process:
+        def __init__(self, code):
+            self.returncode = code
+
+        def poll(self):
+            return self.returncode
+
+    class Connection:
+        def execute(self, statement):
+            return None
+
+        def commit(self):
+            return None
+
+    class Claiming(MemoryTaskStore):
+        def claim(self, worker_id=None):
+            identifier = super().claim(worker_id)
+            if identifier:
+                if stage:
+                    self.stage(identifier, stage, "运行中", 2)
+                stop.clear()
+            return identifier
+
+        def finish(self, identifier, status, *, result=None, error=None, error_details=None):
+            super().finish(identifier, status, result=result, error=error, error_details=error_details)
+            stop.set()
+
+    queue = Claiming()
+    queue._rows = store._rows
+    queue._keys = store._keys
+    monkeypatch.setattr(server, "read_oom_kill_count", lambda: next(counts, None))
+    monkeypatch.setattr(server.subprocess, "Popen", lambda *args, **kwargs: Process(returncode))
+    monkeypatch.setattr(server.time, "sleep", lambda seconds: None)
+    server.consume(queue, root, runs, data, stop, Connection())
+    return queue.get(task_id)
+
+
+@pytest.mark.parametrize("returncode", [-9, 137])
+def test_child_sigkill_records_stage_and_omits_oom_without_cgroup_proof(tmp_path, monkeypatch, returncode):
+    task = _run_child_exit(tmp_path, monkeypatch, returncode=returncode, stage="backtest", oom_counts=[None, None])
+    assert task["status"] == "failed"
+    assert task["stage"] == "finished"
+    assert task["error"] == f"在回测阶段被系统强制终止（退出码 {returncode}）"
+    assert "内存不足" not in task["error"]
+    assert "超出容器配额" not in task["error"]
+    assert task["error_details"]["stage"] == "backtest"
+    assert task["error_details"]["exit_code"] == returncode
+
+
+def test_child_sigkill_with_cgroup_oom_delta_records_oom_evidence(tmp_path, monkeypatch):
+    task = _run_child_exit(tmp_path, monkeypatch, returncode=-9, stage="backtest", oom_counts=[0, 1])
+    assert task["status"] == "failed"
+    assert task["error"] == "在回测阶段因内存不足被系统终止（退出码 -9）"
+    assert "超出容器配额" not in task["error"]
+    assert task["error_details"]["stage"] == "backtest"
+    assert task["error_details"]["oom_killed"] is True
+
+
+def test_child_sigkill_without_oom_delta_does_not_claim_oom(tmp_path, monkeypatch):
+    task = _run_child_exit(tmp_path, monkeypatch, returncode=-9, stage="factors", oom_counts=[2, 2])
+    assert task["error"] == "在计算因子阶段被系统强制终止（退出码 -9）"
+    assert task["error_details"]["oom_killed"] is False
+    assert "内存不足" not in task["error"]
+
+
+@pytest.mark.parametrize("returncode", [-15, 143])
+def test_child_sigterm_marks_interrupted_and_not_sigkill(tmp_path, monkeypatch, returncode):
+    task = _run_child_exit(tmp_path, monkeypatch, returncode=returncode, stage="backtest")
+    assert task["status"] == "interrupted"
+    assert task["error"] == f"在回测阶段被要求停止（退出码 {returncode}）"
+    assert "强制终止" not in task["error"]
+    assert "内存不足" not in task["error"]
+    assert task["error_details"]["stage"] == "backtest"
+    assert task["error_details"]["exit_code"] == returncode
+
+
+@pytest.mark.parametrize("returncode", [1, 3221225477])
+def test_child_nonzero_exit_preserves_exact_code_without_guessing_oom(tmp_path, monkeypatch, returncode):
+    task = _run_child_exit(tmp_path, monkeypatch, returncode=returncode, stage="evaluation")
+    assert task["status"] == "failed"
+    assert task["error"] == f"在因子评估阶段异常退出（退出码 {returncode}），请查看任务日志"
+    assert "内存不足" not in task["error"]
+    assert task["error_details"]["stage"] == "evaluation"
+    assert task["error_details"]["exit_code"] == returncode
+
+
+def test_read_oom_kill_count_parses_cgroup_events_and_handles_missing(tmp_path):
+    missing = tmp_path / "missing.events"
+    assert server.read_oom_kill_count(missing) is None
+    events = tmp_path / "memory.events"
+    events.write_text("low 0\nhigh 0\noom 1\noom_kill 3\n", encoding="utf-8")
+    assert server.read_oom_kill_count(events) == 3
+
+
+def test_memory_store_annotate_failure_updates_failed_task_only():
+    store = MemoryTaskStore()
+    queued = store.create({"name": "q"}, {"mode": "snapshot"}, "annotate-1")
+    with pytest.raises(TaskConflict):
+        store.annotate_failure(queued["id"], {"summary": "bad"})
+    store.claim()
+    store.stage(queued["id"], "backtest", "回测中", 2)
+    store.finish(queued["id"], "failed", error="raw")
+    updated = store.annotate_failure(queued["id"], {"summary": "回测失败", "stage": "backtest"})
+    assert updated["error"] == "回测失败"
+    assert updated["error_details"]["stage"] == "backtest"

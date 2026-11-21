@@ -159,7 +159,22 @@ class MemoryTaskStore:
         with self._lock:
             for row in self._rows.values():
                 if row["status"] == "running":
-                    row.update(status="interrupted", stage="finished", finished_at=_now())
+                    row.update(
+                        status="interrupted",
+                        stage="finished",
+                        message="上次计算进程已中断",
+                        finished_at=_now(),
+                        error="工作进程已重启，可使用原配置重新运行",
+                    )
+
+    def annotate_failure(self, identifier, details):
+        self.get(identifier)
+        with self._lock:
+            row = self._rows[identifier]
+            if row["status"] != "failed":
+                raise TaskConflict("只能补充失败任务的诊断")
+            row.update(error=details["summary"], error_details=copy.deepcopy(details))
+        return self.get(identifier)
 
 
 def make_service(runs_root: Path, data_root: Path, store: MemoryTaskStore | None = None) -> TaskService:
