@@ -138,8 +138,6 @@ finance-quant/
 
 ```dotenv
 APP_IMAGE=ghcr.io/ot-workshop/furry_quant@sha256:实际已验digest
-# 可选：只给 api 单独指定镜像；未设置时回落到 APP_IMAGE
-# API_IMAGE=ghcr.io/ot-workshop/furry_quant@sha256:实际已验digest
 TUSHARE_TOKEN=官方TushareToken
 POSTGRES_DB=finance_quant
 POSTGRES_USER=quant
@@ -203,13 +201,20 @@ docker compose logs --tail=100 db storage-init migrate api worker
 git diff --stat <旧提交> <新提交> -- src/finance_quant/research src/finance_quant/application src/finance_quant/server.py
 ```
 
-输出为空（无改动）才可只换 api；否则必须连同 worker 一起更新。只换 api 时用 `API_IMAGE` 钉住 api 容器，`APP_IMAGE` 仍供 worker 与 migrate 使用；两个服务实际运行的 digest 要分别核对、分别记录。
+输出为空（无改动）才可只换 api；否则必须连同 worker 一起更新。两种升级形态，按需要选一种：
 
-`API_IMAGE` 的用法（Compose 里 api 行是 `image: ${API_IMAGE:-${APP_IMAGE:?Set APP_IMAGE in .env}}`）：
+- **整体升级（推荐）**：只改 `APP_IMAGE` 为候选 digest，再 `docker compose -f docker-compose.yaml --env-file .env up -d`，api/worker/migrate 一起对齐。
+- **只换 api、且让 api 长期单独领先**：在 `.env` 里设 `API_IMAGE=<候选 digest>`、`APP_IMAGE` 保持 worker 当前的旧值，然后只重建 api：
 
-- **什么时候用**：只更新界面与接口（不改 worker/migrate）时在 `.env` 里设 `API_IMAGE=<已验 digest 或 sha-* 标签>`，worker 保持不动；
-- **默认行为**：不设 `API_IMAGE` 时 api 与 worker 用同一个 `APP_IMAGE`；两者都为空时仍报 `Set APP_IMAGE in .env`，不会静默启动一个空镜像；
-- **与迁移的关系**：含迁移的版本仍必须“先 `alembic upgrade head` 再换镜像”，不能用 `API_IMAGE` 绕过迁移；详见[含新迁移的版本](#含新迁移的版本)。
+```sh
+docker compose -f docker-compose.yaml --env-file .env up -d --no-deps --pull never api
+```
+
+`--no-deps` 是这条做法的关键：没有它，`up -d` 会连带处理 api 依赖的服务。compose 的 api 行是 `image: ${API_IMAGE:-${APP_IMAGE:?Set APP_IMAGE in .env}}`：不设 `API_IMAGE` 时 api 与 worker/migrate 同源；两者都为空时仍报 `Set APP_IMAGE in .env`，不会起一个空镜像。worker 始终按 `APP_IMAGE`，所以它的任何后续重建都不会被带回新版本。
+
+只改 `APP_IMAGE` 而不设 `API_IMAGE` 时要注意：worker 当下不变，但下一次重建（手动 `up -d`、崩溃重启、主机重启）就会按新的 `APP_IMAGE` 起来，属**两步升级**，两步之间不得重建 worker。含迁移的版本仍必须先 `alembic upgrade head` 再换镜像，不能靠只重建 api 绕过迁移，详见[含新迁移的版本](#含新迁移的版本)。api/worker 实际运行的 digest 要分别核对、分别记录。
+
+临时用 `docker-compose.override.yml` 单独钉 api 不能替代上述做法：显式 `-f` 时 override 不生效，而且下一次按 `APP_IMAGE` 的 `up -d` 会把 api 退回旧镜像。
 
 两条容易踩的坑：
 
@@ -365,7 +370,7 @@ prod_compose exec -T worker python -c 'from finance_quant.provenance import sour
 
 测试负责人在约定窗口执行线上冒烟：原有回测/评估/评分数量与部署前对照、`/api/v1/data-status` 的原数据版本未意外变化、既有回测 KPI 与 API 一致、研究/比较入口正常。财务兼容修复须打开 `/evaluations/<原运行ID>` 并对照详情 API 与 JSON 下载，不能仅检查评估列表；无原始观测的 IC/分组收益仍为空，冻结文件不变。新增临时研究在隔离环境完成，生产写入另按明确验收范围执行。页面无法访问时记录未验项，不以 HTTP 或组件测试冒充浏览器验收。
 
-将部署提交、发布 run、镜像 digest、备份校验、迁移、版本核对与冒烟结论写入发布记录。镜像 digest 按服务分别记：api 与 worker 可能因 `API_IMAGE` 而不一致，要写清各自实际运行的那一份，并注明判断“能否只换 api”的依据。检查失败时由执行人保留日志，发布维护者与技术评审者判断继续修复或回滚，不能只重启后宣称通过。
+将部署提交、发布 run、镜像 digest、备份校验、迁移、版本核对与冒烟结论写入发布记录。镜像 digest 按服务分别记：只重建过 api 时，api 与 worker 可能短暂不同源，要写清各自实际运行的那一份，并注明判断“能否只换 api”的依据。检查失败时由执行人保留日志，发布维护者与技术评审者判断继续修复或回滚，不能只重启后宣称通过。
 
 ### 更新后继续未完成下载
 
