@@ -159,10 +159,10 @@ _DISTINCT_CODES_SKIP_SCAN = text(
 def market_summary():
     """Lightweight market coverage summary without 8M-row table counts."""
 
+    min_date_q = select(daily_bar.c.trade_date).order_by(daily_bar.c.trade_date.asc()).limit(1).scalar_subquery()
+    max_date_q = select(daily_bar.c.trade_date).order_by(daily_bar.c.trade_date.desc()).limit(1).scalar_subquery()
     with connection() as active:
-        min_date, max_date = active.execute(
-            select(func.min(daily_bar.c.trade_date), func.max(daily_bar.c.trade_date))
-        ).one()
+        min_date, max_date = active.execute(select(min_date_q, max_date_q)).one()
         if min_date is None and max_date is None:
             securities = 0
         elif active.dialect.name == "postgresql":

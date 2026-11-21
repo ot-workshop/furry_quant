@@ -1,12 +1,16 @@
+import datetime as dt
 import json
+import time
 from pathlib import Path
 
+import sqlalchemy as sa
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.exc import OperationalError
 
 from finance_quant.api import create_app
 from finance_quant.application import market_download
-from finance_quant.data import market_universe
+from finance_quant.data import market_universe, postgres_market
 from finance_quant.storage import ResultStore
 from support.fakes import make_app, make_service
 
@@ -109,3 +113,69 @@ def test_dashboard_summary_returns_503_on_failure_and_recovers_without_stale_err
     recovered = client.get("/api/v1/dashboard/summary")
     assert recovered.status_code == 200
     assert recovered.json()["database"]["securities"] == 100
+
+
+def test_market_summary_avoids_full_table_scans_on_large_daily_bar_dataset(monkeypatch):
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "CREATE TABLE daily_bar ("
+                "ts_code VARCHAR(16) NOT NULL, "
+                "trade_date DATE NOT NULL, "
+                "PRIMARY KEY (ts_code, trade_date))"
+            )
+        )
+        conn.execute(sa.text("CREATE INDEX ix_daily_bar_date ON daily_bar (trade_date)"))
+        base = dt.date(2020, 1, 2)
+        conn.execute(
+            sa.text("INSERT INTO daily_bar (ts_code, trade_date) VALUES (:c, :d)"),
+            [{"c": f"{i:06d}.SZ", "d": base + dt.timedelta(days=d)} for i in range(5000) for d in range(20)],
+        )
+
+    executed: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+        executed.append(" ".join(statement.split()))
+
+    with engine.connect() as conn:
+        monkeypatch.setattr(postgres_market, "connection", lambda: _DummyCtx(conn))
+        t0 = time.perf_counter()
+        summary = postgres_market.market_summary()
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    assert summary == {
+        "securities": 5000,
+        "coverage_start": "2020-01-02",
+        "coverage_end": "2020-01-21",
+    }
+    assert elapsed_ms < 250.0, f"Unexpectedly slow SQLite summary on 100k rows: {elapsed_ms:.2f}ms"
+    assert len(executed) == 2
+    assert "ORDER BY daily_bar.trade_date ASC LIMIT ?" in executed[0]
+    assert "ORDER BY daily_bar.trade_date DESC LIMIT ?" in executed[0]
+    for stmt in executed:
+        assert "daily_bar_revision" not in stmt
+        assert "factor_score" not in stmt
+        assert "valuation" not in stmt
+        assert "adjustment" not in stmt
+        assert "trading_status" not in stmt
+        assert "SELECT count(*) FROM daily_bar" not in stmt.lower()
+
+    # PostgreSQL distinct-code path must use index skip-scan CTE, never full-table count(distinct).
+    skip_sql = " ".join(str(postgres_market._DISTINCT_CODES_SKIP_SCAN).lower().split())
+    assert "with recursive distinct_codes as" in skip_sql
+    assert "order by ts_code limit 1" in skip_sql
+    assert "order by d.ts_code limit 1" in skip_sql
+    assert "count(distinct" not in skip_sql
+
+
+class _DummyCtx:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __enter__(self):
+        return self._conn
+
+    def __exit__(self, *_args):
+        return False
