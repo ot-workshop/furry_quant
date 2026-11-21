@@ -8,6 +8,7 @@ import {
 } from "../components/research-charts";
 import { EmptyState, ErrorState, Loading, Section } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
+import { correlationMatrixStats } from "../research/chart-options";
 import type { CorrelationCell, EvaluationResult } from "../types";
 import { factorLabel, formatNumber } from "../utils/format";
 import { AnalysisDates, type AnalysisRange } from "./AnalysisDates";
@@ -52,6 +53,12 @@ export function CorrelationAnalysis({
     ]),
   );
   const data = resource.data;
+  const matrixNames = data?.correlations.names.length
+    ? data.correlations.names
+    : names;
+  const stats = data
+    ? correlationMatrixStats(matrixNames, data.correlations.cells)
+    : null;
   return (
     <Flex vertical gap={16}>
       <Section
@@ -61,7 +68,8 @@ export function CorrelationAnalysis({
         <Flex gap={12} align="center" wrap>
           <AnalysisDates value={range} onChange={setRange} />
           <Typography.Text type="secondary">
-            色阶固定为 −1 至 1；空白表示没有有效样本。点击单元格查看因子对。
+            色阶固定为 −1 至 1（0
+            为中间浅色）；斜纹/点阵格「—」表示无法计算相关性（有效日期不足或因子无变化），不计入色阶。点击有效单元格查看因子对。
           </Typography.Text>
         </Flex>
       </Section>
@@ -76,12 +84,36 @@ export function CorrelationAnalysis({
       ) : (
         <>
           <Section title="平均秩相关矩阵">
-            <CorrelationHeatmap
-              names={data.correlations.names}
-              cells={data.correlations.cells}
-              labels={labels}
-              onSelect={(first, second) => setPair([first, second])}
-            />
+            {stats?.allUncomputable ? (
+              <EmptyState
+                title="当前条件下所有因子均无法计算相关性"
+                description="所选区间内各因子缺乏足够有效交叉日期，或因子值在区间内没有变化，请调整评估区间后重试。"
+              />
+            ) : (
+              <>
+                {stats && stats.uncomputableFactors.length > 0 ? (
+                  <Typography.Text
+                    type="secondary"
+                    style={{ display: "block", marginBottom: 8 }}
+                  >
+                    {`${matrixNames.length} 个因子中 ${stats.uncomputableFactors.length} 个（${stats.uncomputableFactors.map((key) => labels[key] ?? key).join("、")}）无法计算相关性，其行列不参与比较`}
+                  </Typography.Text>
+                ) : null}
+                <CorrelationHeatmap
+                  names={matrixNames}
+                  cells={data.correlations.cells}
+                  labels={labels}
+                  onSelect={(first, second) => setPair([first, second])}
+                />
+                <Typography.Text
+                  type="secondary"
+                  style={{ fontSize: 12, display: "block", marginTop: 8 }}
+                >
+                  斜纹/点阵虚线格「—」表示无法计算相关性；0.00
+                  为有效相关系数（中间浅色）。
+                </Typography.Text>
+              </>
+            )}
           </Section>
           <FactorSelectionPanel
             key={`${result.metadata.id}:${horizon}:${JSON.stringify(range)}`}
@@ -110,7 +142,10 @@ export function CorrelationAnalysis({
             {data.correlations.pair.daily.length ? (
               <CorrelationHistoryChart points={data.correlations.pair.daily} />
             ) : (
-              <EmptyState title="该因子对在所选范围没有有效记录" />
+              <EmptyState
+                title="该因子对在所选范围无法计算相关性"
+                description="所选区间内缺乏足够有效交叉日期，或其中因子在区间内没有变化。"
+              />
             )}
           </Section>
           <Section

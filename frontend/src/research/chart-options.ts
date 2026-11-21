@@ -71,68 +71,163 @@ export function icChartOption(
   };
 }
 
+export function correlationMatrixStats(
+  names: string[],
+  cells: CorrelationCell[],
+) {
+  const validFactors = new Set<string>();
+  let validCellCount = 0;
+  for (const cell of cells) {
+    if (cell.value !== null && Number.isFinite(cell.value)) {
+      validCellCount += 1;
+      validFactors.add(cell.first);
+      validFactors.add(cell.second);
+    }
+  }
+  const uncomputableFactors = names.filter((name) => !validFactors.has(name));
+  return {
+    uncomputableFactors,
+    validCellCount,
+    allUncomputable: names.length > 0 && validCellCount === 0,
+  };
+}
+
 export function correlationChartOption(
   names: string[],
   cells: CorrelationCell[],
   labels: Record<string, string>,
   palette: ChartPalette,
+  width = 720,
 ): EChartsOption {
-  const data = cells
-    .filter((cell) => cell.value !== null)
-    .flatMap((cell) => {
-      const x = names.indexOf(cell.first),
-        y = names.indexOf(cell.second);
-      const point = {
-        value: [x, y, cell.value],
-        first: cell.first,
-        second: cell.second,
-        count: cell.valid_dates,
-      };
-      return x === y
-        ? [point]
-        : [
-            point,
-            {
-              ...point,
-              value: [y, x, cell.value],
-              first: cell.second,
-              second: cell.first,
-            },
-          ];
-    });
+  const effectiveWidth = width > 0 ? width : 720;
+  const compact = effectiveWidth < 520;
+  const left = compact ? 88 : 136;
+  const right = compact ? 14 : 28;
+  const top = compact ? 16 : 24;
+  const bottom = compact ? 96 : 112;
+  const cellPx = (effectiveWidth - left - right) / Math.max(1, names.length);
+  const isDark = /^#(0|1|2)/i.test(palette.surface.trim());
+  const noSampleFill = isDark ? "#262626" : "#eaedf1";
+  const noSampleBorder = isDark ? "#595959" : "#bfbfbf";
+  const noSampleText = isDark ? "#a6a6a6" : "#595959";
+  const decalColor = isDark
+    ? "rgba(255, 255, 255, 0.22)"
+    : "rgba(0, 0, 0, 0.22)";
+  const decal =
+    cellPx >= 56
+      ? {
+          symbol: "rect",
+          dashArrayX: [1, 0],
+          dashArrayY: [3, 5],
+          rotation: Math.PI / 4,
+          color: decalColor,
+        }
+      : {
+          symbol: "circle",
+          symbolSize: 0.8,
+          dashArrayX: [
+            [2, 4],
+            [4, 2],
+          ],
+          dashArrayY: [2, 4],
+          color: decalColor,
+        };
+
+  const cellMap = new Map<string, CorrelationCell>();
+  for (const cell of cells) {
+    cellMap.set(`${cell.first}\0${cell.second}`, cell);
+    cellMap.set(`${cell.second}\0${cell.first}`, cell);
+  }
+
+  type HeatmapItem = {
+    value: [number, number, number];
+    first: string;
+    second: string;
+    count: number;
+    noSample: boolean;
+  };
+  const validData: HeatmapItem[] = [];
+  const missingData: HeatmapItem[] = [];
+
+  for (let y = 0; y < names.length; y += 1) {
+    for (let x = 0; x < names.length; x += 1) {
+      const first = names[x];
+      const second = names[y];
+      const cell = cellMap.get(`${first}\0${second}`);
+      if (cell && cell.value !== null && Number.isFinite(cell.value)) {
+        validData.push({
+          value: [x, y, cell.value],
+          first,
+          second,
+          count: cell.valid_dates,
+          noSample: false,
+        });
+      } else {
+        missingData.push({
+          value: [x, y, 0],
+          first,
+          second,
+          count: cell?.valid_dates ?? 0,
+          noSample: true,
+        });
+      }
+    }
+  }
+
   return {
     backgroundColor: "transparent",
     textStyle: { color: palette.text, fontFamily: "inherit" },
-    grid: { left: 130, right: 35, top: 25, bottom: 110 },
+    grid: { left, right, top, bottom },
     tooltip: {
+      trigger: "item",
+      confine: true,
       renderMode: "richText",
       backgroundColor: palette.surface,
+      borderColor: palette.border,
       textStyle: { color: palette.text },
       formatter: (params: unknown) => {
-        const item = (params as { data: (typeof data)[number] }).data;
-        return `${labels[item.first] ?? item.first} / ${labels[item.second] ?? item.second}\n相关性：${Number(item.value[2]).toFixed(4)}\n有效日期：${item.count}`;
+        const item = (params as { data: HeatmapItem }).data;
+        const pairTitle = `${labels[item.first] ?? item.first} / ${labels[item.second] ?? item.second}`;
+        if (item.noSample) {
+          return `${pairTitle}\n相关性：无法计算相关系数（有效日期不足，或因子在区间内没有变化）\n有效日期：${item.count}`;
+        }
+        return `${pairTitle}\n相关性：${Number(item.value[2]).toFixed(4)}\n有效日期：${item.count}`;
       },
     },
     xAxis: {
       type: "category",
       data: names,
+      axisLine: { show: true, lineStyle: { color: palette.border } },
+      axisTick: { show: true, alignWithLabel: true },
       axisLabel: {
         color: palette.muted,
-        rotate: 35,
+        rotate: compact ? 40 : 35,
+        fontSize: compact ? 11 : 12,
+        width: compact ? 76 : 110,
+        overflow: "truncate",
         formatter: (name: string) => labels[name] ?? name,
       },
-      splitArea: { show: true, areaStyle: { color: [palette.surface] } },
+      splitLine: { show: true, lineStyle: { color: palette.split, width: 1 } },
+      splitArea: { show: false },
     },
     yAxis: {
       type: "category",
       data: names,
+      inverse: true,
+      axisLine: { show: true, lineStyle: { color: palette.border } },
+      axisTick: { show: true, alignWithLabel: true },
       axisLabel: {
         color: palette.muted,
+        fontSize: compact ? 11 : 12,
+        width: left - 14,
+        overflow: "truncate",
         formatter: (name: string) => labels[name] ?? name,
       },
-      splitArea: { show: true, areaStyle: { color: [palette.surface] } },
+      splitLine: { show: true, lineStyle: { color: palette.split, width: 1 } },
+      splitArea: { show: false },
     },
     visualMap: {
+      seriesIndex: 0,
       min: -1,
       max: 1,
       calculable: false,
@@ -145,13 +240,34 @@ export function correlationChartOption(
     },
     series: [
       {
+        name: "相关性",
         type: "heatmap",
-        data,
+        data: validData,
         label: {
           show: names.length <= 12,
           color: palette.text,
+          fontSize: compact ? 11 : 12,
           formatter: (params: unknown) =>
             Number((params as { value: number[] }).value[2]).toFixed(2),
+        },
+        emphasis: { itemStyle: { borderColor: palette.text, borderWidth: 1 } },
+      },
+      {
+        name: "无法计算相关性",
+        type: "heatmap",
+        data: missingData,
+        itemStyle: {
+          color: noSampleFill,
+          borderColor: noSampleBorder,
+          borderWidth: 1,
+          borderType: "dashed",
+          decal,
+        },
+        label: {
+          show: names.length <= 12,
+          color: noSampleText,
+          fontSize: compact ? 11 : 12,
+          formatter: () => "—",
         },
         emphasis: { itemStyle: { borderColor: palette.text, borderWidth: 1 } },
       },
