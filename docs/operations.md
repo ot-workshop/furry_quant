@@ -239,7 +239,7 @@ docker compose -f docker-compose.yaml --env-file .env up -d --no-deps --pull nev
 
 回滚：库已升到新头后，不都能“改回旧镜像”，三条路径的代价不同，需在窗口前选定一条并写进清单：
 
-1. **降级** `alembic downgrade 0001_postgres`：删掉 `forward_registration` 与 `forward_attempt` 两张表。`0002` 只新增表与索引、未改既有表结构，因此仅在两张新表**无任何写入**时可接受；一旦已有登记或尝试记录，降级会丢用户数据，不得使用。
+1. **降级** `alembic downgrade 0001_postgres`：删掉 `forward_registration` 与 `forward_attempt` 两张表。`0002` 只新增表与索引、未改既有表结构，因此仅在两张新表**无任何写入**时可接受；一旦已有登记或尝试记录，降级会丢用户数据，不得使用。**降级要在仍包含新迁移脚本的镜像里执行**（例如新镜像的 `migrate` 服务），旧镜像里没有 `0002` 这个 revision，跑 `downgrade` 会直接失败。
 2. **可接受新头的补丁镜像**：保留旧业务代码、`SCHEMA_REVISION` 改为新头。需提前构建、审批与验证，不能临场拼。
 3. **恢复到迁移前备份**（`0001`）后换回旧镜像：可行，但迁移后产生的数据全部丢失。
 
