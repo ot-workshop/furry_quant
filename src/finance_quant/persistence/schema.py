@@ -417,7 +417,13 @@ Index(
     unique=True,
     postgresql_where=forward_attempt.c.status == "succeeded",
 )
-Index("uq_forward_attempt_no", forward_attempt.c.registration_id, forward_attempt.c.kind, forward_attempt.c.attempt_no, unique=True)
+Index(
+    "uq_forward_attempt_no",
+    forward_attempt.c.registration_id,
+    forward_attempt.c.kind,
+    forward_attempt.c.attempt_no,
+    unique=True,
+)
 Index("uq_forward_attempt_queue", forward_attempt.c.status, forward_attempt.c.created_at)
 
 MARKET_TABLES = {

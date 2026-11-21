@@ -55,12 +55,8 @@ def upgrade() -> None:
             "'awaiting_quote','verifying','verified','missed','expired','failed')",
             name="ck_forward_registration_status",
         ),
-        sa.CheckConstraint(
-            "pool_size > 0 AND top_k > 0 AND top_k < pool_size", name="ck_forward_registration_k"
-        ),
-        sa.CheckConstraint(
-            "factor_direction IN ('high','low')", name="ck_forward_registration_direction"
-        ),
+        sa.CheckConstraint("pool_size > 0 AND top_k > 0 AND top_k < pool_size", name="ck_forward_registration_k"),
+        sa.CheckConstraint("factor_direction IN ('high','low')", name="ck_forward_registration_direction"),
         sa.CheckConstraint(
             "signal_date < entry_date AND entry_date <= exit_date", name="ck_forward_registration_dates"
         ),
