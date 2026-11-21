@@ -1,7 +1,7 @@
 import { Grid } from "antd";
 import * as echarts from "echarts/core";
 import { HeatmapChart, ScatterChart } from "echarts/charts";
-import { VisualMapComponent } from "echarts/components";
+import { AriaComponent, VisualMapComponent } from "echarts/components";
 import { Chart } from "./charts";
 import {
   correlationChartOption,
@@ -12,7 +12,7 @@ import {
 } from "../research/chart-options";
 import type { CorrelationCell, RollingICPoint } from "../types";
 
-echarts.use([HeatmapChart, ScatterChart, VisualMapComponent]);
+echarts.use([HeatmapChart, ScatterChart, VisualMapComponent, AriaComponent]);
 
 export function ICSeriesChart({
   points,
@@ -47,13 +47,21 @@ export function CorrelationHeatmap({
 }) {
   return (
     <Chart
-      height={Math.max(390, names.length * 27 + 140)}
+      height={Math.max(390, names.length * 32 + 150)}
       ariaLabel="因子相关性热图"
-      build={(palette) => correlationChartOption(names, cells, labels, palette)}
+      build={(palette, width) =>
+        correlationChartOption(names, cells, labels, palette, width)
+      }
       deps={[names, cells, labels]}
       onDataClick={(data) => {
-        const cell = data as { first?: string; second?: string };
-        if (cell?.first && cell?.second) onSelect(cell.first, cell.second);
+        const cell = data as {
+          first?: string;
+          second?: string;
+          noSample?: boolean;
+        };
+        if (cell?.first && cell?.second && !cell.noSample) {
+          onSelect(cell.first, cell.second);
+        }
       }}
     />
   );
