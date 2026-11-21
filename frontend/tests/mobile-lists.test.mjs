@@ -278,12 +278,18 @@ test("mobile viewports render two-line cards instead of tables and preserve 0 vs
     await waitFor(() => assert.ok(document.querySelector(".list-card")));
     assert.equal(document.querySelectorAll("table").length, 0);
     assert.match(document.body.textContent, /4820 只/);
-    const clampedTag = document.querySelector(".list-card .tag-text-clamp");
-    assert.ok(clampedTag, "Expected >40-char factor tag to clamp with title");
-    assert.match(
-      clampedTag.closest(".ant-tag")?.getAttribute("title") || "",
-      /超长自定义多因子/,
-    );
+    const collapsedTag = document.querySelector(".list-card .tag-single-line");
+    assert.ok(collapsedTag, "Expected collapsed factor tag row");
+    assert.ok(collapsedTag.getAttribute("title"), "Expected full factor title");
+    const toggle = document.querySelector(".list-card .tag-expand-toggle");
+    assert.ok(toggle, "Expected +N factor toggle button");
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    assert.equal(toggle.closest(".list-card-trigger"), null);
+    await act(async () => {
+      toggle.click();
+    });
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    assert.match(document.body.textContent, /超长自定义多因子/);
   } finally {
     await closeEv();
   }

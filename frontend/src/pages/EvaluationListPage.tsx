@@ -3,13 +3,13 @@ import { api } from "../api/client";
 import { navigate, paths } from "../app/routes";
 import { useMediaQuery } from "../app/useMediaQuery";
 import {
+  CollapsibleTagList,
   EmptyState,
   MobileCardList,
   PageHeader,
   Resource,
   Section,
   TableScroll,
-  WrapTag,
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import type { EvaluationMetadata } from "../types";
@@ -52,12 +52,14 @@ export default function EvaluationListPage() {
                       {formatDateTime(row.created_at)}
                     </span>,
                   ],
-                  tags: row.factor_config.map((f) => (
-                    <WrapTag
-                      key={f.id ?? f.name}
-                      text={`${factorLabel(f.name)}${f.window ? ` ${f.window}日` : ""}`}
+                  tags: (
+                    <CollapsibleTagList
+                      tags={row.factor_config.map((f, idx) => ({
+                        key: f.id ?? `${f.name}-${idx}`,
+                        label: `${factorLabel(f.name)}${f.window ? ` ${f.window}日` : ""}`,
+                      }))}
                     />
-                  )),
+                  ),
                   onClick: () => navigate(paths.evaluation(row.id)),
                 }))}
               />

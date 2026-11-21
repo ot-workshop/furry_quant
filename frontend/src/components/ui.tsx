@@ -409,6 +409,59 @@ export function WrapTag({
   );
 }
 
+export function CollapsibleTagList({
+  tags,
+  maxTagChars = 14,
+}: {
+  tags: Array<{ key: string; label: string }>;
+  maxTagChars?: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (!tags.length) return null;
+  const anyLong = tags.some((t) => Array.from(t.label).length > maxTagChars);
+  const collapsedCount = anyLong ? 1 : Math.min(2, tags.length);
+  const visible = expanded ? tags : tags.slice(0, collapsedCount);
+  const hiddenCount = Math.max(0, tags.length - collapsedCount);
+  const needsToggle = hiddenCount > 0 || anyLong;
+  return (
+    <div className="tag-list-row">
+      <div
+        className={
+          expanded ? "tag-list-inline tag-list-inline-open" : "tag-list-inline"
+        }
+      >
+        {visible.map((t) => (
+          <Tag
+            key={t.key}
+            title={t.label}
+            className={expanded ? "tag-expanded-item" : "tag-single-line"}
+          >
+            {expanded ? (
+              t.label
+            ) : (
+              <span className="tag-text-single">{t.label}</span>
+            )}
+          </Tag>
+        ))}
+      </div>
+      {needsToggle ? (
+        <button
+          type="button"
+          className="task-reason-toggle tag-expand-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((prev) => !prev)}
+        >
+          {expanded
+            ? "收起因子"
+            : hiddenCount > 0
+              ? `+${hiddenCount} 个因子`
+              : "展开因子"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export interface MobileCardItem {
   key: string;
   title: string;
@@ -475,14 +528,14 @@ export function MobileCardList({
                   ))}
                 </div>
               ) : null}
-              {item.tags ? (
-                <div className="list-card-tags">{item.tags}</div>
-              ) : null}
             </>
           );
-          if (item.onClick) {
-            return (
-              <div key={item.key} role="listitem" className="list-card">
+          const cardClass = item.tags
+            ? "list-card list-card-has-tags"
+            : "list-card";
+          return (
+            <div key={item.key} role="listitem" className={cardClass}>
+              {item.onClick ? (
                 <button
                   type="button"
                   className="list-card-trigger"
@@ -490,12 +543,12 @@ export function MobileCardList({
                 >
                   {content}
                 </button>
-              </div>
-            );
-          }
-          return (
-            <div key={item.key} role="listitem" className="list-card">
-              {content}
+              ) : (
+                content
+              )}
+              {item.tags ? (
+                <div className="list-card-tags">{item.tags}</div>
+              ) : null}
             </div>
           );
         })}
