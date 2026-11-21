@@ -14,6 +14,8 @@ export interface ApiState<T> {
 interface Options {
   /** Refresh in the background every N milliseconds while mounted. */
   pollMs?: number | null;
+  /** Retry automatically after N milliseconds when a request ends in an error. */
+  retryOnErrorMs?: number | null;
 }
 
 /**
@@ -25,7 +27,7 @@ interface Options {
 export function useApiResource<T>(
   load: ((signal: AbortSignal) => Promise<T>) | null,
   deps: readonly unknown[],
-  { pollMs = null }: Options = {},
+  { pollMs = null, retryOnErrorMs = null }: Options = {},
 ): ApiState<T> {
   const key = JSON.stringify(deps);
   const [version, setVersion] = useState(0);
@@ -83,6 +85,12 @@ export function useApiResource<T>(
     const timer = window.setInterval(reload, pollMs);
     return () => window.clearInterval(timer);
   }, [pollMs, reload, key]);
+
+  useEffect(() => {
+    if (!retryOnErrorMs || !state.error || pending || !loadRef.current) return;
+    const timer = window.setTimeout(reload, retryOnErrorMs);
+    return () => window.clearTimeout(timer);
+  }, [retryOnErrorMs, state.error, pending, reload, key]);
 
   const current = state.key === key;
   const data = current ? state.data : null;

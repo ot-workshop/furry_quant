@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import re
+import threading
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -11,6 +18,8 @@ from finance_quant.data.historical_warehouse import warehouse_option
 from finance_quant.data.market_universe import market_option, market_roots
 
 SYNTHETIC_NOTICE = "合成样本，仅验证系统流程，不代表真实股票表现"
+_SNAPSHOT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
+_SUMMARY_CACHE_TTL_SECONDS = 30.0
 
 
 def research_snapshots(data_root) -> list[dict]:
@@ -58,8 +67,68 @@ def historical_indices(data_root) -> list[dict]:
     return items
 
 
-def system_router(store, data_root, *, database_probe=None, market_status=None) -> APIRouter:
+def _dataset_counts(data_root: Path) -> dict[str, int]:
+    """Count published datasets from headers only without loading parquet frames."""
+
+    root = Path(data_root).resolve()
+    fixed_ids: set[str] = set()
+    for path in sorted(root.glob("research/downloads/*/snapshots/*")):
+        try:
+            manifest_path = path / "manifest.json"
+            if not path.resolve().is_relative_to(root) or not manifest_path.is_file():
+                continue
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            identifier = manifest.get("id")
+            if not isinstance(identifier, str) or not _SNAPSHOT_ID_RE.fullmatch(identifier):
+                continue
+            if "projection" in manifest:
+                continue
+            fixed_ids.add(identifier)
+        except (OSError, ValueError, TypeError):
+            continue
+
+    historical = 0
+    for wh_root in market_download.warehouse_roots(root):
+        try:
+            manifest = json.loads((wh_root / "manifest.json").read_text(encoding="utf-8"))
+            if (
+                manifest.get("schema_version") == "historical-index-warehouse-v1"
+                and manifest.get("assets")
+                and (wh_root / "reference/calendar.parquet").is_file()
+            ):
+                historical += 1
+        except (OSError, ValueError, TypeError):
+            continue
+
+    market = 0
+    for m_root in market_roots(root):
+        try:
+            manifest = json.loads((m_root / "manifest.json").read_text(encoding="utf-8"))
+            if (
+                manifest.get("schema_version") == "historical-market-warehouse-v1"
+                and manifest.get("assets")
+                and (m_root / "reference/calendar.parquet").is_file()
+            ):
+                market += 1
+        except (OSError, ValueError, TypeError):
+            continue
+
+    return {"fixed": len(fixed_ids), "historical": historical, "market": market}
+
+
+def system_router(
+    store,
+    data_root,
+    *,
+    database_probe=None,
+    market_status=None,
+    market_summary=None,
+    summary_cache_ttl: float = _SUMMARY_CACHE_TTL_SECONDS,
+) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
+    cache_lock = threading.Lock()
+    cache_expires: float = 0.0
+    cache_value: dict | None = None
 
     @router.get("/health")
     def health():
@@ -70,6 +139,38 @@ def system_router(store, data_root, *, database_probe=None, market_status=None) 
             except Exception:
                 raise HTTPException(503, "数据库连接或版本检查未通过") from None
         return {"status": "ok", "read_only": False, "task_execution": "postgres_worker", **database}
+
+    def read_database_summary() -> dict | None:
+        nonlocal cache_expires, cache_value
+        loader = market_summary
+        if loader is None and market_status is None:
+            return None
+        now = time.monotonic()
+        with cache_lock:
+            if summary_cache_ttl > 0 and now < cache_expires:
+                return cache_value
+        raw = loader() if loader is not None else market_status()
+        summary = {
+            "securities": int(raw["securities"]),
+            "coverage_start": raw.get("coverage_start"),
+            "coverage_end": raw.get("coverage_end"),
+        }
+        with cache_lock:
+            if summary_cache_ttl > 0:
+                cache_value = summary
+                cache_expires = time.monotonic() + summary_cache_ttl
+        return summary
+
+    @router.get("/dashboard/summary")
+    def dashboard_summary():
+        try:
+            return {
+                "database": read_database_summary(),
+                "counts": _dataset_counts(data_root),
+                "as_of": datetime.now(UTC).isoformat(),
+            }
+        except (SQLAlchemyError, OSError, ValueError):
+            raise HTTPException(503, "工作台摘要暂时无法读取，请检查数据库连接与存储目录") from None
 
     @router.get("/data-status")
     def data_status():

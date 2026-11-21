@@ -30,6 +30,7 @@ def create_app(
     frontend_dist: Path | None = None,
     database_probe: Callable[[], dict[str, Any]] | None = None,
     market_status: Callable[[], dict[str, Any]] | None = None,
+    market_summary: Callable[[], dict[str, Any]] | None = None,
 ) -> FastAPI:
     """Build the app from injected services; nothing is selected from environment state."""
     store, service = result_store, task_service
@@ -51,6 +52,7 @@ def create_app(
             service.data_root,
             database_probe=database_probe,
             market_status=market_status,
+            market_summary=market_summary,
         )
     )
     app.include_router(factor_router(store))

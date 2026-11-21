@@ -28,24 +28,46 @@ import { useApiResource } from "../hooks/useApiResource";
 import type { BacktestSummary } from "../types";
 import { formatDateTime, formatPercent } from "../utils/format";
 
+function CardLoadError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <Flex align="center" gap={6} style={{ marginTop: 4 }}>
+      <Typography.Text type="danger" style={{ fontSize: 13 }}>
+        状态读取失败
+      </Typography.Text>
+      <Button
+        type="link"
+        size="small"
+        style={{ padding: 0, height: "auto" }}
+        onClick={onRetry}
+      >
+        重试
+      </Button>
+    </Flex>
+  );
+}
+
 export default function DashboardPage() {
   const isMobile = useMediaQuery("(max-width: 767px)");
-  const status = useApiResource((signal) => api.dataStatus(signal), []);
+  const summary = useApiResource((signal) => api.dashboardSummary(signal), [], {
+    retryOnErrorMs: 5000,
+  });
   const tasks = useApiResource((signal) => researchApi.tasks(signal), [], {
     pollMs: 5000,
   });
-  const backtests = useApiResource((signal) => api.backtests(signal), []);
+  const backtests = useApiResource((signal) => api.backtests(signal), [], {
+    retryOnErrorMs: 5000,
+  });
 
-  const fixed = status.data?.snapshots.filter((item) => !item.is_subset) ?? [];
-  const historical = status.data?.historical_indices ?? [];
-  const market = status.data?.market_universes ?? [];
-  const datasetCount = fixed.length + historical.length + market.length;
-  const database = status.data?.database;
+  const counts = summary.data?.counts;
+  const datasetCount = counts
+    ? counts.fixed + counts.historical + counts.market
+    : 0;
+  const database = summary.data?.database ?? null;
   const active =
     tasks.data?.items.filter(
       (t) => t.status === "queued" || t.status === "running",
     ) ?? [];
-  const noData = status.data !== null && datasetCount === 0;
+  const noData = summary.data !== null && datasetCount === 0;
 
   return (
     <>
@@ -92,37 +114,48 @@ export default function DashboardPage() {
         <Card>
           <Statistic
             title="研究数据集"
-            value={datasetCount}
-            suffix="个"
-            loading={status.loading}
+            value={counts ? datasetCount : "—"}
+            suffix={counts ? "个" : undefined}
+            loading={summary.loading}
           />
-          {status.data ? (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              固定股票池 {fixed.length} · 沪深300历史成分 {historical.length} ·
-              条件筛选 {market.length}
+          {summary.error && !counts ? (
+            <CardLoadError onRetry={summary.reload} />
+          ) : counts ? (
+            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+              固定股票池 {counts.fixed} · 沪深300历史成分 {counts.historical} ·
+              条件筛选 {counts.market}
             </Typography.Text>
           ) : null}
         </Card>
         <Card>
           <Statistic
             title="行情覆盖股票"
-            value={database?.securities ?? "—"}
+            value={database ? database.securities : "—"}
             suffix={database ? "只" : undefined}
-            loading={status.loading}
+            loading={summary.loading}
           />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {database?.coverage_start
-              ? `${database.coverage_start} ~ ${database.coverage_end}`
-              : "数据库未连接或暂无行情"}
-          </Typography.Text>
+          {summary.error && !summary.data ? (
+            <CardLoadError onRetry={summary.reload} />
+          ) : summary.data ? (
+            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+              {database === null
+                ? "数据库未连接"
+                : database.coverage_start
+                  ? `${database.coverage_start} ~ ${database.coverage_end}`
+                  : "暂无行情"}
+            </Typography.Text>
+          ) : null}
         </Card>
         <Card>
           <Statistic
             title="进行中的任务"
-            value={active.length}
-            suffix="个"
+            value={tasks.data ? active.length : "—"}
+            suffix={tasks.data ? "个" : undefined}
             loading={tasks.loading}
           />
+          {tasks.error && !tasks.data ? (
+            <CardLoadError onRetry={tasks.reload} />
+          ) : null}
         </Card>
         <Card>
           <Statistic
@@ -130,6 +163,9 @@ export default function DashboardPage() {
             value={backtests.data?.total ?? "—"}
             loading={backtests.loading}
           />
+          {backtests.error && !backtests.data ? (
+            <CardLoadError onRetry={backtests.reload} />
+          ) : null}
         </Card>
       </div>
 

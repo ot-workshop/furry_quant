@@ -1,6 +1,7 @@
 import type {
   BacktestDetail,
   BacktestList,
+  DashboardSummary,
   DataStatus,
   EquityResponse,
   EvaluationAnalysis,
@@ -42,6 +43,8 @@ export const api = {
     request<Overview>("/overview", { signal }),
   dataStatus: (signal?: AbortSignal) =>
     request<DataStatus>("/data-status", { signal }),
+  dashboardSummary: (signal?: AbortSignal) =>
+    request<DashboardSummary>("/dashboard/summary", { signal }),
 
   instruments: (runId: string, q = "", signal?: AbortSignal) =>
     request<InstrumentList>(`/instruments${query({ q, run_id: runId })}`, {

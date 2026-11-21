@@ -29,16 +29,37 @@ def test_market_download_web_task_pins_names_lifecycle_and_results(engine, tmp_p
     repository = MarketRepository(engine)
     monkeypatch.setattr(postgres_market, "repository", lambda: repository)
     shared_market.configure_store(postgres_market.PostgresMarketStore())
+    assert postgres_market.market_summary() == {
+        "securities": 0,
+        "coverage_start": None,
+        "coverage_end": None,
+    }
     provider = SharedProvider()
     root = market_download.shared_root(data)
     plan = market_download.prepare(root, spec("all_market", "2025-03-31", codes=[]), provider=provider)
     result = market_download.run(root, plan["id"], provider=provider, secondary=Secondary())
     assert result["status"] == "complete", result
+    full_status = postgres_market.status()
+    assert postgres_market.market_summary() == {
+        "securities": full_status["securities"],
+        "coverage_start": full_status["coverage_start"],
+        "coverage_end": full_status["coverage_end"],
+    }
     option = market_option(market_roots(data)[0])
     queue = PgTaskStore(runs, engine=engine)
     service = TaskService(runs, data, task_store=queue)
     store = PgResultStore(runs, engine=engine, storage_root=storage)
-    client = TestClient(create_app(result_store=store, task_service=service), base_url="http://127.0.0.1")
+    app = create_app(
+        result_store=store,
+        task_service=service,
+        market_status=postgres_market.status,
+        market_summary=postgres_market.market_summary,
+    )
+    client = TestClient(app, base_url="http://127.0.0.1")
+    summary_res = client.get("/api/v1/dashboard/summary")
+    assert summary_res.status_code == 200
+    assert summary_res.json()["database"] == postgres_market.market_summary()
+    assert summary_res.json()["counts"]["market"] == 1
     request = {
         "name": "数据库动态池",
         "data": {"mode": "market_warehouse", "warehouse_id": option["id"], "filters": {"min_listing_days": 0}},
