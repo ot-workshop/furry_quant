@@ -32,3 +32,14 @@
 发布记录至少写：合并提交、发布 run、镜像 digest、部署时间、部署前备份与校验、原镜像回滚点、迁移状态、健康与版本核对、线上冒烟、残留资源及下一负责人。PR 说明可以记录本次行为变化，发布记录对应实际部署事实；不要把计划部署写成已上线。
 
 每个可核验的小目标完成后，维护者向用户给出入口、样例、版本及限制。实质版本更新通过 GitHub Release 记录变更、测试、完整提交、镜像 digest 和部署状态；计划版本号不等于已经发布的 Release。
+
+## 数据库迁移
+
+新增迁移时，以下位置必须一起更新，漏一处 CI 的启动检查或 `backup-restore` 作业会失败：
+
+- `alembic/versions/<新版本>.py`：新迁移文件，`down_revision` 指向当前头；
+- `src/finance_quant/persistence/database.py` 的 `SCHEMA_REVISION`：应用只接受与其完全相等的库迁移版本，不匹配即拒绝启动；
+- `scripts/check_compose_startup.py` 的 `HEAD_REVISION`，以及该文件内 startup 探针迁移里 `down_revision` 的**字面量**（探针文本不是 f-string，写常量名会得到 `NameError`）。
+
+迁移只写增量、保证新库 `upgrade head` 与既有库升级都能跑通；涉及既有表结构变化的迁移要在 PR 说明里写清回滚口径，不能沿用“只新增表时可降级”的默认说法。部署顺序与回滚条件见[运维](operations.md#含新迁移的版本)。
+
