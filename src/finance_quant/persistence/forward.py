@@ -37,6 +37,10 @@ def canonical_sha256(payload: object) -> str:
     return sha256_text(canonical_json(payload))
 
 
+class AttemptActive(RuntimeError):
+    """The stage already has a queued/running attempt; map this to 409 at the route layer."""
+
+
 @dataclass(frozen=True)
 class Confirmation:
     sealed: bool
@@ -214,6 +218,8 @@ def enqueue_attempt(
     """
     if kind not in ("score", "verify"):
         raise ValueError("unknown attempt kind")
+    if attempt_active(connection, registration_id, kind):
+        raise AttemptActive("该阶段已有排队/运行中的尝试")
     task = store.create(request, execution, task_key, connection=connection)
     identifier = attempt_id or "fat-" + canonical_sha256({"reg": registration_id, "kind": kind, "no": attempt_no})[:32]
     connection.execute(
