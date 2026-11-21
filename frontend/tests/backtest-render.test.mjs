@@ -326,6 +326,44 @@ test("CostsPanel keeps legacy row and renders missing fields as — when executi
   }
 });
 
+test("CostsPanel under explicit legacy mode with missing legacy_fee displays — without claiming included in total", async () => {
+  const close = await mount(
+    React.createElement(panel.CostsPanel, {
+      detail: baseDetail({
+        execution_costs: {
+          ...baseDetail().execution_costs,
+          cost_mode: "legacy",
+        },
+        cost_summary: {
+          commission: 0,
+          stamp_tax: 0,
+          transfer_fee: 0,
+          impact: 15,
+          total: 15,
+        },
+      }),
+    }),
+  );
+  try {
+    assert.deepEqual(readCostTableRows(), [
+      ["冲击成本", "15.00"],
+      ["旧版费用（综合费率）", "—"],
+      ["合计", "15.00"],
+    ]);
+    assert.match(
+      document.body.textContent,
+      /当前旧版模式记录未保存旧版费用金额，缺失项以「—」区分/,
+    );
+    assert.doesNotMatch(
+      document.body.textContent,
+      /旧版费用（综合费率）按旧版买卖综合费率计收，已计入合计/,
+    );
+    assert.doesNotMatch(document.body.textContent, /未明确计费模式/);
+  } finally {
+    await close();
+  }
+});
+
 test("TradesPanel shares applicability rule: hides itemized legacy_fee=0 while keeping true stamp_tax=0, shows legacy label, and preserves unknown mode", async () => {
   // 1. Itemized buy fill: stamp_tax=0 is applicable true zero, legacy_fee=0 is structural and hidden
   tradesPayload = {

@@ -415,16 +415,17 @@ export function CostsPanel({ detail }: { detail: BacktestDetail }) {
     );
   const summaryRows = summary ? costSummaryRows(summary, costs) : [];
   const legacyRow = summaryRows.find((row) => row.key === "legacy_fee");
+  const legacyValue = legacyRow?.value;
+  const hasLegacyValue = isFiniteNumber(legacyValue);
   const legacyCharged =
-    costs?.cost_mode === "legacy" ||
-    (legacyRow !== undefined &&
-      isFiniteNumber(legacyRow.value) &&
-      legacyRow.value > 0);
+    hasLegacyValue && (legacyValue > 0 || costs?.cost_mode === "legacy");
   const costSummaryNote = legacyCharged
     ? "冲击成本在两种计费模式下都单独计入合计；旧版费用（综合费率）按旧版买卖综合费率计收，已计入合计。"
-    : legacyRow
-      ? "冲击成本在两种计费模式下都单独计入合计；当前记录未明确计费模式，缺失项以「—」区分。"
-      : "冲击成本在两种计费模式下都单独计入合计。";
+    : costs?.cost_mode === "legacy" && legacyRow && !hasLegacyValue
+      ? "冲击成本在两种计费模式下都单独计入合计；当前旧版模式记录未保存旧版费用金额，缺失项以「—」区分。"
+      : legacyRow
+        ? "冲击成本在两种计费模式下都单独计入合计；当前记录未明确计费模式，缺失项以「—」区分。"
+        : "冲击成本在两种计费模式下都单独计入合计。";
   return (
     <div className="grid-2">
       <Section title="费用构成" description="累计金额（元）">
