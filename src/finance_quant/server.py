@@ -31,6 +31,7 @@ from finance_quant.persistence.database import SchemaNotReady, check_schema, mak
 from finance_quant.persistence.results import PgResultStore
 from finance_quant.persistence.tasks import PgTaskStore, worker_lock
 from finance_quant.runtime import configure_runtime
+from finance_quant.task_contracts import TaskConflict
 
 CGROUP_MEMORY_EVENTS = Path("/sys/fs/cgroup/memory.events")
 
@@ -216,7 +217,7 @@ def consume(store, root, runs, data, stop, lock_connection):
                     }
                     if process.returncode is not None:
                         details["exit_code"] = process.returncode
-                    store.finish(identifier, "interrupted", error=summary, error_details=details)
+                    _finish_or_log(store, identifier, "interrupted", error=summary, error_details=details)
                 else:
                     oom_killed = None
                     if process.returncode in (-9, 137):
@@ -226,13 +227,21 @@ def consume(store, root, runs, data, stop, lock_connection):
                     status, summary, details = exit_failure_details(
                         process.returncode, known_stage, identifier, oom_killed=oom_killed
                     )
-                    store.finish(identifier, status, error=summary, error_details=details)
+                    _finish_or_log(store, identifier, status, error=summary, error_details=details)
         except BaseException:
             if process is not None:
                 terminate_group(process)
             # Let supervisor restart and recover while holding a new exclusive lock.
             log.exception("Worker stopped while processing %s", identifier)
             raise
+
+
+def _finish_or_log(store, identifier, status, **values):
+    """A task that already left `running` must not tear the worker loop down."""
+    try:
+        store.finish(identifier, status, **values)
+    except TaskConflict as conflict:
+        logging.getLogger(__name__).warning("Task %s already left the running state: %s", identifier, conflict)
 
 
 def migrate():

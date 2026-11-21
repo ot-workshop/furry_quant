@@ -102,24 +102,38 @@ class PgTaskStore:
             count = connection.execute(select(func.count()).select_from(task)).scalar_one()
         return {"items": [self._public(row) for row in rows], "total": count}
 
-    def create(self, request, execution, key):
-        return self._create("research", request, execution, key, 4)
+    def create(self, request, execution, key, *, connection=None):
+        return self._create("research", request, execution, key, 4, connection=connection)
 
     def create_experiment(self, request, execution, key, *, total):
         return self._create("experiment", request, execution, key, total)
 
-    def create_download(self, kind, request, execution, key, *, total=1):
+    def create_download(self, kind, request, execution, key, *, total=1, connection=None):
         if kind not in {"market_download", "financial_download", "industry_download", "data_update", "maintenance"}:
             raise ValueError("Unsupported download task kind")
-        return self._create(kind, request, execution, key, total)
+        return self._create(kind, request, execution, key, total, connection=connection)
 
-    def _create(self, kind, request, execution, key, total):
+    def _create(self, kind, request, execution, key, total, *, connection=None):
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", key):
             raise ValueError("请求标识无效，请刷新后重新提交")
         encoded = json.dumps({"kind": kind, "request": request}, ensure_ascii=False, sort_keys=True, allow_nan=False)
         json.dumps(execution, allow_nan=False)
         fingerprint = sha256_text(encoded)
-        with self.engine.begin() as connection:
+        if connection is not None:
+            return self._create_in(connection, kind, request, fingerprint, execution, key, total)
+        with self.engine.begin() as own:
+            return self._create_in(own, kind, request, fingerprint, execution, key, total)
+
+    def _create_in(self, connection, kind, request, fingerprint, execution, key, total):
+        """Enqueue inside the caller's transaction.
+
+        The caller owns the transaction boundary: this never commits or rolls back, and on
+        any exception the whole transaction (including the attempt row an outer caller may
+        have written) disappears. `pg_advisory_xact_lock` is held until the caller commits,
+        so the caller must not do slow I/O before committing. The queue-limit count sees
+        uncommitted rows of the same transaction on purpose; do not add caching here.
+        """
+        if True:
             connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SUBMISSION_LOCK})
             existing = connection.execute(select(task).where(task.c.idempotency_key == key)).mappings().first()
             if existing:
@@ -148,7 +162,16 @@ class PgTaskStore:
                     total=total,
                 )
             )
-        return self.get(identifier)
+        # Same connection: the caller's transaction has not committed yet, so a fresh
+        # connection would not see this row.
+        row = connection.execute(select(task).where(task.c.id == identifier)).mappings().first()
+        return self._public(row)
+
+    @staticmethod
+    def _require_single_row(result):
+        """A terminal update that touched no row is a conflict, never a silent success."""
+        if result.rowcount != 1:
+            raise conflict("任务状态已变化，无法写入终态")
 
     def claim(self, worker_id=None):
         with self.engine.begin() as connection:
@@ -202,7 +225,7 @@ class PgTaskStore:
             if changed != 1:
                 raise conflict("任务已中断")
 
-    def finish(self, identifier, status, *, result=None, error=None, error_details=None):
+    def finish(self, identifier, status, *, result=None, error=None, error_details=None, connection=None):
         if status not in {"succeeded", "failed", "interrupted", "paused"}:
             raise ValueError("Unsupported terminal task status")
         values = dict(
@@ -218,8 +241,12 @@ class PgTaskStore:
         )
         if status == "succeeded":
             values["completed"] = task.c.total
-        with self.engine.begin() as connection:
-            connection.execute(update(task).where(task.c.id == identifier, task.c.status == "running").values(**values))
+        statement = update(task).where(task.c.id == identifier, task.c.status == "running").values(**values)
+        if connection is not None:
+            self._require_single_row(connection.execute(statement))
+            return
+        with self.engine.begin() as own:
+            self._require_single_row(own.execute(statement))
 
     def recover(self):
         """Caller must hold worker_lock; no recovery based solely on heartbeat age."""
