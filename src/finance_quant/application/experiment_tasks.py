@@ -69,8 +69,13 @@ def _pin_candidates(research: dict, execution: dict, plan: ExperimentPlan, data_
         execution["financials"] = binding.as_dict()
 
 
-def validate_experiment_request(document: dict, data_root, runs_root, *, result_store=None) -> tuple[dict, dict]:
-    """Validate everything the worker will need before anything is queued or written."""
+def validate_experiment_document(document: dict):
+    """Cheap, request-path checks only: shape, plan, and the comparison/factor rule.
+
+    Everything expensive (pinning, selection inputs, preflight, industry context) stays in
+    `validate_experiment_request`, which the worker runs in its `prepare` stage before any
+    artefact is written.
+    """
 
     _fields(
         document,
@@ -82,6 +87,13 @@ def validate_experiment_request(document: dict, data_root, runs_root, *, result_
     plan = _plan(document)
     if plan.comparison and document.get("factor_selection"):
         raise ValueError("收益来源对照不参与MILP样本外方案选择，请使用分段比较")
+    return plan
+
+
+def validate_experiment_request(document: dict, data_root, runs_root, *, result_store=None) -> tuple[dict, dict]:
+    """Validate everything the worker will need before anything is queued or written."""
+
+    plan = validate_experiment_document(document)
     bound = selection_validation(result_store, document, plan, data_root, runs_root)
     research, execution = validate_request(
         _research_document(document, plan),
