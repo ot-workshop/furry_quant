@@ -291,7 +291,7 @@ test("CostsPanel renders legacy_fee + impact with 旧版费用（综合费率）
   }
 });
 
-test("CostsPanel keeps legacy row and renders missing fields as — when execution_costs is absent", async () => {
+test("CostsPanel keeps legacy row and renders missing fields as — when execution_costs is absent without claiming legacy fee charged", async () => {
   const close = await mount(
     React.createElement(panel.CostsPanel, {
       detail: baseDetail({
@@ -313,12 +313,71 @@ test("CostsPanel keeps legacy row and renders missing fields as — when executi
       ["旧版费用（综合费率）", "—"],
       ["合计", "120.00"],
     ]);
+    assert.match(
+      document.body.textContent,
+      /当前记录未明确计费模式，缺失项以「—」区分/,
+    );
+    assert.doesNotMatch(
+      document.body.textContent,
+      /旧版费用（综合费率）按旧版买卖综合费率计收，已计入合计/,
+    );
   } finally {
     await close();
   }
 });
 
-test("TradesPanel uses aligned 旧版费用（综合费率） label in expanded trade breakdown", async () => {
+test("TradesPanel shares applicability rule: hides itemized legacy_fee=0 while keeping true stamp_tax=0, shows legacy label, and preserves unknown mode", async () => {
+  // 1. Itemized buy fill: stamp_tax=0 is applicable true zero, legacy_fee=0 is structural and hidden
+  tradesPayload = {
+    total: 1,
+    items: [
+      {
+        date: "2025-03-04",
+        instrument: "600000.SH",
+        name: "浦发银行",
+        side: "buy",
+        amount: 1000,
+        price: 10.5,
+        value: 10500,
+        cost: 8.25,
+        cost_breakdown: {
+          commission: 5.0,
+          stamp_tax: 0,
+          transfer_fee: 0.1,
+          impact: 3.15,
+          legacy_fee: 0,
+          total: 8.25,
+        },
+      },
+    ],
+  };
+  const closeItemized = await mount(
+    React.createElement(panel.TradesPanel, {
+      runId: "run-trades",
+      costMode: "itemized",
+    }),
+  );
+  try {
+    const expandBtn = await waitFor(() => {
+      const btn = document.querySelector(".ant-table-row-expand-icon");
+      assert.ok(btn);
+      return btn;
+    });
+    await act(async () => {
+      expandBtn.click();
+    });
+    await waitFor(() => assert.match(document.body.textContent, /券商佣金/));
+    assert.match(document.body.textContent, /印花税0\.00|印花税\s*0\.00/);
+    assert.match(document.body.textContent, /冲击成本/);
+    assert.doesNotMatch(
+      document.body.textContent,
+      /旧版费用（综合费率）|综合费用/,
+    );
+  } finally {
+    await closeItemized();
+  }
+
+  // 2. Legacy fill: uses 旧版费用（综合费率） + 冲击成本, hides inapplicable itemized zero fields
   tradesPayload = {
     total: 1,
     items: [
@@ -342,8 +401,11 @@ test("TradesPanel uses aligned 旧版费用（综合费率） label in expanded 
       },
     ],
   };
-  const close = await mount(
-    React.createElement(panel.TradesPanel, { runId: "run-trades" }),
+  const closeLegacy = await mount(
+    React.createElement(panel.TradesPanel, {
+      runId: "run-trades",
+      costMode: "legacy",
+    }),
   );
   try {
     const expandBtn = await waitFor(() => {
@@ -357,9 +419,56 @@ test("TradesPanel uses aligned 旧版费用（综合费率） label in expanded 
     await waitFor(() =>
       assert.match(document.body.textContent, /旧版费用（综合费率）/),
     );
-    assert.doesNotMatch(document.body.textContent, /^综合费用$|综合费用/);
+    assert.doesNotMatch(document.body.textContent, /综合费用/);
+    assert.doesNotMatch(document.body.textContent, /券商佣金|印花税|过户费/);
   } finally {
-    await close();
+    await closeLegacy();
+  }
+
+  // 3. Unknown costMode (missing execution_costs): retains all rows with known 0 -> 0.00 and missing -> —
+  tradesPayload = {
+    total: 1,
+    items: [
+      {
+        date: "2025-03-04",
+        instrument: "600000.SH",
+        name: "浦发银行",
+        side: "buy",
+        amount: 1000,
+        price: 10.5,
+        value: 10500,
+        cost: 10.5,
+        cost_breakdown: {
+          impact: 0,
+          total: 10.5,
+        },
+      },
+    ],
+  };
+  const closeUnknown = await mount(
+    React.createElement(panel.TradesPanel, {
+      runId: "run-trades",
+      costMode: undefined,
+    }),
+  );
+  try {
+    const expandBtn = await waitFor(() => {
+      const btn = document.querySelector(".ant-table-row-expand-icon");
+      assert.ok(btn);
+      return btn;
+    });
+    await act(async () => {
+      expandBtn.click();
+    });
+    await waitFor(() =>
+      assert.match(document.body.textContent, /旧版费用（综合费率）/),
+    );
+    const expandedText =
+      document.querySelector(".ant-table-expanded-row")?.textContent ?? "";
+    assert.match(expandedText, /冲击成本.*0\.00/);
+    assert.match(expandedText, /旧版费用（综合费率）.*—/);
+  } finally {
+    await closeUnknown();
   }
 });
 

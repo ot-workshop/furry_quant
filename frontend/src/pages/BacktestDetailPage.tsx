@@ -154,7 +154,13 @@ export default function BacktestDetailPage({
           },
         ]
       : []),
-    { key: "trades", label: "成交", children: <TradesPanel runId={id} /> },
+    {
+      key: "trades",
+      label: "成交",
+      children: (
+        <TradesPanel runId={id} costMode={data.execution_costs?.cost_mode} />
+      ),
+    },
     {
       key: "costs",
       label: "费用与调仓",

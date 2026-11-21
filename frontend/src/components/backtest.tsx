@@ -263,6 +263,27 @@ const ITEMIZED_COST_KEYS = new Set<keyof CostBreakdown>([
   "transfer_fee",
 ]);
 
+export function applicableCostEntries(
+  breakdown: Partial<CostBreakdown>,
+  costMode?: "legacy" | "itemized",
+): Array<{
+  key: keyof CostBreakdown;
+  label: string;
+  value: number | undefined;
+}> {
+  return COST_KEYS.filter(([key]) => {
+    const value = breakdown[key];
+    const positive = isFiniteNumber(value) && value > 0;
+    if (key === "legacy_fee") return positive || costMode !== "itemized";
+    if (ITEMIZED_COST_KEYS.has(key)) return positive || costMode !== "legacy";
+    return true;
+  }).map(([key, label]) => ({
+    key,
+    label,
+    value: breakdown[key],
+  }));
+}
+
 export function costSummaryRows(
   summary: Partial<CostBreakdown>,
   costs?: BacktestDetail["execution_costs"],
@@ -271,27 +292,19 @@ export function costSummaryRows(
   label: string;
   value: number | undefined;
 }> {
-  const mode = costs?.cost_mode;
-  const rows: Array<{
-    key: keyof CostBreakdown;
-    label: string;
-    value: number | undefined;
-  }> = COST_KEYS.filter(([key]) => {
-    const value = summary[key];
-    const positive = isFiniteNumber(value) && value > 0;
-    if (key === "legacy_fee") return positive || mode !== "itemized";
-    if (ITEMIZED_COST_KEYS.has(key)) return positive || mode !== "legacy";
-    return true;
-  }).map(([key, label]) => ({
-    key,
-    label,
-    value: summary[key],
-  }));
-  rows.push({ key: "total", label: "合计", value: summary.total });
-  return rows;
+  return [
+    ...applicableCostEntries(summary, costs?.cost_mode),
+    { key: "total", label: "合计", value: summary.total },
+  ];
 }
 
-export function TradesPanel({ runId }: { runId: string }) {
+export function TradesPanel({
+  runId,
+  costMode,
+}: {
+  runId: string;
+  costMode?: "legacy" | "itemized";
+}) {
   const [page, setPage] = useState(1);
   const trades = useApiResource(
     (signal) =>
@@ -324,11 +337,14 @@ export function TradesPanel({ runId }: { runId: string }) {
               expandedRowRender: (row) => (
                 <Descriptions
                   size="small"
-                  column={5}
-                  items={COST_KEYS.map(([key, label]) => ({
+                  column={{ xs: 1, sm: 2, md: 5 }}
+                  items={applicableCostEntries(
+                    row.cost_breakdown ?? {},
+                    costMode,
+                  ).map(({ key, label, value }) => ({
                     key,
                     label,
-                    children: formatMoney(row.cost_breakdown?.[key]),
+                    children: formatMoney(value),
                   }))}
                 />
               ),
@@ -398,7 +414,17 @@ export function CostsPanel({ detail }: { detail: BacktestDetail }) {
       </Section>
     );
   const summaryRows = summary ? costSummaryRows(summary, costs) : [];
-  const showsLegacyRow = summaryRows.some((row) => row.key === "legacy_fee");
+  const legacyRow = summaryRows.find((row) => row.key === "legacy_fee");
+  const legacyCharged =
+    costs?.cost_mode === "legacy" ||
+    (legacyRow !== undefined &&
+      isFiniteNumber(legacyRow.value) &&
+      legacyRow.value > 0);
+  const costSummaryNote = legacyCharged
+    ? "冲击成本在两种计费模式下都单独计入合计；旧版费用（综合费率）按旧版买卖综合费率计收，已计入合计。"
+    : legacyRow
+      ? "冲击成本在两种计费模式下都单独计入合计；当前记录未明确计费模式，缺失项以「—」区分。"
+      : "冲击成本在两种计费模式下都单独计入合计。";
   return (
     <div className="grid-2">
       <Section title="费用构成" description="累计金额（元）">
@@ -425,9 +451,7 @@ export function CostsPanel({ detail }: { detail: BacktestDetail }) {
               type="secondary"
               style={{ display: "block", marginTop: 8, fontSize: 12 }}
             >
-              {showsLegacyRow
-                ? "冲击成本在两种计费模式下都单独计入合计；旧版费用（综合费率）按旧版买卖综合费率计收，已计入合计。"
-                : "冲击成本在两种计费模式下都单独计入合计。"}
+              {costSummaryNote}
             </Typography.Text>
           </>
         ) : (
