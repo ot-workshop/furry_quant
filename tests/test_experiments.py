@@ -299,7 +299,6 @@ def experiment_request(snapshot_id):
     }
 
 
-
 def test_web_experiment_with_discontiguous_periods_queues_then_fails_at_prepare(tmp_path):
     """Ranges need the trading calendar, so the check belongs to the worker's prepare stage."""
 
@@ -322,6 +321,7 @@ def test_web_experiment_with_discontiguous_periods_queues_then_fails_at_prepare(
     finished = run_claimed(service, task["id"])
     assert finished["status"] == "failed"
     assert "首尾相接" in (finished["error"] or "")
+
 
 def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path):
 
