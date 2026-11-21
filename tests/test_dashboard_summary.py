@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import sqlalchemy as sa
@@ -89,6 +90,15 @@ def test_dashboard_summary_counts_headers_without_reading_parquet_or_heavy_table
     monkeypatch.setattr("finance_quant.web.system.warehouse_option", fail_heavy)
     monkeypatch.setattr("finance_quant.web.system.market_option", fail_heavy)
 
+    real_open = Path.open
+
+    def forbid_payload_open(self, *args, **kwargs):
+        if self.suffix == ".parquet":
+            raise AssertionError(f"dashboard summary must not open payload file: {self}")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", forbid_payload_open)
+
     service = make_service(runs, data)
     calls = {"summary": 0}
 
@@ -142,28 +152,44 @@ def test_dashboard_summary_rejects_non_object_corrupt_quarantined_and_checksum_m
     _write_valid_fixed_snapshot(data / "research/downloads/b_rej/snapshots/s1", "snap-rej")
     (data / "research/downloads/b_rej/snapshots/s1/rejected.json").write_text("{}", encoding="utf-8")
 
-    _write_valid_fixed_snapshot(data / "research/downloads/b_corrupt/snapshots/s1", "snap-corrupt")
-    (data / "research/downloads/b_corrupt/snapshots/s1/market.parquet").write_bytes(b"corrupted!")
+    _write_valid_fixed_snapshot(data / "research/downloads/b_missing_file/snapshots/s1", "snap-missing-file")
+    (data / "research/downloads/b_missing_file/snapshots/s1/market.parquet").unlink()
 
-    # Bad historical and market manifests (non-object JSON and wrong calendar checksum).
+    # Structured bad field types (unhashable list schema_version, bad files/codes/assets types).
+    _write_json(
+        data / "research/downloads/b_bad_schema/snapshots/s1/manifest.json",
+        {"id": "snap-bad-schema", "schema_version": ["market-v4-shared"], "codes": ["000001.SZ"], "files": {}},
+    )
+    _write_json(
+        data / "research/downloads/b_bad_files/snapshots/s1/manifest.json",
+        {"id": "snap-bad-files", "schema_version": "market-v4-shared", "codes": ["000001.SZ"], "files": []},
+    )
+
+    # Bad historical and market manifests (non-object JSON, list schema_version, missing calendar file).
     wh_bad_arr = data / "historical/bad_arr"
     _write_json(wh_bad_arr / "manifest.json", ["bad"])
 
-    m_bad_sha = data / "shared-market/versions/v_bad/market-view"
-    (m_bad_sha / "reference").mkdir(parents=True, exist_ok=True)
-    (m_bad_sha / "reference/calendar.parquet").write_bytes(b"actual-bytes")
+    wh_bad_schema = data / "historical/bad_schema"
     _write_json(
-        m_bad_sha / "manifest.json",
+        wh_bad_schema / "manifest.json",
+        {"schema_version": [], "assets": ["000001.SZ"], "reference_files": {"calendar.parquet": "abc"}},
+    )
+
+    m_missing_ref = data / "shared-market/versions/v_bad/market-view"
+    _write_json(
+        m_missing_ref / "manifest.json",
         {
             "schema_version": "historical-market-warehouse-v1",
             "assets": {"000001.SZ": {"file": "a.parquet", "sha256": "x"}},
-            "reference_files": {"calendar.parquet": "0" * 64},
+            "reference_files": {"calendar.parquet": "abc"},
         },
     )
-    (m_bad_sha.parent / "version.json").write_text("{}", encoding="utf-8")
+    (m_missing_ref.parent / "version.json").write_text("{}", encoding="utf-8")
 
-    monkeypatch.setattr(market_download, "warehouse_roots", lambda _root: [wh_bad_arr.resolve()])
-    monkeypatch.setattr("finance_quant.web.system.market_roots", lambda _root: [m_bad_sha.resolve()])
+    monkeypatch.setattr(
+        market_download, "warehouse_roots", lambda _root: [wh_bad_arr.resolve(), wh_bad_schema.resolve()]
+    )
+    monkeypatch.setattr("finance_quant.web.system.market_roots", lambda _root: [m_missing_ref.resolve()])
 
     app = make_app(
         runs, data_root=data, market_summary=lambda: {"securities": 0, "coverage_start": None, "coverage_end": None}
@@ -172,7 +198,48 @@ def test_dashboard_summary_rejects_non_object_corrupt_quarantined_and_checksum_m
 
     res = client.get("/api/v1/dashboard/summary")
     assert res.status_code == 200
-    assert res.json()["counts"] == {"fixed": 1, "historical": 0, "market": 0, "invalid": 7}
+    assert res.json()["counts"] == {"fixed": 1, "historical": 0, "market": 0, "invalid": 10}
+
+
+def test_dashboard_summary_concurrent_cold_requests_execute_loader_once(tmp_path):
+    runs, data = tmp_path / "runs", tmp_path / "data"
+    calls = {"count": 0}
+
+    def slow_summary():
+        calls["count"] += 1
+        time.sleep(0.05)
+        return {"securities": 42, "coverage_start": "2024-01-02", "coverage_end": "2024-12-31"}
+
+    app = make_app(runs, data_root=data, market_summary=slow_summary)
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        responses = list(pool.map(lambda _: client.get("/api/v1/dashboard/summary"), range(6)))
+
+    assert all(res.status_code == 200 for res in responses)
+    assert calls["count"] == 1
+    sampled_times = {res.json()["as_of"] for res in responses}
+    assert len(sampled_times) == 1
+
+
+def test_market_summary_handles_empty_daily_bar_table(monkeypatch):
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "CREATE TABLE daily_bar ("
+                "ts_code VARCHAR(16) NOT NULL, "
+                "trade_date DATE NOT NULL, "
+                "PRIMARY KEY (ts_code, trade_date))"
+            )
+        )
+        conn.execute(sa.text("CREATE INDEX ix_daily_bar_date ON daily_bar (trade_date)"))
+
+    with engine.connect() as conn:
+        monkeypatch.setattr(postgres_market, "connection", lambda: _DummyCtx(conn))
+        summary = postgres_market.market_summary()
+
+    assert summary == {"securities": 0, "coverage_start": None, "coverage_end": None}
 
 
 def test_dashboard_summary_returns_503_on_failure_and_recovers_without_stale_error_cache(tmp_path):

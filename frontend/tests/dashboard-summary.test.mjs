@@ -161,22 +161,37 @@ test("DashboardPage separates loading, error+retry, disconnected DB, and empty m
     assert.ok(retryBtn, "Expected retry button on Database error");
     assert.ok(retryBtn, "Expected retry button on summary error");
 
-    // Manual retry recovers cleanly into populated state.
-    summaryHandler = async () =>
-      new Response(
-        JSON.stringify({
-          database: {
-            securities: 5453,
-            coverage_start: "2015-12-04",
-            coverage_end: "2026-11-19",
-          },
-          counts: { fixed: 1, historical: 0, market: 1 },
-          as_of: "2026-11-22T00:00:00Z",
-        }),
-        { headers: { "Content-Type": "application/json" } },
-      );
+    // Manual retry shows synced retrying state on both cards and prevents double-click until resolved.
+    let resolveRetry;
+    summaryHandler = () =>
+      new Promise((resolve) => {
+        resolveRetry = () =>
+          resolve(
+            new Response(
+              JSON.stringify({
+                database: {
+                  securities: 5453,
+                  coverage_start: "2015-12-04",
+                  coverage_end: "2026-11-19",
+                },
+                counts: { fixed: 1, historical: 0, market: 1 },
+                as_of: "2026-11-22T00:00:00Z",
+              }),
+              { headers: { "Content-Type": "application/json" } },
+            ),
+          );
+      });
     await act(async () => {
       retryBtn.click();
+    });
+    await waitFor(() => assert.match(document.body.textContent, /重试中…/));
+    const retryingBtns = [...document.querySelectorAll("button")].filter(
+      (btn) => btn.textContent.includes("重试中"),
+    );
+    assert.equal(retryingBtns.length, 2);
+    assert.ok(retryingBtns.every((btn) => btn.disabled));
+    await act(async () => {
+      resolveRetry();
     });
     await waitFor(() => {
       assert.match(document.body.textContent, /5,453/);

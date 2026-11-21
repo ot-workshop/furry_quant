@@ -28,7 +28,13 @@ import { useApiResource } from "../hooks/useApiResource";
 import type { BacktestSummary } from "../types";
 import { formatDateTime, formatPercent } from "../utils/format";
 
-function CardLoadError({ onRetry }: { onRetry: () => void }) {
+function CardLoadError({
+  onRetry,
+  retrying,
+}: {
+  onRetry: () => void;
+  retrying: boolean;
+}) {
   return (
     <Flex align="center" gap={6} style={{ marginTop: 4 }}>
       <Typography.Text type="danger" style={{ fontSize: 13 }}>
@@ -38,9 +44,11 @@ function CardLoadError({ onRetry }: { onRetry: () => void }) {
         type="link"
         size="small"
         style={{ padding: 0, height: "auto" }}
+        loading={retrying}
+        disabled={retrying}
         onClick={onRetry}
       >
-        重试
+        {retrying ? "重试中…" : "重试"}
       </Button>
     </Flex>
   );
@@ -119,15 +127,33 @@ export default function DashboardPage() {
             loading={summary.loading}
           />
           {summary.error && !counts ? (
-            <CardLoadError onRetry={summary.reload} />
+            <CardLoadError
+              onRetry={summary.reload}
+              retrying={summary.refreshing}
+            />
           ) : counts ? (
-            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-              固定股票池 {counts.fixed} · 沪深300历史成分 {counts.historical} ·
-              条件筛选 {counts.market}
-              {(counts.invalid ?? 0) > 0
-                ? ` · 已跳过 ${counts.invalid} 个无效清单`
-                : ""}
-            </Typography.Text>
+            <div className="dashboard-dataset-breakdown">
+              <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                <span style={{ whiteSpace: "nowrap" }}>
+                  固定股票池 {counts.fixed}
+                </span>
+                {" · "}
+                <span style={{ whiteSpace: "nowrap" }}>
+                  沪深300历史成分 {counts.historical}
+                </span>
+                {" · "}
+                <span style={{ whiteSpace: "nowrap" }}>
+                  条件筛选 {counts.market}
+                </span>
+              </Typography.Text>
+              {(counts.invalid ?? 0) > 0 ? (
+                <div>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    已跳过 {counts.invalid} 个无效清单
+                  </Typography.Text>
+                </div>
+              ) : null}
+            </div>
           ) : null}
         </Card>
         <Card>
@@ -138,7 +164,10 @@ export default function DashboardPage() {
             loading={summary.loading}
           />
           {summary.error && !summary.data ? (
-            <CardLoadError onRetry={summary.reload} />
+            <CardLoadError
+              onRetry={summary.reload}
+              retrying={summary.refreshing}
+            />
           ) : summary.data ? (
             <Typography.Text type="secondary" style={{ fontSize: 13 }}>
               {database === null
@@ -157,7 +186,7 @@ export default function DashboardPage() {
             loading={tasks.loading}
           />
           {tasks.error && !tasks.data ? (
-            <CardLoadError onRetry={tasks.reload} />
+            <CardLoadError onRetry={tasks.reload} retrying={tasks.refreshing} />
           ) : null}
         </Card>
         <Card>
@@ -167,7 +196,10 @@ export default function DashboardPage() {
             loading={backtests.loading}
           />
           {backtests.error && !backtests.data ? (
-            <CardLoadError onRetry={backtests.reload} />
+            <CardLoadError
+              onRetry={backtests.reload}
+              retrying={backtests.refreshing}
+            />
           ) : null}
         </Card>
       </div>

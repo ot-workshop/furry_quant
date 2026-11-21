@@ -14,7 +14,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from finance_quant.application import market_download
 from finance_quant.application.research_requests import snapshot_registry
-from finance_quant.checksums import file_sha256
 from finance_quant.data.historical_warehouse import warehouse_option
 from finance_quant.data.market_universe import market_option, market_roots
 
@@ -81,11 +80,11 @@ def _load_manifest_object(path: Path) -> dict | None:
 
 
 def _valid_fixed_snapshot(path: Path, root: Path, manifest: dict) -> str | None:
-    """Verify fixed snapshot header integrity without loading parquet frames.
+    """Verify fixed snapshot publisher manifest without opening or hashing payload files.
 
-    Unlike `/api/v1/data-status`, this intentionally avoids decoding Parquet tables
-    to check adjustment continuity or row contents, while matching header schema,
-    quarantine status, required file presence, and SHA-256 digests.
+    Reuses producer-recorded metadata (`schema_version`, `files` digest map,
+    non-empty `codes`, absence of `rejected.json`) plus file presence; full payload
+    checksum verification remains in `/api/v1/data-status` and data-load paths.
     """
 
     try:
@@ -97,16 +96,17 @@ def _valid_fixed_snapshot(path: Path, root: Path, manifest: dict) -> str | None:
         identifier = manifest.get("id")
         if not isinstance(identifier, str) or not _SNAPSHOT_ID_RE.fullmatch(identifier):
             return None
-        if manifest.get("schema_version") not in _FIXED_SCHEMAS:
+        schema_version = manifest.get("schema_version")
+        if not isinstance(schema_version, str) or schema_version not in _FIXED_SCHEMAS:
+            return None
+        codes = manifest.get("codes")
+        if not isinstance(codes, list) or not codes:
             return None
         files = manifest.get("files")
         if not isinstance(files, dict) or set(files) != _FIXED_FILES:
             return None
         for name, expected in files.items():
-            file_path = resolved / name
-            if not isinstance(expected, str) or not file_path.is_file():
-                return None
-            if file_sha256(file_path) != expected:
+            if not isinstance(expected, str) or not expected or not (resolved / name).is_file():
                 return None
         return identifier
     except OSError:
@@ -114,12 +114,13 @@ def _valid_fixed_snapshot(path: Path, root: Path, manifest: dict) -> str | None:
 
 
 def _valid_warehouse_header(wh_root: Path, expected_schema: str) -> bool:
-    """Verify warehouse manifest object and calendar checksum without parsing frames."""
+    """Verify warehouse publisher manifest readiness without opening or hashing payload files."""
 
     manifest = _load_manifest_object(wh_root / "manifest.json")
     if manifest is None:
         return False
-    if manifest.get("schema_version") != expected_schema:
+    schema_version = manifest.get("schema_version")
+    if not isinstance(schema_version, str) or schema_version != expected_schema:
         return False
     assets = manifest.get("assets")
     if not isinstance(assets, dict) or not assets:
@@ -127,12 +128,7 @@ def _valid_warehouse_header(wh_root: Path, expected_schema: str) -> bool:
     ref_files = manifest.get("reference_files")
     calendar_sha = ref_files.get("calendar.parquet") if isinstance(ref_files, dict) else None
     calendar_path = wh_root / "reference/calendar.parquet"
-    if not isinstance(calendar_sha, str) or not calendar_path.is_file():
-        return False
-    try:
-        return file_sha256(calendar_path) == calendar_sha
-    except OSError:
-        return False
+    return isinstance(calendar_sha, str) and bool(calendar_sha) and calendar_path.is_file()
 
 
 def _dataset_counts(data_root: Path) -> dict[str, int]:
@@ -185,6 +181,7 @@ def system_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
     cache_lock = threading.Lock()
+    fetch_lock = threading.Lock()
     cache_expires: float = 0.0
     cache_value: tuple[dict | None, str] | None = None
 
@@ -207,18 +204,23 @@ def system_router(
         with cache_lock:
             if summary_cache_ttl > 0 and now < cache_expires and cache_value is not None:
                 return cache_value
-        raw = loader() if loader is not None else market_status()
-        summary = {
-            "securities": int(raw["securities"]),
-            "coverage_start": raw.get("coverage_start"),
-            "coverage_end": raw.get("coverage_end"),
-        }
-        sampled_at = datetime.now(UTC).isoformat()
-        with cache_lock:
-            if summary_cache_ttl > 0:
-                cache_value = (summary, sampled_at)
-                cache_expires = time.monotonic() + summary_cache_ttl
-        return summary, sampled_at
+        with fetch_lock:
+            now = time.monotonic()
+            with cache_lock:
+                if summary_cache_ttl > 0 and now < cache_expires and cache_value is not None:
+                    return cache_value
+            raw = loader() if loader is not None else market_status()
+            summary = {
+                "securities": int(raw["securities"]),
+                "coverage_start": raw.get("coverage_start"),
+                "coverage_end": raw.get("coverage_end"),
+            }
+            sampled_at = datetime.now(UTC).isoformat()
+            with cache_lock:
+                if summary_cache_ttl > 0:
+                    cache_value = (summary, sampled_at)
+                    cache_expires = time.monotonic() + summary_cache_ttl
+            return summary, sampled_at
 
     @router.get("/dashboard/summary")
     def dashboard_summary():
