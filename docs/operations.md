@@ -197,10 +197,13 @@ docker compose logs --tail=100 db storage-init migrate api worker
 
 ### 含新迁移的版本
 
-应用启动时会比较库的迁移版本与应用期望值（当前为 `0002_forward_registration`），**必须完全相等**，否则 api 拒绝启动并提示先迁移。因此包含新迁移的版本（例如引入前瞻登记两表的 `0002`）不能沿用只换 API 的兼容更新，顺序固定为：
+应用启动时会比较库的迁移版本与应用期望值（当前为 `0002_forward_registration`），**必须完全相等**，否则 api 拒绝启动并提示先迁移。因此包含新迁移的版本（例如引入前瞻登记两表的 `0002`）不能沿用只换 API 的兼容更新。
 
-1. 先迁移：`docker compose run --rm migrate`（或 `alembic upgrade head`），完成后读 `alembic_version` 确认为目标头；
-2. 再替换 api 镜像并做只读冒烟，其余服务按候选要求处理。
+**推荐主路径：停 api/worker → 迁移 → 起新版**，即先 `docker compose stop -t 90 api worker`，再 `docker compose run --rm migrate`（或 `alembic upgrade head`），读 `alembic_version` 确认为目标头，最后起来候选镜像的服务并做只读冒烟 200。这样在迁移完成的瞬间不会留下一个“一重启就拒启”的旧 worker，也避免了“503 是不是故障”的误判。
+
+如果必须缩短停机、选择“边跑边迁移再快速换 api”的方案，至少要写明并遵守：迁移完成到换完 api 的这段时间，旧容器**不得重启**（旧 worker 重启会在新库上被 `SchemaNotReady` 拒启，运行中的任务随之中断），并且依赖 `/health` 的监控对应时段按下线处理。
+
+迁移完成后，只换 API 的路径仍然可用，但必须显式把更新工具的期望 schema 设为实际新头（不能再用默认的旧头）；更新工具本身不执行迁移，所以“迁移”与“换镜像”始终是两个独立步骤。
 
 迁移后、换 api 前的窗口里，仍在运行的旧 api 的 `/api/v1/health` 会返回 **503**：这是旧的 schema 断言不再成立，不是故障，业务请求仍可处理、容器也不需要重启。不要据此回滚；依赖 `/health` 的监控或界面对应时段按下线处理，并尽量缩短迁移与替换的间隔。冒烟里把 503 记为“迁移版本与应用声明不一致”，不要当网络或进程故障排查。
 
