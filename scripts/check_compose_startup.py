@@ -197,7 +197,7 @@ def upgrade_image(directory, image):
 import sqlalchemy as sa
 
 revision = "startup_probe_v2"
-down_revision = HEAD_REVISION
+down_revision = "0002_forward_registration"
 branch_labels = None
 depends_on = None
 
