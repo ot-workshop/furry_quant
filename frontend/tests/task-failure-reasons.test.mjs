@@ -224,8 +224,10 @@ test("TaskTable displays inline failure reasons without expanding and keeps comp
   try {
     const rowA = document.querySelector('[data-task-id="task-a"]');
     assert.ok(rowA.classList.contains("task-row-failed"));
-    assert.match(rowA.textContent, /回测阶段 · 被系统强制终止/);
-    assert.match(rowA.textContent, /退出码 -9/);
+    assert.match(
+      rowA.textContent,
+      /原因：回测阶段 · 被系统强制终止 · ，退出码 -9/,
+    );
 
     const rowB = document.querySelector('[data-task-id="task-b"]');
     assert.match(rowB.textContent, /计算因子阶段 · 异常退出/);
@@ -233,6 +235,7 @@ test("TaskTable displays inline failure reasons without expanding and keeps comp
     assert.equal(rowB.textContent.includes("内存不足"), false);
 
     const rowC = document.querySelector('[data-task-id="task-c"]');
+    assert.ok(rowC.querySelector(".task-reason-label"));
     assert.match(rowC.textContent, /未记录原因/);
     assert.ok(rowC.querySelector(".task-reason-empty"));
 
@@ -251,9 +254,10 @@ test("TaskTable displays inline failure reasons without expanding and keeps comp
     const toggle = rowD.querySelector("button.task-reason-toggle");
     assert.ok(toggle);
     assert.equal(toggle.getAttribute("aria-expanded"), "false");
-    assert.equal(rowD.textContent.includes("完全可读"), false);
+    assert.ok(rowD.querySelector(".task-reason-clamped"));
     await act(async () => toggle.click());
     assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    assert.equal(rowD.querySelector(".task-reason-clamped"), null);
     assert.equal(rowD.textContent.includes("完全可读"), true);
   } finally {
     await closeCompact();

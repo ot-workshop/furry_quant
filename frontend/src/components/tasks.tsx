@@ -234,6 +234,7 @@ export function TaskDetail({ task }: { task: ResearchTask }) {
         >
           <span className="task-reason-label">
             {task.status === "interrupted" ? "已中断" : "失败原因"}
+            <span className="sr-only">：</span>
           </span>{" "}
           {failure.fullText}
         </Typography.Text>
@@ -330,44 +331,46 @@ export function TaskTable({
                   </div>
                   {failure ? (
                     <div className="task-row-reason">
-                      {failure.isEmpty ? (
-                        <span className="task-reason-empty">
-                          {failure.fullText}
+                      <div
+                        className={`task-reason-content${failure.isLong && !reasonOpen ? " task-reason-clamped" : ""}${failure.tone === "neutral" ? " task-reason-neutral" : ""}`}
+                      >
+                        <span className="task-reason-label">
+                          原因<span className="sr-only">：</span>
                         </span>
-                      ) : (
-                        <>
-                          <span className="task-reason-label">原因</span>
-                          <span
-                            className={`task-reason-body${failure.tone === "neutral" ? " task-reason-neutral" : ""}`}
-                          >
-                            <span>
-                              {failure.isLong && !reasonOpen
-                                ? failure.previewText
-                                : failure.headline}
-                            </span>
-                            {failure.exitCodeText ? (
-                              <span className="task-reason-code numeric-token">
-                                {failure.exitCodeText}
-                              </span>
-                            ) : null}
-                            {failure.isLong ? (
-                              <button
-                                type="button"
-                                className="task-reason-toggle"
-                                aria-expanded={reasonOpen}
-                                onClick={() =>
-                                  setExpandedReasons((prev) => ({
-                                    ...prev,
-                                    [task.id]: !prev[task.id],
-                                  }))
-                                }
-                              >
-                                {reasonOpen ? "收起原因" : "查看完整原因"}
-                              </button>
-                            ) : null}
+                        {failure.isEmpty ? (
+                          <span className="task-reason-empty">
+                            {failure.fullText}
                           </span>
-                        </>
-                      )}
+                        ) : (
+                          <>
+                            <span>{failure.headline}</span>
+                            {failure.exitCodeText ? (
+                              <>
+                                <span aria-hidden="true"> · </span>
+                                <span className="sr-only">，</span>
+                                <span className="task-reason-code numeric-token">
+                                  {failure.exitCodeText}
+                                </span>
+                              </>
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                      {failure.isLong ? (
+                        <button
+                          type="button"
+                          className="task-reason-toggle"
+                          aria-expanded={reasonOpen}
+                          onClick={() =>
+                            setExpandedReasons((prev) => ({
+                              ...prev,
+                              [task.id]: !prev[task.id],
+                            }))
+                          }
+                        >
+                          {reasonOpen ? "收起原因" : "查看完整原因"}
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
                   <div className="task-row-meta">
