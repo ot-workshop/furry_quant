@@ -197,12 +197,20 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
         # New-style task: the request in the row is the raw document; the authoritative
         # request/execution pair is computed here, before any artefact is written. Tasks
         # queued before this change carry a frozen execution and take the old path.
+        frozen_execution = {
+            key: execution[key]
+            for key in ("snapshot_dir", "data_version", "files", "manifest_sha256")
+            if key in execution
+        }
         request, execution = validate_experiment_inputs(
             request,
             context.data_root,
             context.runs_root,
             result_store=context.result_store_factory(None),
         )
+        # The submitted task pinned a specific source: restore those fields so the later
+        # prepare_snapshot checks run against A instead of whatever is current.
+        execution.update(frozen_execution)
 
     plan = _plan(request)
     evidence = execution.get("factor_selection")

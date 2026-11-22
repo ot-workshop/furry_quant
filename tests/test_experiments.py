@@ -1,4 +1,6 @@
 import json
+import pathlib
+import shutil
 from dataclasses import replace
 
 import pandas as pd
@@ -366,7 +368,6 @@ def test_web_experiment_submit_never_touches_heavy_paths(tmp_path, monkeypatch):
     assert service.store.list()["total"] == 1
 
 
-
 def test_frozen_snapshot_survives_a_newer_publish(tmp_path):
     """B is published after the submit; the queued task must still run the frozen A."""
 
@@ -387,13 +388,55 @@ def test_frozen_snapshot_survives_a_newer_publish(tmp_path):
     task = response.json()
 
     # A newer snapshot appears while the task is still queued.
-    publish_fixture_snapshot(
-        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
-    )
+    publish_fixture_snapshot(data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider())
 
     assert service.store.claim() == task["id"]
     finished = run_claimed(service, task["id"])
     assert finished["status"] == "succeeded", finished["error"]
+
+
+def _submitted(tmp_path, key):
+    data, runs = tmp_path / "data", tmp_path / "runs"
+    manifest = publish_fixture_snapshot(
+        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
+    )
+    seed_earnings(financial_root(data), ("600000.SH", "000001.SZ", "600519.SH"))
+    service = make_service(runs, data)
+    client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
+    response = client.post(
+        "/api/v1/research/experiments",
+        json=experiment_request(manifest["id"]),
+        headers={"Idempotency-Key": key},
+    )
+    assert response.status_code == 202, response.text
+    return data, runs, service, response.json()
+
+
+def test_frozen_snapshot_missing_fails_without_artefacts(tmp_path):
+    data, runs, service, task = _submitted(tmp_path, "experiment-frozen-missing")
+    frozen = service.store.get(task["id"], private=True)["execution"]["snapshot_dir"]
+    shutil.rmtree(frozen)
+
+    assert service.store.claim() == task["id"]
+    finished = run_claimed(service, task["id"])
+    assert finished["status"] == "failed"
+    assert not (runs / task["id"]).exists()
+
+
+def test_frozen_snapshot_bytes_changed_fails_without_artefacts(tmp_path):
+    data, runs, service, task = _submitted(tmp_path, "experiment-frozen-changed")
+    frozen = pathlib.Path(service.store.get(task["id"], private=True)["execution"]["snapshot_dir"])
+    manifest_path = frozen / "manifest.json"
+    payload = json.loads(manifest_path.read_bytes())
+    payload["note"] = "tampered"
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    assert service.store.claim() == task["id"]
+    finished = run_claimed(service, task["id"])
+    assert finished["status"] == "failed"
+    assert "排队期间" in (finished["error"] or "")
+    assert not (runs / task["id"]).exists()
+
 
 def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path):
 
