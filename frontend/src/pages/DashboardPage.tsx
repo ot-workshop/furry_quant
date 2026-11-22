@@ -1,13 +1,4 @@
-import {
-  Alert,
-  Button,
-  Card,
-  Flex,
-  Space,
-  Statistic,
-  Table,
-  Typography,
-} from "antd";
+import { Alert, Button, Card, Statistic, Table, Typography } from "antd";
 import { DatabaseOutlined, PlusCircleOutlined } from "@ant-design/icons";
 import { api } from "../api/client";
 import { researchApi } from "../api/research";
@@ -24,6 +15,12 @@ import {
   Signed,
   TableScroll,
 } from "../components/ui";
+import {
+  isResultRowBackground,
+  ResultDateRange,
+  ResultReturn,
+  ResultTitle,
+} from "../components/resultList";
 import { useApiResource } from "../hooks/useApiResource";
 import type { BacktestSummary } from "../types";
 import { formatDateTime, formatPercent } from "../utils/format";
@@ -88,7 +85,7 @@ export default function DashboardPage() {
         />
       ) : null}
 
-      <div className="grid-4">
+      <div className="grid-4 dashboard-metrics">
         <Card>
           <Statistic
             title="研究数据集"
@@ -156,11 +153,13 @@ export default function DashboardPage() {
           }
         >
           {(data) => (
-            <TaskTable
-              tasks={data.items.slice(0, 6)}
-              onChanged={tasks.reload}
-              compact
-            />
+            <div className="dashboard-recent-tasks">
+              <TaskTable
+                tasks={data.items.slice(0, 6)}
+                onChanged={tasks.reload}
+                compact
+              />
+            </div>
           )}
         </Resource>
       </Section>
@@ -210,53 +209,64 @@ export default function DashboardPage() {
               <TableScroll label="最近回测表">
                 <Table<BacktestSummary>
                   rowKey="id"
+                  className="result-list-table"
+                  tableLayout="fixed"
                   size="small"
                   pagination={false}
                   dataSource={data.items.slice(0, 6)}
                   rowClassName={() => "clickable-row"}
                   onRow={(row) => ({
-                    onClick: () => navigate(paths.backtest(row.id)),
+                    onClick: (event) => {
+                      if (isResultRowBackground(event))
+                        navigate(paths.backtest(row.id));
+                    },
                   })}
                   columns={[
                     {
                       title: "回测",
                       key: "name",
                       render: (_, row) => (
-                        <Space orientation="vertical" size={0}>
-                          <Typography.Text strong>{row.name}</Typography.Text>
-                          <Typography.Text
-                            type="secondary"
-                            style={{ fontSize: 12 }}
-                          >
-                            {row.start_date} ~ {row.end_date}
-                          </Typography.Text>
-                        </Space>
+                        <ResultTitle
+                          to={paths.backtest(row.id)}
+                          name={row.name}
+                          meta={
+                            <ResultDateRange
+                              start={row.start_date}
+                              end={row.end_date}
+                            />
+                          }
+                        />
                       ),
                     },
                     {
                       title: "总收益",
                       key: "ret",
+                      width: 88,
                       align: "right",
                       render: (_, row) => (
-                        <Signed
-                          value={row.metrics?.total_return}
-                          format={(v) => formatPercent(v)}
-                        />
+                        <ResultReturn value={row.metrics?.total_return} />
                       ),
                     },
                     {
                       title: "最大回撤",
                       key: "dd",
+                      width: 96,
                       align: "right",
-                      render: (_, row) =>
-                        formatPercent(row.metrics?.max_drawdown),
+                      render: (_, row) => (
+                        <span className="result-list-number">
+                          {formatPercent(row.metrics?.max_drawdown)}
+                        </span>
+                      ),
                     },
                     {
                       title: "创建时间",
                       key: "created",
-                      width: 160,
+                      width: 136,
+                      align: "right",
                       render: (_, row) => (
-                        <Flex>{formatDateTime(row.created_at)}</Flex>
+                        <span className="result-list-secondary result-list-number">
+                          {formatDateTime(row.created_at)}
+                        </span>
                       ),
                     },
                   ]}

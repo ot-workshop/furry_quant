@@ -412,14 +412,16 @@ export function WrapTag({
 export function CollapsibleTagList({
   tags,
   maxTagChars = 14,
+  maxVisible = 2,
 }: {
   tags: Array<{ key: string; label: string }>;
   maxTagChars?: number;
+  maxVisible?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
   if (!tags.length) return null;
   const anyLong = tags.some((t) => Array.from(t.label).length > maxTagChars);
-  const collapsedCount = anyLong ? 1 : Math.min(2, tags.length);
+  const collapsedCount = anyLong ? 1 : Math.min(maxVisible, tags.length);
   const visible = expanded ? tags : tags.slice(0, collapsedCount);
   const hiddenCount = Math.max(0, tags.length - collapsedCount);
   const needsToggle = hiddenCount > 0 || anyLong;

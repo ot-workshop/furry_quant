@@ -1,4 +1,4 @@
-import { Table, Tag, Typography } from "antd";
+import { Table, Tag } from "antd";
 import { api } from "../api/client";
 import { navigate, paths } from "../app/routes";
 import { useMediaQuery } from "../app/useMediaQuery";
@@ -11,12 +11,20 @@ import {
   Section,
   TableScroll,
 } from "../components/ui";
+import {
+  isResultRowBackground,
+  ResultDateRange,
+  ResultTitle,
+} from "../components/resultList";
 import { useApiResource } from "../hooks/useApiResource";
 import type { EvaluationMetadata } from "../types";
 import { factorLabel, formatDateTime } from "../utils/format";
 
 export default function EvaluationListPage() {
   const isMobile = useMediaQuery("(max-width: 767px)");
+  const narrowDesktop = useMediaQuery(
+    "(min-width: 1024px) and (max-width: 1199px)",
+  );
   const list = useApiResource((signal) => api.evaluations(signal), []);
   return (
     <>
@@ -67,60 +75,86 @@ export default function EvaluationListPage() {
               <TableScroll label="因子评估列表">
                 <Table<EvaluationMetadata>
                   rowKey="id"
+                  className="result-list-table"
+                  tableLayout="fixed"
                   dataSource={data.items}
                   pagination={{ pageSize: 20, hideOnSinglePage: true }}
                   rowClassName={() => "clickable-row"}
                   onRow={(row) => ({
-                    onClick: () => navigate(paths.evaluation(row.id)),
+                    onClick: (event) => {
+                      if (isResultRowBackground(event))
+                        navigate(paths.evaluation(row.id));
+                    },
                   })}
                   columns={[
                     {
                       title: "评估",
                       render: (_, row) => (
-                        <div>
-                          <Typography.Text strong>{row.name}</Typography.Text>
-                          <div>
-                            <Typography.Text
-                              type="secondary"
-                              style={{ fontSize: 12 }}
-                            >
+                        <ResultTitle
+                          to={paths.evaluation(row.id)}
+                          name={row.name}
+                          meta={
+                            <span className="result-list-id" title={row.id}>
                               {row.id}
-                            </Typography.Text>
-                          </div>
-                        </div>
+                            </span>
+                          }
+                        />
                       ),
                     },
                     {
                       title: "因子",
-                      render: (_, row) =>
-                        row.factor_config.map((f) => (
-                          <Tag key={f.id ?? f.name}>
-                            {factorLabel(f.name)}
-                            {f.window ? ` ${f.window}日` : ""}
-                          </Tag>
-                        )),
+                      width: narrowDesktop ? 172 : 224,
+                      render: (_, row) => (
+                        <CollapsibleTagList
+                          maxTagChars={narrowDesktop ? 8 : 12}
+                          maxVisible={narrowDesktop ? 1 : 2}
+                          tags={row.factor_config.map((f, idx) => ({
+                            key: f.id ?? `${f.name}-${idx}`,
+                            label: `${factorLabel(f.name)}${f.window ? ` ${f.window}日` : ""}`,
+                          }))}
+                        />
+                      ),
                     },
                     {
                       title: "区间",
-                      width: 210,
-                      render: (_, row) => `${row.start} ~ ${row.end}`,
+                      width: 176,
+                      hidden: narrowDesktop,
+                      render: (_, row) => (
+                        <ResultDateRange start={row.start} end={row.end} />
+                      ),
                     },
                     {
                       title: "股票数",
-                      width: 80,
+                      width: 74,
                       align: "right",
                       dataIndex: "sample_size",
+                      className: "result-list-number",
                     },
                     {
                       title: "持有期",
-                      width: 120,
-                      render: (_, row) =>
-                        row.evaluation.horizons.map((h) => `${h}日`).join("、"),
+                      width: narrowDesktop ? 96 : 110,
+                      render: (_, row) => (
+                        <span className="result-list-horizons result-list-number">
+                          {row.evaluation.horizons
+                            .map((h) => `${h}日`)
+                            .join("、")}
+                        </span>
+                      ),
                     },
                     {
-                      title: "创建时间",
-                      width: 170,
-                      render: (_, row) => formatDateTime(row.created_at),
+                      title: narrowDesktop ? "区间 / 创建时间" : "创建时间",
+                      width: narrowDesktop ? 139 : 136,
+                      align: "right",
+                      render: (_, row) => (
+                        <div className="result-list-dates">
+                          {narrowDesktop ? (
+                            <ResultDateRange start={row.start} end={row.end} />
+                          ) : null}
+                          <span className="result-list-secondary result-list-number">
+                            {formatDateTime(row.created_at)}
+                          </span>
+                        </div>
+                      ),
                     },
                   ]}
                 />
