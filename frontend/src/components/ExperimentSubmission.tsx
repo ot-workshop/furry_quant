@@ -1,6 +1,6 @@
 import { Alert, Button, ConfigProvider, Flex, Typography } from "antd";
 import { RocketOutlined } from "@ant-design/icons";
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
 import { paths } from "../app/routes";
 import type { ExperimentSubmissionState } from "../hooks/useExperimentSubmission";
 
@@ -53,6 +53,7 @@ export function ExperimentSubmission({
 }) {
   const primary = useRef<HTMLButtonElement>(null);
   const stop = useRef<HTMLButtonElement>(null);
+  const waitingHelp = useId();
   const status = useRef<HTMLDivElement>(null);
   const previous = useRef(state.kind);
   const waiting = state.kind === "waiting";
@@ -138,12 +139,18 @@ export function ExperimentSubmission({
       </Button>
       {waiting ? (
         <>
-          <Button ref={stop} size="large" block onClick={onStop}>
-            停止等待
-          </Button>
-          <Typography.Text type="secondary" role="status">
+          <Typography.Text id={waitingHelp} type="secondary">
             等待确认时参数不可编辑。停止等待后可继续编辑，这不会取消任务。
           </Typography.Text>
+          <Button
+            ref={stop}
+            size="large"
+            block
+            aria-describedby={waitingHelp}
+            onClick={onStop}
+          >
+            停止等待
+          </Button>
         </>
       ) : null}
     </Flex>

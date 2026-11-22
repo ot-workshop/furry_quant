@@ -251,9 +251,15 @@ def stop_case(browser, dist, out, width, height, entry):
                 activate(submit, mode)
             assert_pending(fixture, 0)
             stop = page.get_by_role("button", name="停止等待")
-            stop.wait_for()
-            box = stop.bounding_box()
-            assert box["y"] >= 0 and box["y"] + box["height"] <= height + 1, box
+            help_text = page.get_by_text("这不会取消任务。", exact=False)
+            expect(stop).to_have_accessible_description(
+                "等待确认时参数不可编辑。停止等待后可继续编辑，这不会取消任务。"
+            )
+            # Check both rectangles before any scroll or action by the test.
+            expect(stop).to_be_in_viewport(ratio=1)
+            expect(help_text).to_be_in_viewport(ratio=1)
+            if mode == "touch":
+                page.screenshot(path=str(out / f"{width}-{entry}-waiting.png"), animations="disabled")
             layout(stop, page, width)
             if mode == "keyboard":
                 expect(stop).to_be_focused()
@@ -368,7 +374,7 @@ def locked_case(browser, dist, entry, *, stop_first):
             group = page.get_by_role("group", name="比较参数")
             for control in group.locator("input:visible, button:visible, [role=combobox]:visible").all():
                 expect(control).to_be_disabled()
-            expect(page.get_by_role("status").get_by_text("停止等待后可继续编辑", exact=False)).to_be_visible()
+            expect(page.get_by_text("停止等待后可继续编辑", exact=False)).to_be_visible()
             stop = page.get_by_role("button", name="停止等待")
             expect(stop).to_be_enabled()
             if stop_first:
