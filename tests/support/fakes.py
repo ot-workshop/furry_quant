@@ -136,7 +136,7 @@ class MemoryTaskStore:
                 raise TaskConflict("任务已中断")
             row.update(stage=stage, message=message, completed=completed)
 
-    def save_prepared(self, identifier, request, execution):
+    def save_prepared(self, identifier, execution):
         """Mirror PgTaskStore.save_prepared: only a still-pending running row is updated once."""
 
         with self._lock:

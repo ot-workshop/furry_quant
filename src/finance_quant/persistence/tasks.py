@@ -224,7 +224,7 @@ class PgTaskStore:
             if changed != 1:
                 raise conflict("任务已中断")
 
-    def save_prepared(self, identifier, request, execution, *, connection=None):
+    def save_prepared(self, identifier, execution, *, connection=None):
         """Persist the worker-verified request/execution exactly once.
 
         One UPDATE matches the identifier, `status='running'` **and** the still-pending
@@ -237,9 +237,10 @@ class PgTaskStore:
             .where(
                 task.c.id == identifier,
                 task.c.status == "running",
+                task.c.kind == "experiment",
                 task.c.execution["prepare_state"].astext == "pending",
             )
-            .values(request=request, execution=execution)
+            .values(execution=execution)
         )
         if connection is not None:
             self._require_single_row(connection.execute(statement))

@@ -214,12 +214,7 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
         # Legacy fully prepared tasks skip this branch. New fixed-pool tasks must
         # provide a verified leaf; a missing pin must not fall back to the registry.
         context.stage("prepare", "准备股票池并检查各候选方案的历史预热", 0)
-    if execution.get("prepare_state") == "pending":
-        # Freeze the verified payload once; a second write (or a task that already moved on)
-        # is a conflict, so the projection below can never run twice for one task.
-        saved = {**execution, "prepare_state": "prepared"}
-        context.store.save_prepared(context.identifier, request, saved)
-        execution = saved
+
         data = request.get("data")
         frozen_snapshot = (
             load_frozen_snapshot(context.data_root, execution)
@@ -236,9 +231,21 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
         # Do not retain the preflight frames while the experiment runs.
         del frozen_snapshot
 
+    if execution.get("prepare_state") == "prepared":
+        # A prepared payload belongs to this worker's own single write; seeing it again means
+        # the task is being re-run after preparation, which must not project or register again.
+        raise ValueError("准备结果已记录，任务不应重复执行准备阶段")
+
     plan = _plan(request)
     evidence = execution.get("factor_selection")
     verify_queued_selection(context.result_store_factory(None), evidence)
+    if pending:
+        # A is verified and the queued selection checked: record the result once, and only
+        # for this still-pending running task. A second write is a conflict, so projection
+        # and registration can never run twice for one task.
+        saved = {**execution, "prepare_state": "prepared"}
+        context.store.save_prepared(context.identifier, saved)
+        execution = saved
     if not pending:
         context.stage("prepare", "准备股票池并检查各候选方案的历史预热", 0)
     dynamic = request["data"]["mode"] != "snapshot" or "filters" in request["data"]
