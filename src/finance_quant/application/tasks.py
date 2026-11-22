@@ -35,6 +35,13 @@ class TaskService:
 
     def submit_experiment(self, document: dict, key: str, *, result_store=None) -> dict[str, Any]:
 
+        # A replayed submission is answered first: if the caller's first response was lost
+        # and the snapshot it froze has since moved or been quarantined, the same key with the
+        # same document must still return the original task instead of failing on the lookup.
+        replay = self.store.find_experiment_replay(document, key)
+        if replay is not None:
+            return replay
+
         # Cheap checks only: the expensive validation runs in the worker's prepare stage,
         # so a comparison submission returns as soon as it is queued.
         plan = validate_experiment_document(document)

@@ -621,6 +621,64 @@ def test_worker_accepts_legacy_prevalidated_experiment_without_preparation_write
     assert projection["codes"] == sorted(document["data"]["codes"])
 
 
+def _frozen_snapshot_leaf(service, identifier, data_root):
+    """The snapshot directory the queued task froze when it was submitted."""
+
+    frozen = pathlib.Path(service.store.get(identifier, private=True)["execution"]["snapshot_dir"])
+    return frozen if frozen.is_absolute() else pathlib.Path(data_root) / frozen
+
+
+def _replay_after_the_frozen_snapshot_turns_unusable(tmp_path, retire):
+    """Retire the frozen A, then check the same key still answers with the original task."""
+
+    data, runs = tmp_path / "data", tmp_path / "runs"
+    manifest = publish_fixture_snapshot(
+        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
+    )
+    seed_earnings(financial_root(data), ("600000.SH", "000001.SZ", "600519.SH"))
+    service = make_service(runs, data)
+    client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
+    body = experiment_request(manifest["id"])
+    headers = {"Idempotency-Key": "replay-1"}
+
+    first = client.post("/api/v1/research/experiments", json=body, headers=headers)
+    assert first.status_code == 202, first.text
+    task = first.json()
+
+    retire(_frozen_snapshot_leaf(service, task["id"], data))
+
+    # A new submission cannot use the retired snapshot any more, so the retry below is
+    # answered by the recorded task and not by re-freezing the current state.
+    fresh = client.post("/api/v1/research/experiments", json=body, headers={"Idempotency-Key": "replay-2"})
+    assert fresh.status_code == 422, fresh.text
+
+    again = client.post("/api/v1/research/experiments", json=body, headers=headers)
+    assert again.status_code == 202, again.text
+    assert again.json()["id"] == task["id"]
+    assert service.store.list()["total"] == 1
+
+    changed = json.loads(json.dumps(body))
+    changed["plan"]["candidates"][0]["factors"][0]["window"] = 3
+    conflict = client.post("/api/v1/research/experiments", json=changed, headers=headers)
+    assert conflict.status_code == 409, conflict.text
+    assert service.store.list()["total"] == 1
+
+
+def test_retrying_a_lost_response_after_the_frozen_snapshot_moves(tmp_path):
+    """A lost first response must not turn the retry into a snapshot lookup failure."""
+
+    _replay_after_the_frozen_snapshot_turns_unusable(tmp_path, shutil.rmtree)
+
+
+def test_retrying_a_lost_response_after_the_frozen_snapshot_is_quarantined(tmp_path):
+    """Quarantine marks the frozen leaf unusable; the retry still answers with the original task."""
+
+    def quarantine(leaf):
+        (leaf / "rejected.json").write_text('{"reason": "test"}', encoding="utf-8")
+
+    _replay_after_the_frozen_snapshot_turns_unusable(tmp_path, quarantine)
+
+
 def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path):
 
     data, runs = tmp_path / "data", tmp_path / "runs"
