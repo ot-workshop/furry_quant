@@ -33,7 +33,7 @@ from finance_quant.data.financials import FinancialBinding, FinancialStore, cove
 from finance_quant.data.historical_warehouse import warehouse_header, warehouse_option
 from finance_quant.data.industries import optional_industries
 from finance_quant.data.managed import atomic_json, coverage_report
-from finance_quant.data.market import load_market
+from finance_quant.data.market import FrozenMarketSnapshot, load_market
 from finance_quant.data.market_universe import market_option, market_roots
 from finance_quant.data.pool_inputs import security_coverage
 from finance_quant.data.shared_market import validation_counts
@@ -209,8 +209,19 @@ def snapshot_registry(data_root: Path) -> dict:
     return found
 
 
-def research_options(data_root: Path, runs_root: Path, *, industry_version=None, financial_version=None) -> dict:
-    registry = snapshot_registry(data_root)
+def research_options(
+    data_root: Path,
+    runs_root: Path,
+    *,
+    industry_version=None,
+    financial_version=None,
+    frozen_snapshot: FrozenMarketSnapshot | None = None,
+) -> dict:
+    registry = (
+        snapshot_registry(data_root)
+        if frozen_snapshot is None
+        else {frozen_snapshot.inputs[3]["id"]: frozen_snapshot.inputs}
+    )
     snapshots = []
     for identifier, (market, _, calendar, manifest) in registry.items():
         names = market.drop_duplicates("instrument").set_index("instrument")["name"].to_dict()
@@ -254,10 +265,15 @@ def research_options(data_root: Path, runs_root: Path, *, industry_version=None,
         else {"mode": "snapshot", "snapshot_id": None, "codes": []}
     )
 
-    historical_indices = [
-        option for root in market_download.warehouse_roots(data_root) if (option := warehouse_option(root))
-    ]
-    market_universes = [option for root in market_roots(data_root) if (option := market_option(root))]
+    # A fixed-pool selection handoff must validate its source against the pinned
+    # snapshot only. Interactive options still enumerate all selectable datasets.
+    historical_indices = []
+    market_universes = []
+    if frozen_snapshot is None:
+        historical_indices = [
+            option for root in market_download.warehouse_roots(data_root) if (option := warehouse_option(root))
+        ]
+        market_universes = [option for root in market_roots(data_root) if (option := market_option(root))]
     if not selected and historical_indices:
         # Only a CSI 300 version exists: default to its newest research range.
         latest = historical_indices[0]
@@ -373,7 +389,14 @@ def coverage_row(financial: dict | None, codes, data_root: Path) -> dict | None:
     return {"covered": len(covered_codes(manifest, codes)), "total": len(set(codes))}
 
 
-def validate_request(document: dict, data_root: Path, runs_root: Path, *, financials=None) -> tuple[dict, dict]:
+def validate_request(
+    document: dict,
+    data_root: Path,
+    runs_root: Path,
+    *,
+    financials=None,
+    frozen_snapshot: FrozenMarketSnapshot | None = None,
+) -> tuple[dict, dict]:
     _fields(
         document,
         ("name", "data", "backtest", "factors", "evaluation"),
@@ -490,9 +513,14 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
         return normalized, pins
     _fields(obj, ("mode", "snapshot_id", "codes"), ("filters",), label="快照")
     identifier = obj["snapshot_id"]
-    if not isinstance(identifier, str) or identifier not in (registry := snapshot_registry(data_root)):
-        raise ValueError("数据快照不存在或未通过校验，请刷新数据列表")
-    market, _, calendar, manifest = registry[identifier]
+    if frozen_snapshot is not None:
+        market, _, calendar, manifest = frozen_snapshot.inputs
+        if identifier != manifest["id"]:
+            raise ValueError("请求的快照标识与提交时冻结版本不一致")
+    else:
+        if not isinstance(identifier, str) or identifier not in (registry := snapshot_registry(data_root)):
+            raise ValueError("数据快照不存在或未通过校验，请刷新数据列表")
+        market, _, calendar, manifest = registry[identifier]
     data = DataConfig(
         Path(manifest["snapshot_dir"]),
         manifest["start"],
@@ -518,8 +546,11 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
         raise ValueError("初始资金不能超过一万亿元")
     require_financial_coverage(binding, list(data.codes), factors)
     config = ResearchConfig(data, backtest, runs_root, factors, evaluation, neutralization, binding)
+    if frozen_snapshot is not None:
+        execution["manifest_sha256"] = frozen_snapshot.manifest_sha256
     if "filters" in obj:
-        execution["manifest_sha256"] = file_sha256(Path(manifest["snapshot_dir"]) / "manifest.json")
+        if frozen_snapshot is None:
+            execution["manifest_sha256"] = file_sha256(Path(manifest["snapshot_dir"]) / "manifest.json")
         validate_warmup(data.start, data.end, backtest.start, factors, calendar)
         sessions = pd.DatetimeIndex(calendar.loc[calendar.is_open, "date"])
         if (

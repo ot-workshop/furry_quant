@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -24,6 +23,7 @@ from finance_quant.application.selection_experiments import (
 )
 from finance_quant.application.task_context import attach_outputs, prepare_snapshot, prepare_warehouse
 from finance_quant.configuration import BacktestConfig, DataConfig
+from finance_quant.data.market import FrozenMarketSnapshot, load_frozen_snapshot
 from finance_quant.data.symbols import to_qlib
 from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.experiments import SELECTION_METRIC, ExperimentPlan
@@ -91,19 +91,28 @@ def validate_experiment_document(document: dict):
     return plan
 
 
-def validate_experiment_inputs(document: dict, data_root, runs_root, *, result_store=None) -> tuple[dict, dict]:
-    """Validate everything the worker will need before anything is queued or written."""
+def validate_experiment_inputs(
+    document: dict, data_root, runs_root, *, result_store=None, frozen_snapshot: FrozenMarketSnapshot | None = None
+) -> tuple[dict, dict]:
+    """Validate the experiment without publishing any research artefacts."""
 
     plan = validate_experiment_document(document)
-    bound = selection_validation(result_store, document, plan, data_root, runs_root)
+    bound = selection_validation(result_store, document, plan, data_root, runs_root, frozen_snapshot=frozen_snapshot)
     research, execution = validate_request(
         _research_document(document, plan),
         data_root,
         runs_root,
         financials=bound["context"]["financials"] if bound else None,
+        frozen_snapshot=frozen_snapshot,
     )
     validate_selection_inputs(bound, research)
     _pin_candidates(research, execution, plan, data_root)
+
+    def snapshot_inputs():
+        if frozen_snapshot is not None:
+            return frozen_snapshot.inputs
+        return snapshot_registry(data_root)[research["data"]["snapshot_id"]]
+
     if plan.comparison:
         base = parse_neutralization(research.get("neutralization"))
         industry = industry_context(base)
@@ -122,18 +131,25 @@ def validate_experiment_inputs(document: dict, data_root, runs_root, *, result_s
         data_config = (
             dynamic_data(root, research)
             if research["data"]["mode"] != "snapshot"
-            else _data_config(
-                snapshot_registry(data_root)[research["data"]["snapshot_id"]][3], research["data"]["codes"]
-            )
+            else _data_config(snapshot_inputs()[3], research["data"]["codes"])
         )
         config = request_config(research, data_config, runs_root, data_root)
-        validate_comparison_inputs(config, plan, research, expected_sha=execution.get("manifest_sha256"))
+        validate_comparison_inputs(
+            config, plan, research, expected_sha=execution.get("manifest_sha256"), frozen_snapshot=frozen_snapshot
+        )
     elif research["data"]["mode"] != "snapshot" or "filters" in research["data"]:
         root = Path(execution.get("warehouse_dir", execution.get("snapshot_dir")))
-        config = request_config(research, dynamic_data(root, research), runs_root, data_root)
-        dynamic_preflight(config, plan, research, expected_sha=execution.get("manifest_sha256"))
+        data_config = (
+            _data_config(frozen_snapshot.inputs[3], research["data"]["codes"])
+            if frozen_snapshot is not None
+            else dynamic_data(root, research)
+        )
+        config = request_config(research, data_config, runs_root, data_root)
+        dynamic_preflight(
+            config, plan, research, expected_sha=execution.get("manifest_sha256"), frozen_snapshot=frozen_snapshot
+        )
     else:
-        market, _, calendar, manifest = snapshot_registry(data_root)[research["data"]["snapshot_id"]]
+        market, _, calendar, manifest = snapshot_inputs()
         config = request_config(research, _data_config(manifest, research["data"]["codes"]), runs_root, data_root)
         if len(config.data.codes) > MAX_CODES:
             raise ValueError(f"单次实验最多选择{MAX_CODES}只股票")
@@ -192,65 +208,33 @@ def experiment_total(document: dict) -> int:
     return 1 + 2 * len(document["plan"]["candidates"]) + 1
 
 
-def _verify_frozen_snapshot(context, frozen: dict) -> Path:
-    """Check the submitted snapshot (A) before anything reads market data."""
-
-    raw = frozen.get("snapshot_dir")
-    if not raw:
-        raise ValueError("提交时未冻结数据快照")
-    root = Path(context.data_root).resolve()
-    directory = Path(raw)
-    if not directory.is_absolute():
-        directory = root / directory
-    directory = directory.resolve()
-    if not directory.is_relative_to(root):
-        raise ValueError("冻结的数据快照路径不在受控目录内")
-    if not directory.is_dir():
-        raise ValueError("提交时的数据快照已不可用，请重新提交")
-    if (directory / "rejected.json").exists():
-        raise ValueError("提交时的数据快照已被隔离，请重新提交")
-    manifest_path = directory / "manifest.json"
-    if not manifest_path.is_file():
-        raise ValueError("提交时的数据快照缺少清单，请重新提交")
-    payload = manifest_path.read_bytes()
-    if hashlib.sha256(payload).hexdigest() != frozen.get("manifest_sha256"):
-        raise ValueError("排队期间股票池历史状态发生变化，请重新提交")
-    manifest = json.loads(payload)
-    if manifest.get("id") != frozen.get("data_version") or manifest.get("files") != frozen.get("files"):
-        raise ValueError("排队期间数据版本发生变化，请重新提交")
-    return directory
-
-
 def run_experiment_task(context, request: dict, execution: dict) -> dict:
-
-    if execution.get("prepare_state") == "pending":
-        # New-style task: the request in the row is the raw document; the authoritative
-        # request/execution pair is computed here, before any artefact is written. Tasks
-        # queued before this change carry a frozen execution and take the old path.
-        frozen_execution = {
-            key: execution[key]
-            for key in ("snapshot_dir", "data_version", "files", "manifest_sha256")
-            if key in execution
-        }
-        if frozen_execution:
-            resolved_dir = _verify_frozen_snapshot(context, frozen_execution)
-            # The queued payload keeps the directory relative to data_root; the rest of the
-            # worker expects an absolute path, so hand it the verified one.
-            frozen_execution["snapshot_dir"] = str(resolved_dir)
+    pending = execution.get("prepare_state") == "pending"
+    if pending:
+        # Legacy fully prepared tasks skip this branch. New fixed-pool tasks must
+        # provide a verified leaf; a missing pin must not fall back to the registry.
+        context.stage("prepare", "准备股票池并检查各候选方案的历史预热", 0)
+        data = request.get("data")
+        frozen_snapshot = (
+            load_frozen_snapshot(context.data_root, execution)
+            if isinstance(data, dict) and data.get("mode") == "snapshot"
+            else None
+        )
         request, execution = validate_experiment_inputs(
             request,
             context.data_root,
             context.runs_root,
             result_store=context.result_store_factory(None),
+            frozen_snapshot=frozen_snapshot,
         )
-        # The submitted task pinned a specific source: restore those fields so the later
-        # prepare_snapshot checks run against A instead of whatever is current.
-        execution.update(frozen_execution)
+        # Do not retain the preflight frames while the experiment runs.
+        del frozen_snapshot
 
     plan = _plan(request)
     evidence = execution.get("factor_selection")
     verify_queued_selection(context.result_store_factory(None), evidence)
-    context.stage("prepare", "准备股票池并检查各候选方案的历史预热", 0)
+    if not pending:
+        context.stage("prepare", "准备股票池并检查各候选方案的历史预热", 0)
     dynamic = request["data"]["mode"] != "snapshot" or "filters" in request["data"]
     if execution["mode"] != "snapshot":
         root, dataset_record = prepare_warehouse(context, request, execution)

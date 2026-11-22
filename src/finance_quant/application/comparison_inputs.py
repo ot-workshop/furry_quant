@@ -20,12 +20,17 @@ def candidate_config(config, candidate):
     return replace(config, factors=candidate.factors, neutralization=neutral)
 
 
-def validate_comparison_inputs(config, plan, request, *, expected_sha=None):
+def validate_comparison_inputs(config, plan, request, *, expected_sha=None, frozen_snapshot=None):
     """Check calendars and warmup here; expensive sample scoring belongs to the worker."""
     for candidate in plan.candidates:
         candidate_config(config, candidate)
         _, _, sessions, _ = load_research_input(
-            request, config.data.root, candidate.factors, config.backtest, expected_sha=expected_sha
+            request,
+            config.data.root,
+            candidate.factors,
+            config.backtest,
+            expected_sha=expected_sha,
+            frozen_snapshot=frozen_snapshot,
         )
         start, end = (
             sessions.get_loc(pd.Timestamp(config.backtest.start)),

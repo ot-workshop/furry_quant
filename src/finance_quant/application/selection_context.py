@@ -132,7 +132,7 @@ def _source_backtest(store, evaluation, start, end):
     return asdict(BacktestConfig(start, end, **values))
 
 
-def source_context(store, evaluation_id, data_root, runs_root):
+def source_context(store, evaluation_id, data_root, runs_root, *, frozen_snapshot=None):
     evaluation = store.get("evaluations", evaluation_id, hydrate=False)
     metadata = evaluation["metadata"]
     factor = store.get("factors", metadata["factor_run_id"], hydrate=False)
@@ -142,6 +142,7 @@ def source_context(store, evaluation_id, data_root, runs_root):
         runs_root,
         industry_version=provenance.get("industry_version"),
         financial_version=metadata.get("provenance", {}).get("financial_version"),
+        frozen_snapshot=frozen_snapshot,
     )
     data, option = _source_data(evaluation, options)
     neutralization = dict(provenance.get("neutralization", {"mode": "off"}))
