@@ -81,8 +81,16 @@ def filter_input(inputs, root, manifest, filters, start, end, *, industry=None, 
     )
 
 
-def load_snapshot_input(root, start, end, lookback, *, filters, industry=None, codes=None):
-    market, benchmark, calendar, manifest = load_market(Path(root))
+def load_snapshot_input(root, start, end, lookback, *, filters, industry=None, codes=None, frozen_snapshot=None):
+    if frozen_snapshot is None:
+        market, benchmark, calendar, manifest = load_market(Path(root))
+        manifest_sha256 = sha256_bytes((Path(root) / "manifest.json").read_bytes())
+    else:
+        if Path(root) != frozen_snapshot.root:
+            raise ValueError("固定池预检路径与冻结快照不一致")
+        market, benchmark, calendar, manifest = frozen_snapshot.inputs
+        market = market.copy()  # Candidate-specific filters must not mutate the shared verified input.
+        manifest_sha256 = frozen_snapshot.manifest_sha256
     if "is_suspended" not in market:
         # Legacy snapshots have no status flag. Zero-volume rows are excluded
         # conservatively; they are not evidence of a confirmed suspension.
@@ -101,7 +109,7 @@ def load_snapshot_input(root, start, end, lookback, *, filters, industry=None, c
     market = market.loc[market.date.between(sessions[position - required], pd.Timestamp(end))].copy()
     meta = {
         **manifest,
-        "manifest_sha256": sha256_bytes((Path(root) / "manifest.json").read_bytes()),
+        "manifest_sha256": manifest_sha256,
         "initial_date": sessions[position - 1].strftime("%Y-%m-%d"),
         "membership_policy": "user-selected candidates; signal-date filters; next-session execution",
         "validation_counts": manifest.get("validation_counts", {}),

@@ -33,7 +33,7 @@ from finance_quant.storage import ResultStore
 from finance_quant.storage_tables import StreamingTables, factor_frame, factor_predictions
 
 
-def load_research_input(request, warehouse_root, config, backtest, *, expected_sha=None):
+def load_research_input(request, warehouse_root, config, backtest, *, expected_sha=None, frozen_snapshot=None):
     """Load one immutable pool version with causal membership and factor prehistory."""
     market_mode = request.get("data", {}).get("mode") == "market_warehouse"
     data = request.get("data", {})
@@ -66,6 +66,7 @@ def load_research_input(request, warehouse_root, config, backtest, *, expected_s
             filters=filters,
             industry=filter_industry,
             codes=data.get("codes"),
+            frozen_snapshot=frozen_snapshot,
         )
     else:
         market, benchmark, sessions, meta = load_historical_input(

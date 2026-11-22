@@ -12,6 +12,7 @@ from test_factor_selection import parameters, sample
 from test_industry_neutralization import history
 from test_managed_data import Provider
 
+from finance_quant.application import research_requests
 from finance_quant.application.selection_context import selection_result, source_context
 from finance_quant.application.selection_experiments import verify_queued_selection
 from finance_quant.data.financials import financial_root
@@ -218,7 +219,7 @@ class VaryingProvider(Provider):
         return frame
 
 
-def test_fixed_pool_selection_keeps_original_subset_and_windows(tmp_path):
+def test_fixed_pool_selection_keeps_original_subset_and_windows(tmp_path, monkeypatch):
     data, runs = tmp_path / "data", tmp_path / "runs"
     codes = ["600000.SH", "000001.SZ", "600036.SH", "600519.SH"]
     manifest = publish_fixture_snapshot(data, codes, "20241202", "20250228", provider=VaryingProvider())
@@ -263,6 +264,13 @@ def test_fixed_pool_selection_keeps_original_subset_and_windows(tmp_path):
         "/api/v1/research/experiments", json=comparison, headers={"Idempotency-Key": "fixed-milp-comparison"}
     )
     assert response.status_code == 202, response.text
+
+    def no_discovery(*args, **kwargs):
+        pytest.fail("queued selection must validate the source against A, without discovering other datasets")
+
+    monkeypatch.setattr(research_requests, "snapshot_registry", no_discovery)
+    monkeypatch.setattr(research_requests.market_download, "warehouse_roots", no_discovery)
+    monkeypatch.setattr(research_requests, "market_roots", no_discovery)
     assert service.store.claim() == response.json()["id"]
     task = run_claimed(service, response.json()["id"])
     assert task["status"] == "succeeded", task

@@ -3,15 +3,18 @@
 import copy
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from test_dynamic_experiments import pool
 from test_industry_neutralization import history
 
+from finance_quant.application import experiment_tasks, research_requests
 from finance_quant.application.comparison_inputs import prepare_comparison
 from finance_quant.application.experiment_tasks import _plan, dynamic_data, validate_experiment_request
 from finance_quant.application.research_requests import request_config
+from finance_quant.data import pool_inputs
 from finance_quant.data.financials import FinancialBinding, financial_root
 from finance_quant.data.industries import publish_industries
 from finance_quant.research.experiments import ExperimentPlan, experiment_markdown
@@ -131,6 +134,38 @@ def test_missing_policy_paired_controls_use_identical_causal_samples(tmp_path, w
     assert again["result"]["reused"] and repeated == result
     assert store.digest("experiments", result["metadata"]["id"]) == digest
     assert all(path.read_bytes() == content for path, content in before.items())
+
+
+def test_snapshot_return_comparison_reads_verified_leaf_during_preflight(tmp_path, workspace, monkeypatch):
+    data, runs, document = setup_comparison(tmp_path, workspace, "snapshot", monkeypatch)
+    service = make_service(runs, data)
+    client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
+    preflight = experiment_tasks.validate_comparison_inputs
+    pins = []
+
+    def no_registry(*args, **kwargs):
+        pytest.fail("queued comparison must not discover snapshots")
+
+    def check_preflight(config, plan, research, *, expected_sha=None, frozen_snapshot=None):
+        pins.append(frozen_snapshot)
+
+        def no_reload(*args, **kwargs):
+            pytest.fail("comparison preflight must reuse the already-verified frames")
+
+        with monkeypatch.context() as scope:
+            scope.setattr(pool_inputs, "load_market", no_reload)
+            return preflight(config, plan, research, expected_sha=expected_sha, frozen_snapshot=frozen_snapshot)
+
+    monkeypatch.setattr(research_requests, "snapshot_registry", no_registry)
+    monkeypatch.setattr(experiment_tasks, "snapshot_registry", no_registry)
+    monkeypatch.setattr(experiment_tasks, "validate_comparison_inputs", check_preflight)
+    task, result = execute(client, service, document, "frozen-preflight")
+    stored = service.store.get(task["id"], private=True)["execution"]
+    assert len(pins) == 1
+    assert pins[0].root == data / Path(stored["snapshot_dir"])
+    assert pins[0].manifest_sha256 == stored["manifest_sha256"]
+    assert result["metadata"]["provenance"]["data_version"] == stored["data_version"]
+    assert result["metadata"]["provenance"]["manifest_sha256"] == stored["manifest_sha256"]
 
 
 def test_industry_and_factor_controls_and_independent_mode_are_effective(tmp_path, workspace, monkeypatch):

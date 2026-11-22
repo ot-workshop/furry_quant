@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from test_managed_data import Provider
 
-from finance_quant.application import experiment_tasks
+from finance_quant.application import experiment_tasks, research_requests
 from finance_quant.application import experiment_workflow as workflow
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
 from finance_quant.data.financials import financial_root
@@ -22,6 +22,7 @@ from finance_quant.research.experiments import (
 from finance_quant.research.fundamentals import fundamentals_for
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.registry import EvaluationConfig
+from finance_quant.research.universe import UniverseFilters
 from finance_quant.storage import ResultStore
 from support.fakes import make_app, make_service, run_claimed
 from support.financial import seed_earnings
@@ -368,7 +369,8 @@ def test_web_experiment_submit_never_touches_heavy_paths(tmp_path, monkeypatch):
     assert service.store.list()["total"] == 1
 
 
-def test_frozen_snapshot_survives_a_newer_publish(tmp_path):
+@pytest.mark.parametrize("filtered", [False, True], ids=["fixed", "filtered"])
+def test_frozen_snapshot_survives_a_newer_publish(tmp_path, monkeypatch, filtered):
     """B is published after the submit; the queued task must still run the frozen A."""
 
     data, runs = tmp_path / "data", tmp_path / "runs"
@@ -379,20 +381,73 @@ def test_frozen_snapshot_survives_a_newer_publish(tmp_path):
     service = make_service(runs, data)
     client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
 
+    request = experiment_request(first["id"])
+    if filtered:
+        request["data"]["filters"] = UniverseFilters(exclude_st=False, min_listing_days=0).as_dict()
     response = client.post(
-        "/api/v1/research/experiments",
-        json=experiment_request(first["id"]),
-        headers={"Idempotency-Key": "experiment-frozen-a"},
+        "/api/v1/research/experiments", json=request, headers={"Idempotency-Key": "experiment-frozen-a"}
     )
     assert response.status_code == 202, response.text
     task = response.json()
 
-    # A newer snapshot appears while the task is still queued.
-    publish_fixture_snapshot(data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider())
+    # Publishing a different range gives B distinguishable input, not a republish of A.
+    second = publish_fixture_snapshot(
+        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250214", provider=Provider(), name="second"
+    )
+    assert second["id"] != first["id"] and second["files"] != first["files"]
+    root_a = data / "research/downloads/fixture" / first["snapshot_path"]
+    root_b = data / "research/downloads/second" / second["snapshot_path"]
+    market_a = pd.read_parquet(root_a / "market.parquet")
+    calendar_a = pd.read_parquet(root_a / "calendar.parquet")
+    parquet_read = pd.read_parquet
+    preflight, dynamic_preflight = experiment_tasks._preflight, experiment_tasks.dynamic_preflight
+    reads = []
+    checked = []
 
+    def no_registry(*args, **kwargs):
+        pytest.fail("frozen A must bypass snapshot_registry")
+
+    def trace_read(path, *args, **kwargs):
+        if isinstance(path, (str, pathlib.Path)):
+            path = pathlib.Path(path).resolve()
+            assert not path.is_relative_to(root_b)
+            if path.parent == root_a:
+                reads.append(path.name)
+        return parquet_read(path, *args, **kwargs)
+
+    def assert_preflight(config, plan, market, calendar):
+        assert config.data.root == root_a
+        pd.testing.assert_frame_equal(market, market_a)
+        pd.testing.assert_frame_equal(calendar, calendar_a)
+        assert set(reads) == set(first["files"])
+        checked.append(config.data.root)
+        return preflight(config, plan, market, calendar)
+
+    def assert_dynamic(config, plan, research, *, expected_sha=None, frozen_snapshot=None):
+        assert frozen_snapshot.root == config.data.root == root_a
+        pd.testing.assert_frame_equal(frozen_snapshot.inputs[0], market_a)
+        pd.testing.assert_frame_equal(frozen_snapshot.inputs[2], calendar_a)
+        assert set(reads) == set(first["files"])
+        checked.append(config.data.root)
+        metadata, counts, coverage = dynamic_preflight(
+            config, plan, research, expected_sha=expected_sha, frozen_snapshot=frozen_snapshot
+        )
+        assert metadata["manifest_sha256"] == expected_sha == frozen_snapshot.manifest_sha256
+        return metadata, counts, coverage
+
+    monkeypatch.setattr(research_requests, "snapshot_registry", no_registry)
+    monkeypatch.setattr(experiment_tasks, "snapshot_registry", no_registry)
+    monkeypatch.setattr(pd, "read_parquet", trace_read)
+    monkeypatch.setattr(experiment_tasks, "_preflight", assert_preflight)
+    monkeypatch.setattr(experiment_tasks, "dynamic_preflight", assert_dynamic)
     assert service.store.claim() == task["id"]
     finished = run_claimed(service, task["id"])
     assert finished["status"] == "succeeded", finished["error"]
+    assert checked == [root_a]
+    assert finished["result"]["data_version"] == first["id"]
+    saved = ResultStore(runs).get("experiments", finished["result"]["experiment_run_id"])
+    assert saved["metadata"]["provenance"]["data_version"] == first["id"]
+    assert saved["metadata"]["provenance"]["data_checksums"] == first["files"]
 
 
 def _submitted(tmp_path, key):
@@ -438,6 +493,29 @@ def test_frozen_snapshot_bytes_changed_fails_without_artefacts(tmp_path):
     assert finished["status"] == "failed"
     assert "排队期间" in (finished["error"] or "")
     assert not (runs / task["id"]).exists()
+
+
+def test_frozen_snapshot_changed_market_bytes_fail_before_preflight(tmp_path, monkeypatch):
+    data, runs, service, task = _submitted(tmp_path, "experiment-frozen-market-bytes")
+    execution = service.store.get(task["id"], private=True)["execution"]
+    frozen = data / execution["snapshot_dir"]
+    manifest = (frozen / "manifest.json").read_bytes()
+    market_path = frozen / "market.parquet"
+    market_path.write_bytes(market_path.read_bytes() + b"modified")
+    assert (frozen / "manifest.json").read_bytes() == manifest
+
+    def no_preflight(*args, **kwargs):
+        pytest.fail("checksum failure must precede all preflight and projection")
+
+    monkeypatch.setattr(experiment_tasks, "validate_experiment_inputs", no_preflight)
+    monkeypatch.setattr(experiment_tasks, "prepare_snapshot", no_preflight)
+    assert service.store.claim() == task["id"]
+    finished = run_claimed(service, task["id"])
+    assert finished["status"] == "failed"
+    assert finished["error_details"]["stage"] == "prepare"
+    assert "checksum mismatch" in finished["error"]
+    assert not (data / "research/subsets").exists()
+    assert all(not (runs / category).exists() for category in ("experiments", "factors", "evaluations", "backtests"))
 
 
 def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path):
