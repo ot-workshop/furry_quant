@@ -30,6 +30,8 @@ class TaskStore(Protocol):
 
     def stage(self, identifier: str, stage: str, message: str, completed: int) -> None: ...
 
+    def save_prepared(self, identifier: str, execution: dict) -> None: ...
+
     def finish(
         self,
         identifier: str,
