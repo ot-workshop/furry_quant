@@ -10,8 +10,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, select, text, update
 
-from finance_quant.checksums import sha256_text
-from finance_quant.task_contracts import TaskConflict
+from finance_quant.task_contracts import TaskConflict, submission_fingerprint
 
 from .database import check_schema, make_engine
 from .schema import research_task as task
@@ -105,6 +104,11 @@ class PgTaskStore:
     def create(self, request, execution, key, *, connection=None):
         return self._create("research", request, execution, key, 4, connection=connection)
 
+    def find_experiment_replay(self, request, key):
+        fingerprint = submission_fingerprint("experiment", request, key)
+        with self.engine.connect() as connection:
+            return self._find_replay(connection, key, fingerprint)
+
     def create_experiment(self, request, execution, key, *, total):
         return self._create("experiment", request, execution, key, total)
 
@@ -114,15 +118,20 @@ class PgTaskStore:
         return self._create(kind, request, execution, key, total, connection=connection)
 
     def _create(self, kind, request, execution, key, total, *, connection=None):
-        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", key):
-            raise ValueError("请求标识无效，请刷新后重新提交")
-        encoded = json.dumps({"kind": kind, "request": request}, ensure_ascii=False, sort_keys=True, allow_nan=False)
+        fingerprint = submission_fingerprint(kind, request, key)
         json.dumps(execution, allow_nan=False)
-        fingerprint = sha256_text(encoded)
         if connection is not None:
             return self._create_in(connection, kind, request, fingerprint, execution, key, total)
         with self.engine.begin() as own:
             return self._create_in(own, kind, request, fingerprint, execution, key, total)
+
+    def _find_replay(self, connection, key, fingerprint):
+        row = connection.execute(select(task).where(task.c.idempotency_key == key)).mappings().first()
+        if row is None:
+            return None
+        if row["fingerprint"] != fingerprint:
+            raise conflict("同一次提交的参数已改变，请重新提交")
+        return self._public(row)
 
     def _create_in(self, connection, kind, request, fingerprint, execution, key, total):
         """Enqueue inside the caller's transaction.
@@ -134,11 +143,9 @@ class PgTaskStore:
         uncommitted rows of the same transaction on purpose; do not add caching here.
         """
         connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SUBMISSION_LOCK})
-        existing = connection.execute(select(task).where(task.c.idempotency_key == key)).mappings().first()
-        if existing:
-            if existing["fingerprint"] != fingerprint:
-                raise conflict("同一次提交的参数已改变，请重新提交")
-            return self._public(existing)
+        existing = self._find_replay(connection, key, fingerprint)
+        if existing is not None:
+            return existing
         count = connection.execute(
             select(func.count()).select_from(task).where(task.c.status.in_(["queued", "running"]))
         ).scalar_one()

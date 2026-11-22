@@ -14,9 +14,9 @@ from fastapi.testclient import TestClient
 
 from finance_quant.api import create_app
 from finance_quant.application import task_worker
-from finance_quant.application.tasks import TaskConflict, TaskService
-from finance_quant.checksums import sha256_text
+from finance_quant.application.tasks import TaskService
 from finance_quant.storage import ResultStore
+from finance_quant.task_contracts import TaskConflict, submission_fingerprint
 
 TERMINAL_MESSAGES = {"succeeded": "计算完成", "failed": "运行失败", "interrupted": "运行中断", "paused": "下载已暂停"}
 
@@ -69,20 +69,30 @@ class MemoryTaskStore:
             raise ValueError("Unsupported download task kind")
         return self._create(kind, request, execution, key, total)
 
+    def find_experiment_replay(self, request, key):
+        fingerprint = submission_fingerprint("experiment", request, key)
+        with self._lock:
+            return self._find_replay(key, fingerprint)
+
     def create_experiment(self, request, execution, key, *, total):
         return self._create("experiment", request, execution, key, total)
 
+    def _find_replay(self, key, fingerprint):
+        identifier = self._keys.get(key)
+        if identifier is None:
+            return None
+        row = self._rows[identifier]
+        if row["fingerprint"] != fingerprint:
+            raise TaskConflict("同一次提交的参数已改变，请重新提交")
+        return self._public(row)
+
     def _create(self, kind, request, execution, key, total):
-        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", key):
-            raise ValueError("请求标识无效，请刷新后重新提交")
-        fingerprint = sha256_text(json.dumps({"kind": kind, "request": request}, ensure_ascii=False, sort_keys=True))
+        fingerprint = submission_fingerprint(kind, request, key)
         json.dumps(execution, allow_nan=False)
         with self._lock:
-            if key in self._keys:
-                existing = self._rows[self._keys[key]]
-                if existing["fingerprint"] != fingerprint:
-                    raise TaskConflict("同一次提交的参数已改变，请重新提交")
-                return self._public(existing)
+            existing = self._find_replay(key, fingerprint)
+            if existing is not None:
+                return existing
             if sum(row["status"] in {"queued", "running"} for row in self._rows.values()) >= 20:
                 raise TaskConflict("排队任务已达20个，请等待或取消排队任务")
             identifier = "task-" + uuid.uuid4().hex
