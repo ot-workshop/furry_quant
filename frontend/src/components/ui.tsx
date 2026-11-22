@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type MouseEvent,
@@ -411,22 +412,57 @@ export function WrapTag({
 
 export function CollapsibleTagList({
   tags,
-  maxTagChars = 14,
-  maxVisible = 2,
+  desktop = false,
 }: {
   tags: Array<{ key: string; label: string }>;
-  maxTagChars?: number;
-  maxVisible?: number;
+  desktop?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [clipped, setClipped] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const singleLabel = desktop && tags.length === 1 ? tags[0].label : null;
+
+  useLayoutEffect(() => {
+    if (singleLabel === null || expanded) return;
+    const row = rowRef.current;
+    const label = row?.querySelector<HTMLElement>(".tag-text-single");
+    const tag = label?.parentElement;
+    if (!row || !label || !tag) return;
+
+    const text = document.createRange();
+    text.selectNodeContents(label);
+    const measure = () => {
+      // Compare to the whole row, not the space left by the button itself.
+      const labelWidth = label.getBoundingClientRect().width;
+      const tagChrome = tag.getBoundingClientRect().width - labelWidth;
+      setClipped(
+        text.getBoundingClientRect().width + tagChrome >
+          row.getBoundingClientRect().width,
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    observer.observe(label);
+    document.fonts.addEventListener("loadingdone", measure);
+    return () => {
+      observer.disconnect();
+      document.fonts.removeEventListener("loadingdone", measure);
+    };
+  }, [singleLabel, expanded]);
+
   if (!tags.length) return null;
-  const anyLong = tags.some((t) => Array.from(t.label).length > maxTagChars);
-  const collapsedCount = anyLong ? 1 : Math.min(maxVisible, tags.length);
+  const anyLong = !desktop && tags.some((t) => Array.from(t.label).length > 14);
+  const collapsedCount = Math.min(desktop || anyLong ? 1 : 2, tags.length);
   const visible = expanded ? tags : tags.slice(0, collapsedCount);
-  const hiddenCount = Math.max(0, tags.length - collapsedCount);
-  const needsToggle = hiddenCount > 0 || anyLong;
+  const hiddenCount = tags.length - collapsedCount;
+  const needsToggle =
+    expanded || hiddenCount > 0 || anyLong || (desktop && clipped);
   return (
-    <div className="tag-list-row">
+    <div
+      ref={rowRef}
+      className={expanded ? "tag-list-row tag-list-row-open" : "tag-list-row"}
+    >
       <div
         className={
           expanded ? "tag-list-inline tag-list-inline-open" : "tag-list-inline"

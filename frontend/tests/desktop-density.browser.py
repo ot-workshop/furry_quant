@@ -16,6 +16,8 @@ from playwright.sync_api import sync_playwright
 TITLE = ("沪深三百行业中性动量因子与低波动择时策略滚动样本外回测验证" * 2)[:45]
 FACTOR = ("自定义多因子研究动量衰减分行业稳定性分析与组合换手率调整" * 2)[:52]
 REASON = "数据文件缺少预期字段，工作进程无法读取结构。" * 12 + "故障原因全文末尾"
+PAIR = ["反转估值换手波动强弱分析", "市场风险暴露行业置信检验"]
+WIDTH_SENSITIVE = "市场反转行业风险暴露置信检验"
 
 
 def fixture(path):
@@ -72,6 +74,15 @@ def fixture(path):
                 }
             )
         else:
+            factors = {
+                1: [{"name": name} for name in PAIR],
+                2: [{"name": WIDTH_SENSITIVE}],
+                3: [{"name": "momentum", "window": 20}],
+            }.get(i, [
+                {"name": FACTOR if i == 0 else "momentum", "window": 20, "weight": 1},
+                {"name": "volatility", "window": 10, "weight": 0.5},
+                {"name": "mcap", "weight": 0.5},
+            ])
             items.append(
                 {
                     **common,
@@ -82,11 +93,7 @@ def fixture(path):
                     "factor_run_id": "sample",
                     "provenance": {},
                     "evaluation": {"horizons": [1, 5, 20], "quantiles": 5},
-                    "factor_config": [
-                        {"name": FACTOR if i == 0 else "momentum", "window": 20, "weight": 1},
-                        {"name": "volatility", "window": 10, "weight": 0.5},
-                        {"name": "mcap", "weight": 0.5},
-                    ],
+                    "factor_config": factors,
                 }
             )
     return {"items": items, "total": len(items)}
@@ -94,6 +101,13 @@ def fixture(path):
 
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
+        try:
+            self.serve_fixture()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            # Chromium can cancel in-flight assets when navigating or closing a page.
+            pass
+
+    def serve_fixture(self):
         path = urlparse(self.path).path
         if path.startswith("/api/"):
             payload = fixture(path)
@@ -131,6 +145,69 @@ def measure(page):
     }""")
 
 
+def check_factor_disclosure(page, width, out):
+    rows = page.locator(".ant-table-tbody > tr[data-row-key]")
+    first, pair, single, short = (rows.nth(i) for i in range(4))
+    url = page.url
+
+    # Neither label exceeded the old 12-character heuristic. From the title,
+    # one Tab must reach the visible disclosure; it must not navigate the row.
+    assert [len(name) for name in PAIR] == [12, 12]
+    button = pair.get_by_role("button", name="+1 个因子")
+    pair.get_by_role("link").focus()
+    page.keyboard.press("Tab")
+    assert button.evaluate("e => e === document.activeElement && e.matches(':focus-visible')")
+    assert button.bounding_box()["height"] >= 32
+    page.keyboard.press("Space")
+    close = pair.get_by_role("button", name="收起因子")
+    assert close.get_attribute("aria-expanded") == "true"
+    assert close.evaluate("e => e === document.activeElement")
+    assert pair.locator(".tag-expanded-item").all_text_contents() == PAIR
+    assert pair.locator(".tag-expanded-item").evaluate_all(
+        "tags => tags.every(e => e.scrollWidth <= e.clientWidth && getComputedStyle(e).fontSize === '13px')"
+    )
+    assert page.url == url
+    page.keyboard.press("Enter")
+    assert button.get_attribute("aria-expanded") == "false"
+
+    # A single short label needs no action. A single label needs a disclosure
+    # exactly when the column becomes too narrow, including on live resize.
+    assert short.get_by_role("button").count() == 0
+    if width != 1024:
+        assert single.get_by_role("button").count() == 0
+        page.set_viewport_size({"width": 1024, "height": 900})
+    toggle = single.get_by_role("button", name="展开因子")
+    toggle.wait_for()
+    assert single.locator(".tag-text-single").evaluate("e => e.scrollWidth > e.clientWidth")
+    toggle.focus()
+    page.keyboard.press("Enter")
+    single.get_by_text(WIDTH_SENSITIVE, exact=True).wait_for()
+    assert single.get_by_role("button", name="收起因子").get_attribute("aria-expanded") == "true"
+    page.keyboard.press("Space")
+    assert toggle.get_attribute("aria-expanded") == "false"
+    if width != 1024:
+        page.set_viewport_size({"width": width, "height": 900 if width == 1440 else 768})
+        toggle.wait_for(state="detached")
+        assert single.locator(".tag-text-single").evaluate("e => e.scrollWidth <= e.clientWidth")
+    assert page.url == url
+
+    button = first.get_by_role("button", name="+2 个因子")
+    assert button.bounding_box()["height"] >= 32
+    assert first.locator(".ant-tag").first.evaluate("e => getComputedStyle(e).fontSize") == "13px"
+    button.focus()
+    page.keyboard.press("Enter")
+    close = first.get_by_role("button", name="收起因子")
+    assert close.get_attribute("aria-expanded") == "true"
+    label = first.get_by_text(FACTOR + " 20日", exact=True)
+    tags = first.locator(".tag-list-inline-open")
+    assert label.evaluate("e => e.scrollWidth <= e.clientWidth")
+    assert tags.evaluate("e => e.clientWidth === e.parentElement.clientWidth")
+    assert close.evaluate("e => e.offsetTop >= e.previousElementSibling.offsetTop + e.previousElementSibling.offsetHeight")
+    assert page.url == url
+    if width == 1024:
+        page.screenshot(path=str(out / "1024-evaluations-keyboard.png"), animations="disabled")
+
+
 def capture(browser, dist, out, *, assert_candidate):
     with ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=dist)) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -158,6 +235,14 @@ def capture(browser, dist, out, *, assert_candidate):
                         continue
                     assert numbers["document"] == width, (width, label, numbers)
                     if width < 768:
+                        if path != "/":
+                            card = page.locator(".list-card").first
+                            if path == "/evaluations":
+                                card.get_by_role("button", name="+2 个因子").click()
+                                card.get_by_text(FACTOR + " 20日", exact=True).wait_for()
+                                assert page.url == origin + path
+                            card.get_by_text(TITLE, exact=True).click()
+                            page.wait_for_url(origin + path + "/sample-00-*")
                         continue
                     if path == "/":
                         assert len({top for top, _ in numbers["cards"]}) == 1, numbers
@@ -198,16 +283,8 @@ def capture(browser, dist, out, *, assert_candidate):
                         == "tabular-nums"
                     )
                     if path == "/evaluations":
-                        button = first_row.get_by_role("button", name="+2 个因子")
-                        assert button.bounding_box()["height"] >= 32
-                        button.focus()
-                        page.keyboard.press("Enter")
-                        assert first_row.get_by_role("button", name="收起因子").get_attribute("aria-expanded") == "true"
-                        first_row.get_by_text(FACTOR + " 20日", exact=True).wait_for()
-                        assert page.url == origin + path
+                        check_factor_disclosure(page, width, out)
                         assert measure(page)["table"] == numbers["table"]
-                        if width == 1024:
-                            page.screenshot(path=str(out / "1024-evaluations-keyboard.png"), animations="disabled")
                     else:
                         assert first_row.get_by_text("0.00%", exact=True).count() == 1
                         assert (
@@ -242,6 +319,13 @@ def main():
             out.mkdir(parents=True, exist_ok=True)
             result[name] = capture(browser, dist.resolve(), out, assert_candidate=name == "after")
         browser.close()
+    for width, count in [(1440, 10), (1366, 8), (1024, 10)]:
+        for route in ["backtests", "evaluations"]:
+            assert result["after"][f"{width}/{route}"]["rows"] == count, result["after"]
+    for width in [390, 320]:
+        for route in ["backtests", "evaluations", "dashboard"]:
+            key = f"{width}/{route}"
+            assert result["after"][key]["mobile"] == result["before"][key]["mobile"], key
     (args.out / "metrics.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result, indent=2))
 

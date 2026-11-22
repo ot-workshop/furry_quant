@@ -1310,6 +1310,21 @@ body {
     align-items: center;
   }
 
+  .result-list-table .tag-list-row-open {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .result-list-table .tag-list-inline-open {
+    width: 100%;
+  }
+
+  .result-list-table .tag-list-row .ant-tag {
+    margin-inline-end: 0;
+    max-width: 100%;
+    font-size: 13px;
+  }
+
   .result-list-table .tag-expand-toggle {
     min-height: 32px;
     margin-top: 0;

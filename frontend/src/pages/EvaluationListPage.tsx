@@ -106,8 +106,7 @@ export default function EvaluationListPage() {
                       width: narrowDesktop ? 172 : 224,
                       render: (_, row) => (
                         <CollapsibleTagList
-                          maxTagChars={narrowDesktop ? 8 : 12}
-                          maxVisible={narrowDesktop ? 1 : 2}
+                          desktop
                           tags={row.factor_config.map((f, idx) => ({
                             key: f.id ?? `${f.name}-${idx}`,
                             label: `${factorLabel(f.name)}${f.window ? ` ${f.window}日` : ""}`,
