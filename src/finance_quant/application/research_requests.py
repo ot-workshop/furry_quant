@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import shutil
@@ -72,12 +73,12 @@ def _backtest_dict(config):
     return result
 
 
-def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict]:
-    """Resolve a published snapshot to its leaf directory and raw manifest.
+def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict, str]:
+    """Resolve a published snapshot to (leaf dir, manifest, manifest sha256).
 
-    Reads only the manifests under the server-controlled locations `snapshot_registry`
-    uses; unlike that function it never loads market data, so it is safe on the submit
-    path. The returned directory is relative to `data_root`.
+    Exactly one bounded read per manifest: the id/files and the digest come from the same
+    bytes. The match must be unique — a duplicate id, a path outside the server-controlled
+    locations, or an unreadable/quarantined leaf raises instead of being queued.
     """
 
     root = Path(data_root).resolve()
@@ -85,20 +86,31 @@ def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict]
         *sorted(root.glob("research/downloads/*/snapshots/*")),
         *sorted(root.glob("research/subsets/*")),
     ]
+    matches: list[tuple[Path, dict, str]] = []
+    seen_paths = set()
     for path in candidates:
         resolved = path.resolve()
-        if not resolved.is_relative_to(root):
+        if not resolved.is_relative_to(root) or resolved in seen_paths:
             continue
+        seen_paths.add(resolved)
         manifest_path = resolved / "manifest.json"
         if not manifest_path.is_file():
             continue
         try:
-            manifest = json.loads(manifest_path.read_bytes())
+            payload = manifest_path.read_bytes()
+            manifest = json.loads(payload)
         except (OSError, ValueError):
             continue
-        if manifest.get("id") == snapshot_id:
-            return resolved.relative_to(root), manifest
-    raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
+        if not isinstance(manifest, dict) or manifest.get("id") != snapshot_id:
+            continue
+        if manifest.get("quarantined"):
+            raise ValueError(f"数据快照已被隔离：{snapshot_id}")
+        matches.append((resolved.relative_to(root), manifest, hashlib.sha256(payload).hexdigest()))
+    if not matches:
+        raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
+    if len(matches) > 1:
+        raise ValueError(f"数据快照标识重复：{snapshot_id}")
+    return matches[0]
 
 
 def snapshot_registry(data_root: Path) -> dict:
