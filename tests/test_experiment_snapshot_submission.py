@@ -53,6 +53,11 @@ def submit(tmp_path):
         ("data", {"mode": "index_warehouse"}, "仓库"),
         ("data", {"mode": "market_warehouse"}, "仓库"),
         ("data", {"mode": "market_warehouse", "warehouse_id": "csi300-" + "0" * 20}, "版本标识"),
+        (
+            "data",
+            {"mode": "market_warehouse", "warehouse_id": "market-" + "0" * 20, "codes": ["garbage", "600000.SH"]},
+            "自选股票代码格式无效",
+        ),
         ("evaluation", None, "因子评估"),
         ("evaluation", {"horizons": [0]}, "horizons"),
         ("backtest", {"initial_cash": 0}, "initial_cash"),

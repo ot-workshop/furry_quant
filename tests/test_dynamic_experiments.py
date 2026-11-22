@@ -129,6 +129,28 @@ def pool(tmp_path, mode, size=5):
     return data, root, document
 
 
+def test_well_formed_custom_code_outside_warehouse_defers_until_prepare(tmp_path):
+    data, _, document = pool(tmp_path, "market_warehouse", 5)
+    runs = tmp_path / "runs"
+    document["data"]["codes"] = ["600000.SH", "999999.SH"]
+    service = make_service(runs, data)
+    client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
+    response = client.post(
+        "/api/v1/research/experiments", json=document, headers={"Idempotency-Key": "market-uncovered-code"}
+    )
+    assert response.status_code == 202, response.text
+    identifier = response.json()["id"]
+    original = service.store.get(identifier, private=True)["execution"]
+    assert original["prepare_state"] == "pending"
+    assert service.store.claim() == identifier
+    task = run_claimed(service, identifier)
+    assert task["status"] == "failed"
+    assert task["error_details"]["stage"] == "prepare"
+    assert "行情覆盖范围" in task["error"]
+    assert service.store.get(identifier, private=True)["execution"] == original
+    assert service.store.list()["total"] == 1
+
+
 @pytest.mark.parametrize("mode,size", [("index_warehouse", 5), ("market_warehouse", 17), ("market_warehouse", 55)])
 def test_dynamic_split_web_native_accounts_coverage_and_all_result_links(tmp_path, monkeypatch, mode, size):
     data, root, document = pool(tmp_path, mode, size)
