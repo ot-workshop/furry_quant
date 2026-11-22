@@ -1,5 +1,8 @@
 import { CandidateEditor } from "../components/CandidateEditor";
-import { ExperimentSubmission } from "../components/ExperimentSubmission";
+import {
+  ExperimentParameters,
+  ExperimentSubmission,
+} from "../components/ExperimentSubmission";
 import { useExperimentSubmission } from "../hooks/useExperimentSubmission";
 import ReturnComparisonNew from "./ReturnComparisonNew";
 import type { ExperimentCandidateDraft as Candidate } from "../research/experiments";
@@ -227,6 +230,7 @@ function ExperimentForm({
     },
     active,
   );
+  const waiting = submission.state.kind === "waiting";
   const update = (patch: Partial<FormState>) =>
     setForm((current) => ({ ...current, ...patch }));
 
@@ -255,7 +259,7 @@ function ExperimentForm({
         subtitle="在同一股票池和交易参数下比较多个因子方案"
       />
       <div className="with-aside">
-        <Flex vertical gap={16}>
+        <ExperimentParameters waiting={waiting}>
           {seed ? (
             <Alert
               type="info"
@@ -264,7 +268,7 @@ function ExperimentForm({
               description={seed.warnings.join(" ")}
             />
           ) : null}
-          <ConfigProvider componentDisabled={Boolean(seed)}>
+          <ConfigProvider componentDisabled={Boolean(seed) || waiting}>
             <DataSection form={form} options={options} update={update} />
             <UniverseFilters form={form} options={options} update={update} />
           </ConfigProvider>
@@ -344,7 +348,9 @@ function ExperimentForm({
               {candidates.map((item, index) => (
                 <ConfigProvider
                   key={item.id}
-                  componentDisabled={Boolean(seed && item.id === "milp")}
+                  componentDisabled={
+                    Boolean(seed && item.id === "milp") || waiting
+                  }
                 >
                   <CandidateEditor
                     value={item}
@@ -371,7 +377,7 @@ function ExperimentForm({
             </Flex>
           </Card>
           <Card title="行业处理">
-            <ConfigProvider componentDisabled={Boolean(seed)}>
+            <ConfigProvider componentDisabled={Boolean(seed) || waiting}>
               <NeutralizationControls
                 form={form}
                 options={options}
@@ -381,7 +387,7 @@ function ExperimentForm({
           </Card>
           <CostSection form={form} update={update} />
           <EvaluationSection form={form} update={update} />
-        </Flex>
+        </ExperimentParameters>
         <div className="aside-sticky">
           <Card title="检查">
             {built.errors.length ? (

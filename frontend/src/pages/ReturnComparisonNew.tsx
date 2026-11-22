@@ -13,7 +13,10 @@ import {
 } from "antd";
 import { CopyOutlined } from "@ant-design/icons";
 import type { ResearchOptions, ResearchRequest } from "../api/research";
-import { ExperimentSubmission } from "../components/ExperimentSubmission";
+import {
+  ExperimentParameters,
+  ExperimentSubmission,
+} from "../components/ExperimentSubmission";
 import { useExperimentSubmission } from "../hooks/useExperimentSubmission";
 import { navigate, paths } from "../app/routes";
 import { CandidateEditor } from "../components/CandidateEditor";
@@ -124,7 +127,7 @@ export default function ReturnComparisonNew({
         back={{ to: paths.experiments(), label: "全部方案比较" }}
       />
       <div className="with-aside">
-        <Flex vertical gap={16}>
+        <ExperimentParameters waiting={submission.state.kind === "waiting"}>
           {restored?.warnings.length ? (
             <Alert
               type="warning"
@@ -224,7 +227,7 @@ export default function ReturnComparisonNew({
           </Card>
           <CostSection form={form} update={update} />
           <EvaluationSection form={form} update={update} />
-        </Flex>
+        </ExperimentParameters>
         <div className="aside-sticky">
           <Card title="检查">
             {built.errors.length ? (

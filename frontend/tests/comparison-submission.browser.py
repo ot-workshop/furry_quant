@@ -251,6 +251,9 @@ def stop_case(browser, dist, out, width, height, entry):
                 activate(submit, mode)
             assert_pending(fixture, 0)
             stop = page.get_by_role("button", name="停止等待")
+            stop.wait_for()
+            box = stop.bounding_box()
+            assert box["y"] >= 0 and box["y"] + box["height"] <= height + 1, box
             layout(stop, page, width)
             if mode == "keyboard":
                 expect(stop).to_be_focused()
@@ -347,6 +350,52 @@ def transport_case(browser, dist, entry, failure):
         context.close()
 
 
+def locked_case(browser, dist, entry, *, stop_first):
+    with serve(dist, ["hold"]) as (origin, fixture):
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        try:
+            url = prepare(page, origin, entry, "mouse")
+            primary(page, entry).click()
+            assert_pending(fixture, 0)
+            editor = input_named(page, "独立验收方案 A")
+            # Real pointer and keyboard events must not edit A while its response is held.
+            editor.scroll_into_view_if_needed()
+            box = editor.bounding_box()
+            page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+            page.keyboard.insert_text("等待中修改的 B")
+            expect(editor).to_have_value("独立验收方案 A")
+            expect(editor).to_be_disabled()
+            group = page.get_by_role("group", name="比较参数")
+            for control in group.locator("input:visible, button:visible, [role=combobox]:visible").all():
+                expect(control).to_be_disabled()
+            expect(page.get_by_role("status").get_by_text("停止等待后可继续编辑", exact=False)).to_be_visible()
+            stop = page.get_by_role("button", name="停止等待")
+            expect(stop).to_be_enabled()
+            if stop_first:
+                stop.click()
+                unknown(page)
+                expect(editor).to_be_editable()
+                editor.fill("修改后的验收方案")
+            fixture.released[0].set()
+            assert fixture.finished[0].wait(5)
+            if stop_first:
+                expect(input_named(page, "修改后的验收方案")).to_have_value("修改后的验收方案")
+                assert page.url == url
+            else:
+                page.wait_for_url(origin + "/tasks?focus=accepted-01")
+            assert len(fixture.calls) == len(fixture.accepted) == 1
+            assert_payload(fixture.calls[0], entry)
+            assert_no_cancel(fixture)
+            return {
+                "entry": entry,
+                "first": "locked-stop-edit" if stop_first else "locked-success",
+                "posts": 1,
+                "accepted": 1,
+            }
+        finally:
+            page.close()
+
+
 def success_case(browser, dist, entry):
     with serve(dist, ["ok"]) as (origin, fixture):
         page = browser.new_page(viewport={"width": 1440, "height": 900})
@@ -425,6 +474,8 @@ def main():
                 results.append(transport_case(browser, args.dist.resolve(), entry, failure))
             results.append(changed_case(browser, args.dist.resolve(), entry))
             results.append(success_case(browser, args.dist.resolve(), entry))
+            for stop_first in (False, True):
+                results.append(locked_case(browser, args.dist.resolve(), entry, stop_first=stop_first))
         browser.close()
     (args.out / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"{len(results)} Chromium / TCP fixture cases passed")

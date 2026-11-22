@@ -1,6 +1,6 @@
-import { Alert, Button, Flex } from "antd";
+import { Alert, Button, ConfigProvider, Flex, Typography } from "antd";
 import { RocketOutlined } from "@ant-design/icons";
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { paths } from "../app/routes";
 import type { ExperimentSubmissionState } from "../hooks/useExperimentSubmission";
 
@@ -9,6 +9,34 @@ const waitingEnded = {
   timeout: "等待超时。",
   response: "没有收到可确认任务的响应。",
 };
+
+export function ExperimentParameters({
+  waiting,
+  children,
+}: {
+  waiting: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <ConfigProvider componentDisabled={waiting}>
+      <fieldset
+        aria-label="比较参数"
+        disabled={waiting}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+          border: 0,
+          padding: 0,
+          margin: 0,
+          minWidth: 0,
+        }}
+      >
+        {children}
+      </fieldset>
+    </ConfigProvider>
+  );
+}
 
 export function ExperimentSubmission({
   label,
@@ -109,9 +137,14 @@ export function ExperimentSubmission({
             : label}
       </Button>
       {waiting ? (
-        <Button ref={stop} size="large" block onClick={onStop}>
-          停止等待
-        </Button>
+        <>
+          <Button ref={stop} size="large" block onClick={onStop}>
+            停止等待
+          </Button>
+          <Typography.Text type="secondary" role="status">
+            等待确认时参数不可编辑。停止等待后可继续编辑，这不会取消任务。
+          </Typography.Text>
+        </>
       ) : null}
     </Flex>
   );
