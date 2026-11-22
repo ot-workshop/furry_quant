@@ -117,6 +117,7 @@ export default function EvaluationListPage() {
                     {
                       title: "区间",
                       width: 176,
+                      align: "right",
                       hidden: narrowDesktop,
                       render: (_, row) => (
                         <ResultDateRange start={row.start} end={row.end} />

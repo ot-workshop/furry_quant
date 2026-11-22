@@ -180,6 +180,7 @@ export default function BacktestListPage() {
                       title: "区间",
                       key: "range",
                       width: narrowDesktop ? 141 : 176,
+                      align: "right",
                       sorter: (a, b) =>
                         a.start_date.localeCompare(b.start_date),
                       render: (_, row) => (

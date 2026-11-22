@@ -1347,6 +1347,10 @@ body {
   display: none;
 }
 
+.dashboard-coverage {
+  font-size: 12px;
+}
+
 @media (min-width: 1024px) {
   .dashboard-metrics.grid-4 {
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1366,6 +1370,98 @@ body {
     font-size: 24px;
     line-height: 28px;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Preserve room for both manifest notices when the summary PR is present. */
+  .dashboard-metrics:has(.dashboard-dataset-breakdown) .ant-card-body {
+    padding-block: 5px;
+  }
+
+  .dashboard-metrics
+    .dashboard-dataset-breakdown
+    > div:not(.dataset-breakdown)
+    > .ant-typography {
+    display: block;
+    line-height: 18px;
+  }
+
+  /* The summary PR uses inline sizes for the same card subtitles. */
+  .dashboard-metrics .ant-card-body .ant-typography,
+  .dashboard-metrics .ant-card-body .ant-btn-link {
+    font-size: 13px !important;
+  }
+
+  .dashboard-metrics .dashboard-coverage {
+    font-variant-numeric: tabular-nums;
+    line-height: 18px;
+  }
+
+  .dataset-breakdown {
+    position: relative;
+    min-width: 0;
+    color: var(--ant-color-text-secondary);
+    font-size: 13px;
+    line-height: 18px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .dataset-breakdown-line {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 32px;
+    white-space: nowrap;
+  }
+
+  .dataset-breakdown-chip {
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--ant-color-fill-tertiary);
+  }
+
+  .dataset-breakdown .dataset-breakdown-toggle {
+    display: inline-grid;
+    place-items: center;
+    min-width: 32px;
+    min-height: 32px;
+    margin: 0;
+    padding: 0 4px;
+    font: inherit;
+    box-sizing: border-box;
+  }
+
+  .dataset-breakdown-toggle {
+    color: var(--ant-color-primary);
+  }
+
+  .dataset-breakdown-ruler {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 100%;
+    height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .dataset-breakdown-ruler .dataset-breakdown-line {
+    width: max-content;
+  }
+
+  .dataset-breakdown-panel {
+    position: absolute;
+    z-index: 2;
+    inset: calc(100% + 2px) auto auto 0;
+    width: max-content;
+    max-width: min(260px, calc(100vw - 32px));
+    padding: 8px 16px;
+    margin: 0;
+    border: 1px solid var(--ant-color-border-secondary);
+    border-radius: 8px;
+    background: var(--ant-color-bg-elevated);
+    box-shadow: var(--ant-box-shadow-secondary);
+    list-style: none;
+    color: var(--ant-color-text);
   }
 
   .dashboard-recent-tasks .task-row {

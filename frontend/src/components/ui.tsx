@@ -420,6 +420,7 @@ export function CollapsibleTagList({
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
   const singleLabel = desktop && tags.length === 1 ? tags[0].label : null;
 
   useLayoutEffect(() => {
@@ -435,10 +436,13 @@ export function CollapsibleTagList({
       // Compare to the whole row, not the space left by the button itself.
       const labelWidth = label.getBoundingClientRect().width;
       const tagChrome = tag.getBoundingClientRect().width - labelWidth;
-      setClipped(
+      const nextClipped =
         text.getBoundingClientRect().width + tagChrome >
-          row.getBoundingClientRect().width,
-      );
+        row.getBoundingClientRect().width;
+      if (!nextClipped && document.activeElement === toggleRef.current) {
+        row.closest("tr")?.querySelector("a")?.focus({ preventScroll: true });
+      }
+      setClipped(nextClipped);
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -485,6 +489,7 @@ export function CollapsibleTagList({
       {needsToggle ? (
         <button
           type="button"
+          ref={toggleRef}
           className="task-reason-toggle tag-expand-toggle"
           aria-expanded={expanded}
           onClick={() => setExpanded((prev) => !prev)}

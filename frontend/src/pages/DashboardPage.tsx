@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import { researchApi } from "../api/research";
 import { navigate, paths } from "../app/routes";
 import { useMediaQuery } from "../app/useMediaQuery";
+import { DatasetBreakdown } from "../components/DatasetBreakdown";
 import { TaskTable } from "../components/tasks";
 import {
   AppLink,
@@ -94,10 +95,16 @@ export default function DashboardPage() {
             loading={status.loading}
           />
           {status.data ? (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              固定股票池 {fixed.length} · 沪深300历史成分 {historical.length} ·
-              条件筛选 {market.length}
-            </Typography.Text>
+            <DatasetBreakdown
+              fixed={fixed.length}
+              historical={historical.length}
+              market={market.length}
+            >
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                固定股票池 {fixed.length} · 沪深300历史成分 {historical.length}{" "}
+                · 条件筛选 {market.length}
+              </Typography.Text>
+            </DatasetBreakdown>
           ) : null}
         </Card>
         <Card>
@@ -107,7 +114,7 @@ export default function DashboardPage() {
             suffix={database ? "只" : undefined}
             loading={status.loading}
           />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          <Typography.Text type="secondary" className="dashboard-coverage">
             {database?.coverage_start
               ? `${database.coverage_start} ~ ${database.coverage_end}`
               : "数据库未连接或暂无行情"}

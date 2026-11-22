@@ -21,6 +21,11 @@ WIDTH_SENSITIVE = "市场反转行业风险暴露置信检验"
 
 
 def fixture(path):
+    if path == "/api/v1/dashboard/summary":
+        return {
+            "counts": {"fixed": 12, "historical": 2, "market": 2, "invalid": 1},
+            "database": {"securities": 5453, "coverage_start": "2020-03-02", "coverage_end": "2026-11-13"},
+        }
     if path == "/api/v1/data-status":
         return {
             "snapshots": [{"is_subset": False}] * 12,
@@ -145,6 +150,50 @@ def measure(page):
     }""")
 
 
+def check_dashboard_breakdown(page, width, out):
+    cards = page.locator(".dashboard-metrics > .ant-card")
+    line = cards.first.locator(".dataset-breakdown > .dataset-breakdown-line")
+    coverage = cards.nth(1).get_by_text("2020-03-02 ~ 2026-11-13", exact=True)
+    assert coverage.evaluate("e => getComputedStyle(e).fontSize") == "13px"
+    assert coverage.evaluate("e => getComputedStyle(e).fontVariantNumeric") == "tabular-nums"
+    assert cards.locator(".ant-typography").evaluate_all(
+        "items => items.every(e => parseFloat(getComputedStyle(e).fontSize) >= 13)"
+    )
+    assert line.evaluate("""e => {
+      const row = e.getBoundingClientRect();
+      return e.getBoundingClientRect().height === 32 && [...e.children].every(child => {
+        const box = child.getBoundingClientRect();
+        return box.right <= row.right && getComputedStyle(child).whiteSpace === 'nowrap' &&
+          getComputedStyle(child).fontSize === '13px';
+      });
+    }""")
+    button = cards.first.get_by_role("button", name="展开数据集分类", exact=False)
+    before_cards = measure(page)["cards"]
+    page.get_by_role("button", name="新建研究", exact=False).last.focus()
+    page.keyboard.press("Tab")
+    assert button.evaluate("e => e === document.activeElement && e.matches(':focus-visible')")
+    assert button.bounding_box()["height"] >= 32
+    assert button.get_attribute("aria-expanded") == "false"
+    expected_hidden = 3 - line.locator(".dataset-breakdown-chip").count()
+    assert button.inner_text() == f"+{expected_hidden}"
+    page.keyboard.press("Space")
+    close = cards.first.get_by_role("button", name="收起数据集分类", exact=False)
+    assert close.get_attribute("aria-expanded") == "true"
+    expected = ["固定股票池 12", "沪深300历史成分 2", "条件筛选 2"]
+    assert cards.first.get_by_role("list", name="数据集分类").get_by_role("listitem").all_text_contents() == expected
+    assert measure(page)["cards"] == before_cards
+    assert measure(page)["document"] == width
+    if width == 1024:
+        page.screenshot(path=str(out / "1024-dashboard-datasets.png"), animations="disabled")
+    page.keyboard.press("Escape")
+    assert button.get_attribute("aria-expanded") == "false"
+    assert button.evaluate("e => e === document.activeElement")
+    button.click()
+    assert close.get_attribute("aria-expanded") == "true"
+    cards.nth(1).click()
+    assert button.get_attribute("aria-expanded") == "false"
+
+
 def check_factor_disclosure(page, width, out):
     rows = page.locator(".ant-table-tbody > tr[data-row-key]")
     first, pair, single, short = (rows.nth(i) for i in range(4))
@@ -188,6 +237,7 @@ def check_factor_disclosure(page, width, out):
     if width != 1024:
         page.set_viewport_size({"width": width, "height": 900 if width == 1440 else 768})
         toggle.wait_for(state="detached")
+        assert single.get_by_role("link").evaluate("e => e === document.activeElement")
         assert single.locator(".tag-text-single").evaluate("e => e.scrollWidth <= e.clientWidth")
     assert page.url == url
 
@@ -235,7 +285,11 @@ def capture(browser, dist, out, *, assert_candidate):
                         continue
                     assert numbers["document"] == width, (width, label, numbers)
                     if width < 768:
-                        if path != "/":
+                        if path == "/":
+                            mobile_metrics = page.locator(".dashboard-metrics")
+                            assert mobile_metrics.get_by_text("沪深300历史成分 2", exact=False).count() == 1
+                            assert mobile_metrics.get_by_role("button", name="展开数据集分类", exact=False).count() == 0
+                        else:
                             card = page.locator(".list-card").first
                             if path == "/evaluations":
                                 card.get_by_role("button", name="+2 个因子").click()
@@ -248,6 +302,7 @@ def capture(browser, dist, out, *, assert_candidate):
                         assert len({top for top, _ in numbers["cards"]}) == 1, numbers
                         assert max(h for _, h in numbers["cards"]) <= 148, numbers
                         assert numbers["table"][0] == numbers["table"][1], numbers
+                        check_dashboard_breakdown(page, width, out)
                         link = page.locator(".dashboard-recent-tasks .task-row-meta").get_by_role("link", name="回测")
                         assert link.bounding_box()["height"] >= 32
                         button = page.get_by_role("button", name="查看完整原因")
@@ -274,6 +329,15 @@ def capture(browser, dist, out, *, assert_candidate):
                     assert title_text.evaluate("e => e.scrollWidth <= e.clientWidth && e.clientHeight >= 20")
                     assert link.bounding_box()["height"] >= 32
                     first_row = page.locator(".ant-table-tbody > tr[data-row-key]").first
+                    if path == "/backtests" or width != 1024:
+                        headers = page.get_by_role("columnheader")
+                        date_index = headers.all_inner_texts().index("区间")
+                        assert headers.nth(date_index).evaluate("e => getComputedStyle(e).textAlign") == "right"
+                        dates = first_row.get_by_role("cell").nth(date_index)
+                        assert dates.evaluate("e => getComputedStyle(e).textAlign") == "right"
+                        assert dates.locator(".result-list-number").evaluate(
+                            "e => getComputedStyle(e).fontVariantNumeric"
+                        ) == "tabular-nums"
                     meta = first_row.locator(".result-list-meta")
                     assert meta.evaluate("e => getComputedStyle(e).fontSize") == "13px"
                     assert (
