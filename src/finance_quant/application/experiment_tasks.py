@@ -233,7 +233,10 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
             if key in execution
         }
         if frozen_execution:
-            _verify_frozen_snapshot(context, frozen_execution)
+            resolved_dir = _verify_frozen_snapshot(context, frozen_execution)
+            # The queued payload keeps the directory relative to data_root; the rest of the
+            # worker expects an absolute path, so hand it the verified one.
+            frozen_execution["snapshot_dir"] = str(resolved_dir)
         request, execution = validate_experiment_inputs(
             request,
             context.data_root,

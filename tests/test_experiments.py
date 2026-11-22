@@ -414,7 +414,8 @@ def _submitted(tmp_path, key):
 
 def test_frozen_snapshot_missing_fails_without_artefacts(tmp_path):
     data, runs, service, task = _submitted(tmp_path, "experiment-frozen-missing")
-    frozen = service.store.get(task["id"], private=True)["execution"]["snapshot_dir"]
+    raw = service.store.get(task["id"], private=True)["execution"]["snapshot_dir"]
+    frozen = pathlib.Path(raw) if pathlib.Path(raw).is_absolute() else pathlib.Path(data) / raw
     shutil.rmtree(frozen)
 
     assert service.store.claim() == task["id"]
@@ -425,7 +426,8 @@ def test_frozen_snapshot_missing_fails_without_artefacts(tmp_path):
 
 def test_frozen_snapshot_bytes_changed_fails_without_artefacts(tmp_path):
     data, runs, service, task = _submitted(tmp_path, "experiment-frozen-changed")
-    frozen = pathlib.Path(service.store.get(task["id"], private=True)["execution"]["snapshot_dir"])
+    raw = service.store.get(task["id"], private=True)["execution"]["snapshot_dir"]
+    frozen = pathlib.Path(raw) if pathlib.Path(raw).is_absolute() else pathlib.Path(data) / raw
     manifest_path = frozen / "manifest.json"
     payload = json.loads(manifest_path.read_bytes())
     payload["note"] = "tampered"
