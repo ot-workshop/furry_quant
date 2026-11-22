@@ -141,7 +141,7 @@ class MemoryTaskStore:
 
         with self._lock:
             row = self._rows.get(identifier)
-            if row is None or row["status"] != "running":
+            if row is None or row["status"] != "running" or row["kind"] != "experiment":
                 raise TaskConflict("任务状态已变化，无法写入终态")
             if (row["execution"] or {}).get("prepare_state") != "pending":
                 raise TaskConflict("任务状态已变化，无法写入终态")

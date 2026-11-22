@@ -9,8 +9,8 @@ from support.fakes import MemoryTaskStore
 
 
 def _pending_task(store):
-    task = store.create_download(
-        "maintenance", {"name": "准备写一次"}, {"prepare_state": "pending"}, "prep-key-1"
+    task = store.create_experiment(
+        {"name": "准备写一次"}, {"prepare_state": "pending"}, "prep-key-1", total=6
     )
     assert store.claim() == task["id"]
     return task["id"]
@@ -33,8 +33,8 @@ def test_second_save_prepared_is_a_conflict():
 
 def test_save_prepared_refuses_a_task_that_is_not_running():
     store = MemoryTaskStore()
-    task = store.create_download(
-        "maintenance", {"name": "未认领"}, {"prepare_state": "pending"}, "prep-key-2"
+    task = store.create_experiment(
+        {"name": "未认领"}, {"prepare_state": "pending"}, "prep-key-2", total=6
     )
     with pytest.raises(TaskConflict):
         store.save_prepared(task["id"], {"prepare_state": "prepared"})
