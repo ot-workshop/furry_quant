@@ -48,9 +48,8 @@ class TaskService:
             relative_dir, manifest, manifest_sha256 = lookup_snapshot_meta(
                 self.data_root, document["data"]["snapshot_id"]
             )
-            directory = Path(self.data_root) / relative_dir
             execution.update(
-                snapshot_dir=str(directory),
+                snapshot_dir=relative_dir.as_posix(),
                 data_version=manifest["id"],
                 files=manifest["files"],
                 manifest_sha256=manifest_sha256,

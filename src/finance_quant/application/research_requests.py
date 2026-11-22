@@ -10,7 +10,9 @@ import shutil
 import tempfile
 from dataclasses import asdict
 from datetime import datetime
+from os import scandir
 from pathlib import Path
+from stat import S_ISDIR, S_ISREG
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -74,43 +76,110 @@ def _backtest_dict(config):
 
 
 def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict, str]:
-    """Resolve a published snapshot to (leaf dir, manifest, manifest sha256).
+    """Bind one published leaf without opening market data or following filesystem aliases."""
 
-    Exactly one bounded read per manifest: the id/files and the digest come from the same
-    bytes. The match must be unique — a duplicate id, a path outside the server-controlled
-    locations, or an unreadable/quarantined leaf raises instead of being queued.
-    """
+    # Manifest metadata includes security history, not the actual market rows.
+    max_manifest_bytes = 1024 * 1024
+    bytes_left = 32 * max_manifest_bytes
+    entries_left = 4096
 
-    root = Path(data_root).resolve()
-    candidates = [
-        *sorted(root.glob("research/downloads/*/snapshots/*")),
-        *sorted(root.glob("research/subsets/*")),
-    ]
-    matches: list[tuple[Path, dict, str]] = []
-    seen_paths = set()
-    for path in candidates:
-        resolved = path.resolve()
-        if not resolved.is_relative_to(root) or resolved in seen_paths:
-            continue
-        seen_paths.add(resolved)
-        manifest_path = resolved / "manifest.json"
-        if not manifest_path.is_file():
-            continue
+    def mode(path):
         try:
-            payload = manifest_path.read_bytes()
-            manifest = json.loads(payload)
-        except (OSError, ValueError):
-            continue
-        if not isinstance(manifest, dict) or manifest.get("id") != snapshot_id:
-            continue
-        if manifest.get("quarantined"):
-            raise ValueError(f"数据快照已被隔离：{snapshot_id}")
-        matches.append((resolved.relative_to(root), manifest, hashlib.sha256(payload).hexdigest()))
-    if not matches:
+            return path.lstat().st_mode
+        except FileNotFoundError:
+            return None
+
+    def require_direct(path):
+        if path.resolve(strict=True) != path:
+            raise ValueError("数据快照路径必须位于受管目录内，且不能是链接")
+
+    def directories(parent):
+        nonlocal entries_left
+        parent_mode = mode(parent)
+        if parent_mode is None:
+            return
+        require_direct(parent)
+        if not S_ISDIR(parent_mode):
+            raise ValueError("数据快照路径不是目录")
+        # scandir streams entries; stop rather than silently scan a partial inventory.
+        with scandir(parent) as entries:
+            for entry in entries:
+                entries_left -= 1
+                if entries_left < 0:
+                    raise ValueError("数据快照目录超过扫描上限，无法确认快照唯一")
+                if entry.name.startswith("."):
+                    continue  # Publisher staging directories are not snapshots.
+                path = parent / entry.name
+                if entry.is_dir(follow_symlinks=False) or entry.is_symlink():
+                    require_direct(path)
+                    if not entry.is_dir(follow_symlinks=False):
+                        raise ValueError("数据快照路径不能是链接")
+                    yield path
+
+    def candidates(research):
+        yield from directories(research / "subsets")
+        for batch in directories(research / "downloads"):
+            yield from directories(batch / "snapshots")
+
+    def unique_fields(pairs):
+        fields = {}
+        for key, value in pairs:
+            if key in fields:
+                raise ValueError("Duplicate manifest key")
+            fields[key] = value
+        return fields
+
+    match = None
+    try:
+        root = Path(data_root).resolve()
+        research = root / "research"
+        if mode(research) is not None:
+            require_direct(research)
+        for leaf in candidates(research):
+            manifest_path = leaf / "manifest.json"
+            manifest_mode = mode(manifest_path)
+            if manifest_mode is None:
+                continue  # A leaf without its atomically published manifest is not yet visible.
+            require_direct(manifest_path)
+            if not S_ISREG(manifest_mode):
+                raise ValueError("数据快照清单路径不是普通文件")
+            with manifest_path.open("rb") as manifest_file:
+                payload = manifest_file.read(min(max_manifest_bytes, bytes_left) + 1)
+            if len(payload) > max_manifest_bytes:
+                raise ValueError("数据快照清单超过大小上限")
+            bytes_left -= len(payload)
+            if bytes_left < 0:
+                raise ValueError("数据快照清单超过读取总量上限，无法确认快照唯一")
+            try:
+                manifest = json.loads(payload, object_pairs_hook=unique_fields)
+            except (ValueError, RecursionError) as error:
+                raise ValueError("无法读取数据快照清单，无法确认快照唯一") from error
+            if not isinstance(manifest, dict) or not isinstance(manifest.get("id"), str) or not manifest["id"]:
+                raise ValueError("无法读取数据快照清单标识，无法确认快照唯一")
+            if manifest["id"] != snapshot_id:
+                continue
+            if mode(leaf / "rejected.json") is not None:
+                raise ValueError(f"数据快照已被隔离：{snapshot_id}")
+            if match is not None:
+                raise ValueError(f"数据快照标识重复：{snapshot_id}")
+            if "snapshot_path" in manifest and manifest["snapshot_path"] != f"snapshots/{leaf.name}":
+                raise ValueError("数据快照清单指向其他路径")
+            files = manifest.get("files")
+            if not isinstance(files, dict) or set(files) != {"market.parquet", "benchmark.parquet", "calendar.parquet"}:
+                raise ValueError("数据快照文件摘要不完整")
+            if any(
+                not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                for digest in files.values()
+            ):
+                raise ValueError("数据快照文件摘要无效")
+            match = leaf.relative_to(root), manifest, hashlib.sha256(payload).hexdigest()
+    except (OSError, RuntimeError) as error:
+        # Missing published manifests are handled explicitly; any other I/O failure
+        # means the scan cannot prove uniqueness, even if it already saw a match.
+        raise ValueError("无法读取数据快照目录或清单，无法确认快照唯一") from error
+    if match is None:
         raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
-    if len(matches) > 1:
-        raise ValueError(f"数据快照标识重复：{snapshot_id}")
-    return matches[0]
+    return match
 
 
 def snapshot_registry(data_root: Path) -> dict:
