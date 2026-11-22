@@ -30,6 +30,7 @@ from finance_quant.data.market import FrozenMarketSnapshot, load_frozen_snapshot
 from finance_quant.data.symbols import to_qlib
 from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.experiments import SELECTION_METRIC, ExperimentPlan
+from finance_quant.research.factor_selection import SelectionParameters
 from finance_quant.research.neutralization import industry_context, parse_neutralization
 
 SHARED_BACKTEST_FIELDS = tuple(name for name in BacktestConfig.__dataclass_fields__ if name not in {"start", "end"})
@@ -114,19 +115,23 @@ def validate_selection_reference(document: dict, plan: ExperimentPlan, data_root
     if not isinstance(identifier, str) or SELECTION_ID.fullmatch(identifier) is None:
         raise ValueError("因子筛选结果标识格式无效，请回到相关性页面重新筛选")
     parameters = reference["parameters"]
-    if not isinstance(parameters, dict) or not isinstance(parameters.get("cutoff"), str):
-        raise ValueError("因子筛选引用缺少推荐截止日，请回到相关性页面重新筛选")
+    if not isinstance(parameters, dict):
+        raise ValueError("筛选参数须为对象")
     try:
-        cutoff = date.fromisoformat(parameters["cutoff"])
-    except ValueError:
-        raise ValueError("因子筛选的推荐截止日格式无效，请回到相关性页面重新筛选") from None
+        # The same parameter object the worker builds, which validates the cutoff format without
+        # reading any file; a hand-rolled parse here would drift from it.
+        selection_parameters = SelectionParameters(**parameters)
+    except TypeError:
+        raise ValueError("因子筛选引用字段与筛选参数不匹配，请回到相关性页面重新筛选") from None
+    cutoff = date.fromisoformat(selection_parameters.cutoff)
     if any(date.fromisoformat(period.start) <= cutoff for period in plan.periods):
         raise ValueError("因子筛选后的开发、验证、测试区间必须全部晚于推荐截止日")
     if not any(candidate.id == "milp" for candidate in plan.candidates):
         raise ValueError("比较计划缺少来源筛选的 MILP 候选方案")
     data = document["data"]
-    if isinstance(data, dict) and data.get("mode") in {"index_warehouse", "market_warehouse"}:
-        if data.get("warehouse_id") not in data_version_ids(data_root):
+    mode = data.get("mode") if isinstance(data, dict) else None
+    if mode in {"index_warehouse", "market_warehouse"}:
+        if data.get("warehouse_id") not in data_version_ids(data_root, mode):
             raise ValueError("沪深300历史成分版本不存在或已变化，请刷新数据列表")
 
 

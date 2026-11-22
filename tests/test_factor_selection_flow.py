@@ -12,7 +12,7 @@ from test_factor_selection import parameters, sample
 from test_industry_neutralization import history
 from test_managed_data import Provider
 
-from finance_quant.application import research_requests
+from finance_quant.application import research_requests, selection_context
 from finance_quant.application.selection_context import selection_result, source_context
 from finance_quant.application.selection_experiments import verify_queued_selection
 from finance_quant.data.financials import financial_root
@@ -169,12 +169,17 @@ def test_handoff_rejects_references_the_request_settles_alone(tmp_path):
         # rejects this before the worker. A tampered two-factor candidate set is below.
         changed["plan"]["candidates"][0]["factors"][0]["weight"] = 0.5
 
+    def unterminated_cutoff(changed):
+        # The worker's own parameter object refuses this date format without reading anything.
+        changed["factor_selection"]["parameters"]["cutoff"] = "20240123"
+
     cases = [
         ("date", pre_cutoff_start, "必须全部晚于推荐截止日"),
         ("pool", unknown_pool, "历史成分版本不存在或已变化"),
         ("ref", malformed_reference, "标识格式无效"),
         ("missing", missing_candidate, "缺少来源筛选的 MILP 候选方案"),
         ("weight", lightened_weight, "factor weights must sum to 1"),
+        ("cutoff-format", unterminated_cutoff, "筛选日期须为 YYYY-MM-DD"),
     ]
     for name, change, message in cases:
         changed = copy.deepcopy(request)
@@ -199,6 +204,40 @@ def test_handoff_rejects_references_the_request_settles_alone(tmp_path):
         params={**{k: v for k, v in late.items() if v is not None}, "selection_id": selected["selection_id"]},
     )
     assert response.status_code == 422 and "交易日" in response.text
+
+
+def test_handoff_recognises_the_pool_version_without_reading_data(tmp_path, monkeypatch):
+    """Checking the pool version reads one manifest: no parquet, no coverage, no selection."""
+
+    client, service, store, evaluation_id, request, _ = source(tmp_path)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("the request path must not read market data or run the selection")
+
+    monkeypatch.setattr(pd, "read_parquet", forbidden)
+    monkeypatch.setattr(research_requests, "security_coverage", forbidden)
+    monkeypatch.setattr(selection_context, "select_factors", forbidden)
+
+    accepted = client.post(
+        "/api/v1/research/experiments", json=request, headers={"Idempotency-Key": "pool-cheap-published"}
+    )
+    assert accepted.status_code == 202, accepted.text
+
+    unknown = copy.deepcopy(request)
+    unknown["data"]["warehouse_id"] = "another-version"
+    refused = client.post(
+        "/api/v1/research/experiments", json=unknown, headers={"Idempotency-Key": "pool-cheap-unknown"}
+    )
+    assert refused.status_code == 422, refused.text
+    assert "历史成分版本不存在或已变化" in refused.text
+
+    # The same id under another mode is not that mode's version: ids are looked up per mode.
+    crossed = copy.deepcopy(request)
+    crossed["data"]["mode"] = "market_warehouse"
+    refused = client.post(
+        "/api/v1/research/experiments", json=crossed, headers={"Idempotency-Key": "pool-cheap-crossed"}
+    )
+    assert refused.status_code == 422, refused.text
 
 
 def test_handoff_defers_edits_that_need_the_calendar_or_the_source(tmp_path):
@@ -250,10 +289,14 @@ def test_handoff_defers_edits_that_need_the_calendar_or_the_source(tmp_path):
         )
         assert response.status_code == 202, (name, response.text)
         identifier = response.json()["id"]
+        frozen = service.store.get(identifier, private=True)["execution"]
+        assert frozen["prepare_state"] == "pending"
         assert service.store.claim() == identifier
         task = run_claimed(service, identifier)
         assert task["status"] == "failed", (name, task)
         assert message in (task["error"] or ""), (name, task["error"])
+        assert task["error_details"]["stage"] == "prepare", (name, task["error_details"])
+        assert service.store.get(identifier, private=True)["execution"] == frozen, name
     assert not list(store.root.glob("experiments/*/result.json"))
 
 

@@ -14,6 +14,27 @@ from finance_quant.data.temporal_audit import restore_valuation_dates
 from finance_quant.research.universe import select_universe
 
 SCHEMA = "historical-market-warehouse-v1"
+ID_PREFIX = "market-"
+# The option builder hashes the manifest's own bytes; a caller that only needs to recognise a
+# version reads those bytes alone (bounded), never the calendar or reference parquet files.
+MANIFEST_LIMIT = 8 * 1024 * 1024
+
+
+def manifest_id(raw: bytes) -> str:
+    """The option id carried by one manifest's own bytes."""
+
+    return ID_PREFIX + sha256_bytes(raw)[:20]
+
+
+def manifest_only_id(root) -> str | None:
+    """The id this version is offered under, from its manifest alone, or None if unreadable."""
+
+    try:
+        with (Path(root) / "manifest.json").open("rb") as stream:
+            raw = stream.read(MANIFEST_LIMIT + 1)
+    except OSError:
+        return None
+    return manifest_id(raw) if len(raw) <= MANIFEST_LIMIT else None
 
 
 def market_roots(data_root):
@@ -52,7 +73,7 @@ def market_option(root):
         "date",
     ]
     return {
-        "id": "market-" + digest[:20],
+        "id": ID_PREFIX + digest[:20],
         "manifest_sha256": digest,
         "label": "沪深A股全市场" if complete else f"已下载股票集合（{len(manifest['assets'])}只）",
         "full_market": complete,

@@ -29,10 +29,12 @@ from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConf
 from finance_quant.data.benchmarks import benchmark_options
 from finance_quant.data.execution_universe import validate_execution_universe
 from finance_quant.data.financials import FinancialBinding, FinancialStore, covered_codes, financial_root
+from finance_quant.data.historical_warehouse import manifest_only_id as warehouse_manifest_id
 from finance_quant.data.historical_warehouse import warehouse_header, warehouse_option
 from finance_quant.data.industries import optional_industries
 from finance_quant.data.managed import atomic_json, coverage_report
 from finance_quant.data.market import FrozenMarketSnapshot, load_market
+from finance_quant.data.market_universe import manifest_only_id as market_manifest_id
 from finance_quant.data.market_universe import market_option, market_roots
 from finance_quant.data.pool_inputs import security_coverage
 from finance_quant.data.shared_market import validation_counts
@@ -349,23 +351,23 @@ def research_options(
     }
 
 
-def data_version_ids(data_root: Path) -> set[str]:
-    """Ids of the warehouse versions offered right now, read from their manifests only.
+def data_version_ids(data_root: Path, mode: str) -> set[str]:
+    """Ids the server offers for one data mode, read from each version's manifest alone.
 
-    A selection handoff may only point at a stock pool the server can still describe; the
-    market rows themselves are never loaded here.
+    A selection handoff may only point at a stock pool that is still published for that mode.
+    Only ``manifest.json`` is opened (bounded, one file per version): the option builders derive
+    the same id from the same bytes, so the check neither decodes calendar or reference parquet
+    files nor runs any coverage statistics.
     """
 
     root = Path(data_root).resolve()
-    ids = {
-        option["id"]
-        for version_root in market_download.warehouse_roots(root)
-        if (option := warehouse_option(version_root)) is not None
-    }
-    ids.update(
-        option["id"] for version_root in market_roots(root) if (option := market_option(version_root)) is not None
-    )
-    return ids
+    if mode == "index_warehouse":
+        versions, identifier = market_download.warehouse_roots(root), warehouse_manifest_id
+    elif mode == "market_warehouse":
+        versions, identifier = market_roots(root), market_manifest_id
+    else:
+        return set()
+    return {found for version_root in versions if (found := identifier(version_root)) is not None}
 
 
 def financial_summary(data_root: Path, *, version=None) -> dict | None:

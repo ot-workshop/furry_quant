@@ -16,6 +16,28 @@ from finance_quant.data.pool_inputs import security_coverage
 from finance_quant.data.symbols import to_qlib
 from finance_quant.data.temporal_audit import restore_valuation_dates
 
+ID_PREFIX = "csi300-"
+# The option builders hash the manifest's own bytes; a caller that only needs to recognise a
+# version reads those bytes alone (bounded), never the calendar or reference parquet files.
+MANIFEST_LIMIT = 8 * 1024 * 1024
+
+
+def manifest_id(raw: bytes) -> str:
+    """The option id carried by one manifest's own bytes."""
+
+    return ID_PREFIX + sha256_bytes(raw)[:20]
+
+
+def manifest_only_id(root) -> str | None:
+    """The id this version is offered under, from its manifest alone, or None if unreadable."""
+
+    try:
+        with (Path(root) / "manifest.json").open("rb") as stream:
+            raw = stream.read(MANIFEST_LIMIT + 1)
+    except OSError:
+        return None
+    return manifest_id(raw) if len(raw) <= MANIFEST_LIMIT else None
+
 
 def warehouse_header(root):
     root = Path(root).resolve()
@@ -42,7 +64,7 @@ def warehouse_option(root):
         "date",
     ]
     return {
-        "id": "csi300-" + digest[:20],
+        "id": ID_PREFIX + digest[:20],
         "manifest_sha256": digest,
         "label": "沪深300历史成分股（每日动态股票池）",
         **({"shared_version": manifest["shared_version"]} if manifest.get("shared_version") else {}),
