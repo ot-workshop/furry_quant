@@ -332,10 +332,15 @@ export const researchApi = {
       body,
       headers: { "Idempotency-Key": key },
     }),
-  submitExperiment: (body: ExperimentRequest, key: string) =>
+  submitExperiment: (
+    body: ExperimentRequest,
+    key: string,
+    signal?: AbortSignal,
+  ) =>
     request<ResearchTask>("/research/experiments", {
       method: "POST",
       body,
+      signal,
       headers: { "Idempotency-Key": key },
     }),
   cancel: (taskId: string) =>

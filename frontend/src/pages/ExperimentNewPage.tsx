@@ -1,4 +1,9 @@
 import { CandidateEditor } from "../components/CandidateEditor";
+import {
+  ExperimentParameters,
+  ExperimentSubmission,
+} from "../components/ExperimentSubmission";
+import { useExperimentSubmission } from "../hooks/useExperimentSubmission";
 import ReturnComparisonNew from "./ReturnComparisonNew";
 import type { ExperimentCandidateDraft as Candidate } from "../research/experiments";
 import {
@@ -9,7 +14,7 @@ import {
 import { selectionOptions } from "../research/selection-draft";
 import { buildExperiment } from "../research/experiments";
 import { NeutralizationControls } from "../research/sections/NeutralizationControls";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Alert,
   App,
@@ -24,9 +29,8 @@ import {
   Typography,
   Tabs,
 } from "antd";
-import { PlusOutlined, RocketOutlined } from "@ant-design/icons";
+import { PlusOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
-import { describeError, newIdempotencyKey } from "../api/http";
 import {
   researchApi,
   type FactorDefinition,
@@ -85,6 +89,11 @@ export default function ExperimentNewPage({
   selection?: string | null;
 }) {
   const fromTask = new URLSearchParams(window.location.search).get("from");
+  const [tab, setTab] = useState(() =>
+    new URLSearchParams(window.location.search).get("mode") === "comparison"
+      ? "comparison"
+      : "split",
+  );
   const resource = useApiResource(
     async (signal) => {
       const reference = selection ? parseSelectionReference(selection) : null;
@@ -152,16 +161,14 @@ export default function ExperimentNewPage({
       key={selection ?? "manual"}
       options={options.data}
       seed={resource.data?.seed ?? null}
+      active={Boolean(selection) || tab === "split"}
     />
   );
   if (selection) return splitForm;
   return (
     <Tabs
-      defaultActiveKey={
-        new URLSearchParams(window.location.search).get("mode") === "comparison"
-          ? "comparison"
-          : "split"
-      }
+      activeKey={tab}
+      onChange={setTab}
       items={[
         { key: "split", label: "分段比较", children: splitForm },
         {
@@ -171,6 +178,7 @@ export default function ExperimentNewPage({
             <ReturnComparisonNew
               options={options.data}
               research={resource.data?.baseline ?? null}
+              active={tab === "comparison"}
             />
           ),
         },
@@ -182,9 +190,11 @@ export default function ExperimentNewPage({
 function ExperimentForm({
   options,
   seed,
+  active,
 }: {
   options: ResearchOptions;
   seed: SelectionDraft | null;
+  active: boolean;
 }) {
   const { message } = App.useApp();
   const definitions = options.factor_definitions;
@@ -212,9 +222,15 @@ function ExperimentForm({
     validation: seed?.periods.validation.start ?? "",
     test: seed?.periods.test.start ?? "",
   });
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const key = useRef<{ fingerprint: string; key: string } | null>(null);
+  const submission = useExperimentSubmission(
+    "experiment",
+    (task) => {
+      message.success(`已提交「${task.name || form.name}」`);
+      navigate(paths.tasks(task.id));
+    },
+    active,
+  );
+  const waiting = submission.state.kind === "waiting";
   const update = (patch: Partial<FormState>) =>
     setForm((current) => ({ ...current, ...patch }));
 
@@ -224,27 +240,6 @@ function ExperimentForm({
     [form, options, candidates, splits, seed],
   );
   const periods = built.periods;
-
-  async function submit() {
-    if (!built.request) return;
-    const fingerprint = JSON.stringify(built.request);
-    if (key.current?.fingerprint !== fingerprint)
-      key.current = { fingerprint, key: newIdempotencyKey("experiment") };
-    setSubmitting(true);
-    setSubmitError(null);
-    try {
-      const task = await researchApi.submitExperiment(
-        built.request,
-        key.current.key,
-      );
-      message.success(`已提交「${task.name}」`);
-      navigate(paths.tasks(task.id));
-    } catch (error) {
-      setSubmitError(describeError(error));
-    } finally {
-      setSubmitting(false);
-    }
-  }
 
   const allowed = new Set(dates);
   const disabled = (day: Dayjs) => {
@@ -264,7 +259,7 @@ function ExperimentForm({
         subtitle="在同一股票池和交易参数下比较多个因子方案"
       />
       <div className="with-aside">
-        <Flex vertical gap={16}>
+        <ExperimentParameters waiting={waiting}>
           {seed ? (
             <Alert
               type="info"
@@ -273,7 +268,7 @@ function ExperimentForm({
               description={seed.warnings.join(" ")}
             />
           ) : null}
-          <ConfigProvider componentDisabled={Boolean(seed)}>
+          <ConfigProvider componentDisabled={Boolean(seed) || waiting}>
             <DataSection form={form} options={options} update={update} />
             <UniverseFilters form={form} options={options} update={update} />
           </ConfigProvider>
@@ -353,7 +348,9 @@ function ExperimentForm({
               {candidates.map((item, index) => (
                 <ConfigProvider
                   key={item.id}
-                  componentDisabled={Boolean(seed && item.id === "milp")}
+                  componentDisabled={
+                    Boolean(seed && item.id === "milp") || waiting
+                  }
                 >
                   <CandidateEditor
                     value={item}
@@ -380,7 +377,7 @@ function ExperimentForm({
             </Flex>
           </Card>
           <Card title="行业处理">
-            <ConfigProvider componentDisabled={Boolean(seed)}>
+            <ConfigProvider componentDisabled={Boolean(seed) || waiting}>
               <NeutralizationControls
                 form={form}
                 options={options}
@@ -390,7 +387,7 @@ function ExperimentForm({
           </Card>
           <CostSection form={form} update={update} />
           <EvaluationSection form={form} update={update} />
-        </Flex>
+        </ExperimentParameters>
         <div className="aside-sticky">
           <Card title="检查">
             {built.errors.length ? (
@@ -410,27 +407,13 @@ function ExperimentForm({
                 配置检查通过；服务器会再检查每个方案的历史预热。
               </Typography.Text>
             )}
-            {submitError ? (
-              <Alert
-                type="error"
-                showIcon
-                title="提交失败"
-                description={submitError}
-                style={{ marginTop: 12 }}
-              />
-            ) : null}
-            <Button
-              type="primary"
-              block
-              size="large"
-              icon={<RocketOutlined />}
-              disabled={!built.request}
-              loading={submitting}
-              style={{ marginTop: 16 }}
-              onClick={() => void submit()}
-            >
-              提交方案比较
-            </Button>
+            <ExperimentSubmission
+              label="提交方案比较"
+              state={submission.state}
+              fingerprint={built.request ? JSON.stringify(built.request) : null}
+              onSubmit={() => void submission.submit(built.request)}
+              onStop={submission.stopWaiting}
+            />
           </Card>
         </div>
       </div>
