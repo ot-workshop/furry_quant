@@ -12,6 +12,7 @@ from typing import Any
 from finance_quant.application.experiment_tasks import (
     experiment_total,
     validate_experiment_document,
+    validate_selection_reference,
 )
 from finance_quant.application.research_requests import lookup_snapshot_meta, validate_request
 from finance_quant.task_contracts import TaskConflict as TaskConflict
@@ -45,6 +46,7 @@ class TaskService:
         # Cheap checks only: the expensive validation runs in the worker's prepare stage,
         # so a comparison submission returns as soon as it is queued.
         plan = validate_experiment_document(document)
+        validate_selection_reference(document, plan, self.data_root)
         execution = {
             "prepare_state": "pending",
             "candidates": [candidate.id for candidate in plan.candidates],

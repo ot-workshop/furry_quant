@@ -147,34 +147,45 @@ def test_selection_handoff_runs_post_cutoff_native_comparison_without_modifying_
     assert report.status_code == 200 and "推荐截止日：2024-01-23" in report.text
 
 
-def test_handoff_rejects_tampering_and_pre_cutoff_comparison(tmp_path):
+def test_handoff_rejects_references_the_request_settles_alone(tmp_path):
+    """Each early rule keeps its own reason, and none of them queues a task."""
+
     client, service, store, evaluation_id, request, _ = source(tmp_path)
-    variants = []
-    for kind in ("date", "window", "weight", "pool", "neutralization", "ref", "factor", "missing"):
+
+    def pre_cutoff_start(changed):
+        changed["plan"]["periods"]["development"]["start"] = "2024-01-23"
+
+    def unknown_pool(changed):
+        changed["data"]["warehouse_id"] = "another-version"
+
+    def malformed_reference(changed):
+        changed["factor_selection"]["selection_id"] = "forged"
+
+    def missing_candidate(changed):
+        changed["plan"]["candidates"][0]["id"] = "not-milp"
+
+    def lightened_weight(changed):
+        # The selected scheme has one factor, so its weight can only be 1: the document shape
+        # rejects this before the worker. A tampered two-factor candidate set is below.
+        changed["plan"]["candidates"][0]["factors"][0]["weight"] = 0.5
+
+    cases = [
+        ("date", pre_cutoff_start, "必须全部晚于推荐截止日"),
+        ("pool", unknown_pool, "历史成分版本不存在或已变化"),
+        ("ref", malformed_reference, "标识格式无效"),
+        ("missing", missing_candidate, "缺少来源筛选的 MILP 候选方案"),
+        ("weight", lightened_weight, "factor weights must sum to 1"),
+    ]
+    for name, change, message in cases:
         changed = copy.deepcopy(request)
-        if kind == "date":
-            changed["plan"]["periods"]["development"]["start"] = "2024-01-23"
-        elif kind == "window":
-            changed["plan"]["candidates"][0]["factors"][0]["window"] = 3
-        elif kind == "weight":
-            changed["plan"]["candidates"][0]["factors"][0]["weight"] = 0.5
-        elif kind == "pool":
-            changed["data"]["warehouse_id"] = "another-version"
-        elif kind == "neutralization":
-            changed["neutralization"]["mode"] = "industry"
-        elif kind == "ref":
-            changed["factor_selection"]["selection_id"] = "forged"
-        elif kind == "factor":
-            changed["plan"]["candidates"][0]["factors"][0]["name"] = "value"
-        else:
-            changed["plan"]["candidates"][0]["id"] = "not-milp"
-        variants.append(changed)
-    for index, changed in enumerate(variants):
+        change(changed)
         response = client.post(
-            "/api/v1/research/experiments", json=changed, headers={"Idempotency-Key": f"reject-tampering-{index}"}
+            "/api/v1/research/experiments", json=changed, headers={"Idempotency-Key": f"early-{name}"}
         )
-        assert response.status_code == 422, response.text
+        assert response.status_code == 422, (name, response.text)
+        assert message in response.text, (name, response.text)
     assert service.store.list()["total"] == 1
+
     params = request["factor_selection"]["parameters"]
     response = client.get(
         f"/api/v1/evaluations/{evaluation_id}/selection/draft",
@@ -188,6 +199,62 @@ def test_handoff_rejects_tampering_and_pre_cutoff_comparison(tmp_path):
         params={**{k: v for k, v in late.items() if v is not None}, "selection_id": selected["selection_id"]},
     )
     assert response.status_code == 422 and "交易日" in response.text
+
+
+def test_handoff_defers_edits_that_need_the_calendar_or_the_source(tmp_path):
+    """Later-start, window, factor, candidate-set, industry and forged-fingerprint edits queue.
+
+    None of them may be settled by the request alone, so each one is accepted with 202 and
+    rejected by the worker's prepare stage with its own reason, leaving no result behind.
+    """
+
+    client, service, store, evaluation_id, request, _ = source(tmp_path)
+
+    def later_start(changed):
+        # One trading day after the cutoff and still later than it: only the calendar knows
+        # that this single-day development window cannot hold the horizon.
+        changed["plan"]["periods"]["development"]["start"] = "2024-01-25"
+
+    def wider_window(changed):
+        changed["plan"]["candidates"][0]["factors"][0]["window"] = 3
+
+    def other_factor(changed):
+        changed["plan"]["candidates"][0]["factors"] = [{"name": "momentum", "window": 2, "weight": 1}]
+
+    def extra_factor(changed):
+        changed["plan"]["candidates"][0]["factors"] = [
+            {"name": "reversal", "window": 2, "skip": 0, "weight": 0.5},
+            {"name": "momentum", "window": 2, "weight": 0.5},
+        ]
+
+    def industry_neutral(changed):
+        changed["neutralization"]["mode"] = "industry"
+
+    def forged_fingerprint(changed):
+        # Well-formed but not the fingerprint of this source: only the worker can recompute it.
+        changed["factor_selection"]["selection_id"] = "factor-selection-000000000000"
+
+    cases = [
+        ("date", later_start, "每个区间的交易日数须超过最长评估持有期"),
+        ("window", wider_window, "推荐组合的因子、窗口或等权权重已修改"),
+        ("factor", other_factor, "推荐组合的因子、窗口或等权权重已修改"),
+        ("candidates", extra_factor, "推荐组合已修改，请重新筛选后创建比较"),
+        ("neutralization", industry_neutral, "历史行业数据尚未下载"),
+        ("ref", forged_fingerprint, "来源评估或筛选算法已变化"),
+    ]
+    for name, change, message in cases:
+        changed = copy.deepcopy(request)
+        change(changed)
+        response = client.post(
+            "/api/v1/research/experiments", json=changed, headers={"Idempotency-Key": f"defer-{name}"}
+        )
+        assert response.status_code == 202, (name, response.text)
+        identifier = response.json()["id"]
+        assert service.store.claim() == identifier
+        task = run_claimed(service, identifier)
+        assert task["status"] == "failed", (name, task)
+        assert message in (task["error"] or ""), (name, task["error"])
+    assert not list(store.root.glob("experiments/*/result.json"))
 
 
 def test_modified_source_after_queue_does_not_run_comparison(tmp_path):

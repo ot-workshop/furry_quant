@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import re
 import shutil
@@ -25,7 +24,7 @@ from finance_quant.application.market_requests import (
     validate_pool_filters,
 )
 from finance_quant.application.research_readiness import validate_warmup
-from finance_quant.checksums import file_sha256, sha256_text
+from finance_quant.checksums import file_sha256, sha256_bytes, sha256_text
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
 from finance_quant.data.benchmarks import benchmark_options
 from finance_quant.data.execution_universe import validate_execution_universe
@@ -172,7 +171,7 @@ def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict,
                 for digest in files.values()
             ):
                 raise ValueError("数据快照文件摘要无效")
-            match = leaf.relative_to(root), manifest, hashlib.sha256(payload).hexdigest()
+            match = leaf.relative_to(root), manifest, sha256_bytes(payload)
     except (OSError, RuntimeError) as error:
         # Missing published manifests are handled explicitly; any other I/O failure
         # means the scan cannot prove uniqueness, even if it already saw a match.
@@ -348,6 +347,25 @@ def research_options(
         },
         "limits": {"max_codes": MAX_CODES, "max_queued_tasks": 20},
     }
+
+
+def data_version_ids(data_root: Path) -> set[str]:
+    """Ids of the warehouse versions offered right now, read from their manifests only.
+
+    A selection handoff may only point at a stock pool the server can still describe; the
+    market rows themselves are never loaded here.
+    """
+
+    root = Path(data_root).resolve()
+    ids = {
+        option["id"]
+        for version_root in market_download.warehouse_roots(root)
+        if (option := warehouse_option(version_root)) is not None
+    }
+    ids.update(
+        option["id"] for version_root in market_roots(root) if (option := market_option(version_root)) is not None
+    )
+    return ids
 
 
 def financial_summary(data_root: Path, *, version=None) -> dict | None:
