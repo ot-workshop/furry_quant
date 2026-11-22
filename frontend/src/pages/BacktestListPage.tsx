@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Input, Table, Tag, Typography } from "antd";
+import { Input, Table, Tag } from "antd";
 import { SearchOutlined } from "@ant-design/icons";
 import { api } from "../api/client";
 import { navigate, paths } from "../app/routes";
@@ -13,6 +13,12 @@ import {
   Signed,
   TableScroll,
 } from "../components/ui";
+import {
+  isResultRowBackground,
+  ResultDateRange,
+  ResultReturn,
+  ResultTitle,
+} from "../components/resultList";
 import { useApiResource } from "../hooks/useApiResource";
 import type { BacktestSummary } from "../types";
 import { formatDateTime, formatPercent } from "../utils/format";
@@ -25,6 +31,9 @@ const STRATEGIES: Record<string, string> = {
 
 export default function BacktestListPage() {
   const isMobile = useMediaQuery("(max-width: 767px)");
+  const narrowDesktop = useMediaQuery(
+    "(min-width: 1024px) and (max-width: 1199px)",
+  );
   const list = useApiResource((signal) => api.backtests(signal), []);
   const [query, setQuery] = useState("");
   const items = useMemo(
@@ -108,6 +117,8 @@ export default function BacktestListPage() {
               <TableScroll label="回测列表">
                 <Table<BacktestSummary>
                   rowKey="id"
+                  className="result-list-table"
+                  tableLayout="fixed"
                   dataSource={items}
                   pagination={{
                     pageSize: 20,
@@ -116,64 +127,88 @@ export default function BacktestListPage() {
                   }}
                   rowClassName={() => "clickable-row"}
                   onRow={(row) => ({
-                    onClick: () => navigate(paths.backtest(row.id)),
+                    onClick: (event) => {
+                      if (isResultRowBackground(event))
+                        navigate(paths.backtest(row.id));
+                    },
                   })}
                   columns={[
                     {
                       title: "回测",
                       key: "name",
-                      render: (_, row) => (
-                        <div>
-                          <Typography.Text strong>{row.name}</Typography.Text>
-                          <div>
-                            <Typography.Text
-                              type="secondary"
-                              style={{ fontSize: 12 }}
-                            >
-                              {row.id}
-                            </Typography.Text>
-                          </div>
-                        </div>
-                      ),
+                      render: (_, row) => {
+                        const strategyLabel =
+                          STRATEGIES[row.strategy] ?? row.strategy;
+                        return (
+                          <ResultTitle
+                            to={paths.backtest(row.id)}
+                            name={row.name}
+                            meta={
+                              <>
+                                {narrowDesktop ? (
+                                  <span
+                                    className="result-list-strategy"
+                                    title={strategyLabel}
+                                  >
+                                    {strategyLabel}
+                                  </span>
+                                ) : null}
+                                <span className="result-list-id" title={row.id}>
+                                  {row.id}
+                                </span>
+                              </>
+                            }
+                          />
+                        );
+                      },
                     },
                     {
                       title: "类型",
                       key: "strategy",
-                      width: 140,
+                      hidden: narrowDesktop,
+                      width: 126,
                       render: (_, row) => (
-                        <Tag>{STRATEGIES[row.strategy] ?? row.strategy}</Tag>
+                        <Tag
+                          className="result-list-strategy"
+                          title={STRATEGIES[row.strategy] ?? row.strategy}
+                        >
+                          {STRATEGIES[row.strategy] ?? row.strategy}
+                        </Tag>
                       ),
                     },
                     {
                       title: "区间",
                       key: "range",
-                      width: 210,
+                      width: narrowDesktop ? 141 : 176,
+                      align: "right",
                       sorter: (a, b) =>
                         a.start_date.localeCompare(b.start_date),
-                      render: (_, row) => `${row.start_date} ~ ${row.end_date}`,
+                      render: (_, row) => (
+                        <ResultDateRange
+                          start={row.start_date}
+                          end={row.end_date}
+                        />
+                      ),
                     },
                     {
                       title: "总收益",
                       key: "ret",
-                      width: 110,
+                      width: 88,
                       align: "right",
                       sorter: (a, b) =>
                         (a.metrics?.total_return ?? -Infinity) -
                         (b.metrics?.total_return ?? -Infinity),
                       render: (_, row) => (
-                        <Signed
-                          value={row.metrics?.total_return}
-                          format={(v) => formatPercent(v)}
-                        />
+                        <ResultReturn value={row.metrics?.total_return} />
                       ),
                     },
                     {
                       title: "最大回撤",
                       key: "dd",
-                      width: 110,
+                      width: 96,
                       align: "right",
                       render: (_, row) => (
-                        <span className="numeric">
+                        <span className="result-list-number">
                           {formatPercent(row.metrics?.max_drawdown)}
                         </span>
                       ),
@@ -181,11 +216,16 @@ export default function BacktestListPage() {
                     {
                       title: "创建时间",
                       key: "created",
-                      width: 170,
+                      width: 136,
+                      align: "right",
                       defaultSortOrder: "descend",
                       sorter: (a, b) =>
                         a.created_at.localeCompare(b.created_at),
-                      render: (_, row) => formatDateTime(row.created_at),
+                      render: (_, row) => (
+                        <span className="result-list-secondary result-list-number">
+                          {formatDateTime(row.created_at)}
+                        </span>
+                      ),
                     },
                   ]}
                 />

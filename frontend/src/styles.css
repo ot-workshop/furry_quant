@@ -1225,3 +1225,274 @@ body {
     padding: 10px 12px;
   }
 }
+
+/* Desktop result tables: reserve width for comparable figures, let only the
+   identity column absorb the remainder. Mobile still uses its own cards. */
+@media (min-width: 768px) {
+  .result-list-table .ant-table .ant-table-container .ant-table-cell {
+    padding: 4px 8px;
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .result-list-table .ant-table-tbody > tr > td {
+    height: 60px;
+  }
+
+  .result-list-identity,
+  .result-list-meta {
+    min-width: 0;
+  }
+
+  .result-list-title {
+    display: flex;
+    min-height: 32px;
+    align-items: center;
+    font-weight: 600;
+    color: var(--ant-color-text);
+  }
+
+  .result-list-title > span,
+  .result-list-id,
+  .result-list-strategy {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .result-list-title:focus-visible {
+    outline: 2px solid var(--ant-color-primary);
+    outline-offset: 1px;
+  }
+
+  .result-list-title:focus-visible > span {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .result-list-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  .result-list-strategy {
+    flex: 0 1 auto;
+    max-width: 100%;
+    margin-inline-end: 0;
+  }
+
+  .result-list-meta .result-list-strategy {
+    max-width: 50%;
+  }
+
+  .result-list-meta,
+  .result-list-secondary,
+  .result-list-strategy {
+    color: var(--ant-color-text-secondary);
+    font-size: 13px;
+    line-height: 18px;
+  }
+
+  .result-list-id,
+  .result-list-number {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .result-list-table .result-list-horizons,
+  .result-list-table .tag-expanded-item {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .result-list-table .tag-list-row {
+    align-items: center;
+  }
+
+  .result-list-table .tag-list-row-open {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .result-list-table .tag-list-inline-open {
+    width: 100%;
+  }
+
+  .result-list-table .tag-list-row .ant-tag {
+    margin-inline-end: 0;
+    max-width: 100%;
+    font-size: 13px;
+  }
+
+  .result-list-table .tag-expand-toggle {
+    min-height: 32px;
+    margin-top: 0;
+    font-size: 13px;
+  }
+
+  .result-list-dates {
+    display: grid;
+    justify-items: end;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .table-scroll .result-list-table table {
+    min-width: 850px;
+  }
+}
+
+.result-list-short-range {
+  display: none;
+}
+
+.dashboard-coverage {
+  font-size: 12px;
+}
+
+@media (min-width: 1024px) {
+  .dashboard-metrics.grid-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .dashboard-metrics .ant-card > .ant-card-body {
+    padding: 16px;
+  }
+
+  .dashboard-metrics .ant-statistic .ant-statistic-title {
+    font-size: 13px;
+    line-height: 18px;
+  }
+
+  .dashboard-metrics .ant-statistic-content {
+    font-size: 24px;
+    line-height: 28px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Preserve room for both manifest notices when the summary PR is present. */
+  .dashboard-metrics:has(.dashboard-dataset-breakdown) .ant-card-body {
+    padding-block: 5px;
+  }
+
+  .dashboard-metrics
+    .dashboard-dataset-breakdown
+    > div:not(.dataset-breakdown)
+    > .ant-typography {
+    display: block;
+    line-height: 18px;
+  }
+
+  /* The summary PR uses inline sizes for the same card subtitles. */
+  .dashboard-metrics .ant-card-body .ant-typography,
+  .dashboard-metrics .ant-card-body .ant-btn-link {
+    font-size: 13px !important;
+  }
+
+  .dashboard-metrics .dashboard-coverage {
+    font-variant-numeric: tabular-nums;
+    line-height: 18px;
+  }
+
+  .dataset-breakdown {
+    position: relative;
+    min-width: 0;
+    color: var(--ant-color-text-secondary);
+    font-size: 13px;
+    line-height: 18px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .dataset-breakdown-line {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 32px;
+    white-space: nowrap;
+  }
+
+  .dataset-breakdown-chip {
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--ant-color-fill-tertiary);
+  }
+
+  .dataset-breakdown .dataset-breakdown-toggle {
+    display: inline-grid;
+    place-items: center;
+    min-width: 32px;
+    min-height: 32px;
+    margin: 0;
+    padding: 0 4px;
+    font: inherit;
+    box-sizing: border-box;
+  }
+
+  .dataset-breakdown-toggle {
+    color: var(--ant-color-primary);
+  }
+
+  .dataset-breakdown-ruler {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 100%;
+    height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .dataset-breakdown-ruler .dataset-breakdown-line {
+    width: max-content;
+  }
+
+  .dataset-breakdown-panel {
+    position: absolute;
+    z-index: 2;
+    inset: calc(100% + 2px) auto auto 0;
+    width: max-content;
+    max-width: min(260px, calc(100vw - 32px));
+    padding: 8px 16px;
+    margin: 0;
+    border: 1px solid var(--ant-color-border-secondary);
+    border-radius: 8px;
+    background: var(--ant-color-bg-elevated);
+    box-shadow: var(--ant-box-shadow-secondary);
+    list-style: none;
+    color: var(--ant-color-text);
+  }
+
+  .dashboard-recent-tasks .task-row {
+    padding-block: 6px;
+    min-height: 56px;
+  }
+
+  .dashboard-recent-tasks .task-row-meta,
+  .dashboard-recent-tasks .task-reason-label,
+  .dashboard-recent-tasks .task-reason-code,
+  .dashboard-recent-tasks .task-reason-toggle {
+    font-size: 13px;
+  }
+
+  .dashboard-recent-tasks .task-row-meta a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px;
+  }
+
+  .dashboard-recent-tasks .task-reason-toggle {
+    min-height: 32px;
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1199px) {
+  .result-list-wide-range {
+    display: none;
+  }
+
+  .result-list-short-range {
+    display: inline;
+  }
+}
