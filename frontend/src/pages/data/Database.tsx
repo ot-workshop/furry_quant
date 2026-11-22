@@ -4,7 +4,9 @@ import { EmptyState, Resource, Section } from "../../components/ui";
 import { useApiResource } from "../../hooks/useApiResource";
 import { formatDateTime, formatNumber } from "../../utils/format";
 export default function Database() {
-  const status = useApiResource((signal) => api.dataStatus(signal), []);
+  const status = useApiResource((signal) => api.dataStatus(signal), [], {
+    retryOnErrorMs: 5000,
+  });
   return (
     <Resource state={status}>
       {(data) =>
@@ -34,7 +36,7 @@ export default function Database() {
                     label: "覆盖区间",
                     children: data.database.coverage_start
                       ? `${data.database.coverage_start} ~ ${data.database.coverage_end}`
-                      : "—",
+                      : "暂无行情",
                   },
                   {
                     key: "schema",

@@ -23,7 +23,7 @@ from finance_quant.api import create_app
 from finance_quant.application.data_updates import enqueue_due, pause
 from finance_quant.application.tasks import TaskService
 from finance_quant.data.financials import financial_root
-from finance_quant.data.postgres_market import PostgresMarketStore
+from finance_quant.data.postgres_market import PostgresMarketStore, market_summary
 from finance_quant.data.postgres_market import status as market_status
 from finance_quant.data.shared_market import configure_store
 from finance_quant.paths import PROJECT_ROOT
@@ -112,6 +112,7 @@ def create_http_app():
         task_service=TaskService(runs, data, task_store=PgTaskStore(runs, engine=engine)),
         database_probe=lambda: check_schema(engine),
         market_status=market_status,
+        market_summary=market_summary,
     )
 
 

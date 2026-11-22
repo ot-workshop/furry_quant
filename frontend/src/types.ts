@@ -468,6 +468,26 @@ export interface DataStatus {
   database: DatabaseStatus | null;
 }
 
+export interface DashboardDatabaseSummary {
+  securities: number;
+  coverage_start: string | null;
+  coverage_end: string | null;
+}
+
+export interface DashboardSummary {
+  database: DashboardDatabaseSummary | null;
+  counts: {
+    fixed: number;
+    historical: number;
+    market: number;
+    invalid?: number;
+  };
+  as_of: string;
+  counts_as_of?: string;
+  counts_basis?: string;
+  cache_ttl_seconds?: number;
+}
+
 /* ------------------------------------------------------------ diagnostics */
 
 export interface IndustryRow {

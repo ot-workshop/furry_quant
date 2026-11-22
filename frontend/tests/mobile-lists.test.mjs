@@ -150,6 +150,12 @@ globalThis.fetch = async (url) => {
       market_universes: [],
       database: null,
     });
+  if (path === "/dashboard/summary")
+    return json({
+      database: null,
+      counts: { fixed: 0, historical: 0, market: 0 },
+      as_of: "2026-11-22T00:00:00Z",
+    });
   if (path === "/research/tasks") return json({ items: [], total: 0 });
   if (path === "/backtests") return json(backtestsFixture);
   if (path === "/evaluations") return json(evaluationsFixture);
