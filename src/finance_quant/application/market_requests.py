@@ -44,7 +44,7 @@ def pool_industry_display(data, neutral_extra, neutralization):
     pinned = filters.get("industry_version") if filters.get("industries") else None
     if neutralization.mode == "off" and pinned:
         return {"neutralization": {"mode": "off", "industry_version": pinned}}
-    if not neutral_extra and (industry := optional_industries()):
+    if not neutral_extra and neutralization.allow_latest and (industry := optional_industries()):
         return {"neutralization": {"mode": "off", "industry_version": industry.manifest["id"]}}
     return neutral_extra
 

@@ -73,6 +73,7 @@ def test_submit_pins_relative_leaf_and_hashes_exactly_the_parsed_bytes(submit, m
         "data_version": SNAPSHOT_ID,
         "files": FILES,
         "manifest_sha256": hashlib.sha256(payload).hexdigest(),
+        "reference_versions": {"source": "submission", "financial": None, "industry": None, "filter_industry": None},
     }
     assert reads == [manifest_path]
     assert store.list()["total"] == 1

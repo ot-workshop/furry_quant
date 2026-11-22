@@ -7,7 +7,7 @@ import json
 import re
 import shutil
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from os import scandir
 from pathlib import Path
@@ -214,6 +214,7 @@ def research_options(
     *,
     industry_version=None,
     financial_version=None,
+    allow_latest_references=True,
     frozen_snapshot: FrozenMarketSnapshot | None = None,
 ) -> dict:
     registry = (
@@ -303,8 +304,12 @@ def research_options(
     factors, evaluation = FactorConfig(), EvaluationConfig()
     neutralization = parse_neutralization()
 
-    industry = optional_industries(industry_version)
-    financial = financial_summary(data_root, version=financial_version)
+    industry = optional_industries(industry_version) if industry_version or allow_latest_references else None
+    financial = (
+        financial_summary(data_root, version=financial_version)
+        if financial_version or allow_latest_references
+        else None
+    )
     return {
         "snapshots": [
             {**row, "financial_coverage": coverage_row(financial, [code["code"] for code in row["codes"]], data_root)}
@@ -394,6 +399,7 @@ def validate_request(
     runs_root: Path,
     *,
     financials=None,
+    references_frozen=False,
     frozen_snapshot: FrozenMarketSnapshot | None = None,
 ) -> tuple[dict, dict]:
     _fields(
@@ -403,6 +409,8 @@ def validate_request(
         label="研究",
     )
     neutralization = parse_neutralization(document.get("neutralization"))
+    if references_frozen:
+        neutralization = replace(neutralization, allow_latest=False)
     industry = industry_context(neutralization) if "neutralization" in document else None
     neutral_extra = {}
     if "neutralization" in document:
@@ -412,7 +420,9 @@ def validate_request(
                 **({"industry_version": industry.manifest["id"]} if industry else {}),
             }
         }
-        neutralization = parse_neutralization(neutral_extra["neutralization"])
+        neutralization = replace(
+            neutralization, industry_version=neutral_extra["neutralization"].get("industry_version")
+        )
     name = document["name"]
     if not isinstance(name, str) or not name.strip() or len(name) > 80 or any(ord(c) < 32 for c in name):
         raise ValueError("研究名称须为1至80个字符，不含换行")
@@ -435,14 +445,14 @@ def validate_request(
             for item in factor_list
         )
     )
-    binding = financials if financials is not None else pin_financials(factors, data_root)
+    binding = financials if financials is not None or references_frozen else pin_financials(factors, data_root)
     if any(spec.name == "gross_margin_ttm" for spec in factors.specs) and not neutralization.industry_version:
         industry = industry_context(neutralization)
         if industry:
             neutral_extra = {
                 "neutralization": {**neutralization.as_dict(), "industry_version": industry.manifest["id"]}
             }
-            neutralization = parse_neutralization(neutral_extra["neutralization"])
+            neutralization = replace(neutralization, industry_version=industry.manifest["id"])
     financial_extra = {"financials": binding.as_dict()} if binding else {}
     obj = document["data"]
     if not isinstance(obj, dict) or obj.get("mode") not in {"snapshot", "index_warehouse", "market_warehouse"}:
@@ -619,7 +629,9 @@ def require_financial_coverage(binding, codes, factors=None) -> None:
         raise ValueError(f"该财务数据版本只覆盖 {len(covered)} 只所选股票，不足以进行横截面评分")
 
 
-def request_config(request: dict, data: DataConfig, runs_root: Path, data_root: Path) -> ResearchConfig:
+def request_config(
+    request: dict, data: DataConfig, runs_root: Path, data_root: Path, *, references_frozen=False
+) -> ResearchConfig:
 
     pinned = request.get("financials", {}).get("version")
     binding = FinancialBinding.from_dict(financial_root(data_root), request["financials"]) if pinned else None
@@ -629,7 +641,7 @@ def request_config(request: dict, data: DataConfig, runs_root: Path, data_root: 
         runs_root,
         FactorConfig(tuple(FactorSpec(**item) for item in request["factors"])),
         EvaluationConfig(**request["evaluation"]),
-        parse_neutralization(request.get("neutralization")),
+        replace(parse_neutralization(request.get("neutralization")), allow_latest=not references_frozen),
         binding,
     )
 
