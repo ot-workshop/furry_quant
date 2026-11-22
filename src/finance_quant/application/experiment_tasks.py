@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
 from pathlib import Path
 
 from finance_quant.application.comparison_inputs import validate_comparison_inputs
@@ -13,7 +12,6 @@ from finance_quant.application.experiment_workflow import _preflight, run_experi
 from finance_quant.application.research_requests import (
     MAX_CODES,
     _fields,
-    data_version_ids,
     pin_financials_for,
     request_config,
     snapshot_registry,
@@ -30,6 +28,7 @@ from finance_quant.data.market import FrozenMarketSnapshot, load_frozen_snapshot
 from finance_quant.data.symbols import to_qlib
 from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.experiments import SELECTION_METRIC, ExperimentPlan
+from finance_quant.research.factor_selection import SelectionParameters
 from finance_quant.research.neutralization import industry_context, parse_neutralization
 
 SHARED_BACKTEST_FIELDS = tuple(name for name in BacktestConfig.__dataclass_fields__ if name not in {"start", "end"})
@@ -95,17 +94,14 @@ def validate_experiment_document(document: dict):
 
 
 SELECTION_ID = re.compile(r"factor-selection-[0-9a-f]{12}")
+WAREHOUSE_IDS = {
+    "index_warehouse": re.compile(r"csi300-[0-9a-f]{20}"),
+    "market_warehouse": re.compile(r"market-[0-9a-f]{20}"),
+}
 
 
-def validate_selection_reference(document: dict, plan: ExperimentPlan, data_root) -> None:
-    """Checks a selection handoff settles from the request alone.
-
-    Only rules that need neither the trading calendar nor the source evaluation are decided
-    here, so a wrong reference or a pre-cutoff period still fails with its own reason instead
-    of reaching the worker. Window, weight, neutralization and factor edits stay in
-    ``selection_validation``, which the worker runs once it has the source result.
-    """
-
+def validate_selection_reference(document: dict, plan: ExperimentPlan) -> None:
+    """Validate only rules the request itself can prove; the worker resolves its references."""
     reference = document.get("factor_selection")
     if reference is None:
         return
@@ -114,20 +110,22 @@ def validate_selection_reference(document: dict, plan: ExperimentPlan, data_root
     if not isinstance(identifier, str) or SELECTION_ID.fullmatch(identifier) is None:
         raise ValueError("因子筛选结果标识格式无效，请回到相关性页面重新筛选")
     parameters = reference["parameters"]
-    if not isinstance(parameters, dict) or not isinstance(parameters.get("cutoff"), str):
-        raise ValueError("因子筛选引用缺少推荐截止日，请回到相关性页面重新筛选")
+    if not isinstance(parameters, dict):
+        raise ValueError("筛选参数须为对象")
     try:
-        cutoff = date.fromisoformat(parameters["cutoff"])
-    except ValueError:
-        raise ValueError("因子筛选的推荐截止日格式无效，请回到相关性页面重新筛选") from None
-    if any(date.fromisoformat(period.start) <= cutoff for period in plan.periods):
+        selection = SelectionParameters(**parameters)
+    except (TypeError, OverflowError):
+        raise ValueError("因子筛选参数字段或数值无效，请重新筛选") from None
+    if any(period.start <= selection.cutoff for period in plan.periods):
         raise ValueError("因子筛选后的开发、验证、测试区间必须全部晚于推荐截止日")
     if not any(candidate.id == "milp" for candidate in plan.candidates):
         raise ValueError("比较计划缺少来源筛选的 MILP 候选方案")
     data = document["data"]
-    if isinstance(data, dict) and data.get("mode") in {"index_warehouse", "market_warehouse"}:
-        if data.get("warehouse_id") not in data_version_ids(data_root):
-            raise ValueError("沪深300历史成分版本不存在或已变化，请刷新数据列表")
+    mode = data.get("mode") if isinstance(data, dict) else None
+    if isinstance(mode, str) and (pattern := WAREHOUSE_IDS.get(mode)) is not None:
+        warehouse_id = data.get("warehouse_id")
+        if not isinstance(warehouse_id, str) or pattern.fullmatch(warehouse_id) is None:
+            raise ValueError("仓库版本标识格式无效或与股票池模式不符")
 
 
 def validate_experiment_inputs(

@@ -349,25 +349,6 @@ def research_options(
     }
 
 
-def data_version_ids(data_root: Path) -> set[str]:
-    """Ids of the warehouse versions offered right now, read from their manifests only.
-
-    A selection handoff may only point at a stock pool the server can still describe; the
-    market rows themselves are never loaded here.
-    """
-
-    root = Path(data_root).resolve()
-    ids = {
-        option["id"]
-        for version_root in market_download.warehouse_roots(root)
-        if (option := warehouse_option(version_root)) is not None
-    }
-    ids.update(
-        option["id"] for version_root in market_roots(root) if (option := market_option(version_root)) is not None
-    )
-    return ids
-
-
 def financial_summary(data_root: Path, *, version=None) -> dict | None:
     """Current financial version, described for the research form and the data page."""
 

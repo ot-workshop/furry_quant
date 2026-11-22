@@ -5,6 +5,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 from test_dynamic_experiments import pool, refresh
@@ -12,9 +13,10 @@ from test_factor_selection import parameters, sample
 from test_industry_neutralization import history
 from test_managed_data import Provider
 
-from finance_quant.application import research_requests
+from finance_quant.application import experiment_tasks, research_requests, selection_context, selection_experiments
 from finance_quant.application.selection_context import selection_result, source_context
 from finance_quant.application.selection_experiments import verify_queued_selection
+from finance_quant.data import historical_warehouse, market_universe, pool_inputs
 from finance_quant.data.financials import financial_root
 from finance_quant.data.historical_warehouse import warehouse_option
 from finance_quant.data.industries import publish_industries
@@ -155,8 +157,14 @@ def test_handoff_rejects_references_the_request_settles_alone(tmp_path):
     def pre_cutoff_start(changed):
         changed["plan"]["periods"]["development"]["start"] = "2024-01-23"
 
-    def unknown_pool(changed):
+    def malformed_pool(changed):
         changed["data"]["warehouse_id"] = "another-version"
+
+    def malformed_cutoff(changed):
+        changed["factor_selection"]["parameters"]["cutoff"] = "20240123"
+
+    def invalid_horizon(changed):
+        changed["factor_selection"]["parameters"]["horizon"] = True
 
     def malformed_reference(changed):
         changed["factor_selection"]["selection_id"] = "forged"
@@ -171,7 +179,9 @@ def test_handoff_rejects_references_the_request_settles_alone(tmp_path):
 
     cases = [
         ("date", pre_cutoff_start, "必须全部晚于推荐截止日"),
-        ("pool", unknown_pool, "历史成分版本不存在或已变化"),
+        ("pool", malformed_pool, "仓库版本标识格式无效"),
+        ("cutoff", malformed_cutoff, "筛选日期须为 YYYY-MM-DD"),
+        ("horizon", invalid_horizon, "horizon 须为"),
         ("ref", malformed_reference, "标识格式无效"),
         ("missing", missing_candidate, "缺少来源筛选的 MILP 候选方案"),
         ("weight", lightened_weight, "factor weights must sum to 1"),
@@ -199,6 +209,75 @@ def test_handoff_rejects_references_the_request_settles_alone(tmp_path):
         params={**{k: v for k, v in late.items() if v is not None}, "selection_id": selected["selection_id"]},
     )
     assert response.status_code == 422 and "交易日" in response.text
+
+
+@pytest.mark.parametrize("mode,size", [("index_warehouse", 5), ("market_warehouse", 17)])
+def test_handoff_post_never_resolves_warehouse_or_selection(tmp_path, monkeypatch, mode, size):
+    client, service, _, _, document, _ = source(tmp_path, mode, size)
+    valid_id = document["data"]["warehouse_id"]
+    prefix, digest = valid_id.split("-", 1)
+    unknown_id = f"{prefix}-{'0' * 20}"
+    assert unknown_id != valid_id
+    other_prefix = "market" if mode == "index_warehouse" else "csi300"
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("POST may not enumerate warehouse versions, read Parquet, compute coverage, or resolve selection")
+
+    def submit(test_case, warehouse_id):
+        request = copy.deepcopy(document)
+        request["data"]["warehouse_id"] = warehouse_id
+        return client.post(
+            "/api/v1/research/experiments", json=request, headers={"Idempotency-Key": f"warehouse-post-{test_case}"}
+        )
+
+    with monkeypatch.context() as guard:
+        for module, name in (
+            (research_requests.market_download, "warehouse_roots"),
+            (research_requests, "market_roots"),
+            (market_universe, "market_roots"),
+            (research_requests, "warehouse_option"),
+            (research_requests, "market_option"),
+            (research_requests, "snapshot_registry"),
+            (research_requests, "security_coverage"),
+            (pool_inputs, "security_coverage"),
+            (historical_warehouse, "security_coverage"),
+            (market_universe, "security_coverage"),
+            (selection_context, "select_factors"),
+            (selection_experiments, "checked_selection"),
+            (experiment_tasks, "selection_validation"),
+            (pd, "read_parquet"),
+            (pq, "read_table"),
+            (pq, "ParquetFile"),
+        ):
+            guard.setattr(module, name, forbidden)
+        for name, identifier in (("wrong-mode", f"{other_prefix}-{digest}"), ("malformed", f"{prefix}-123")):
+            rejected = submit(name, identifier)
+            assert rejected.status_code == 422 and "仓库版本标识格式无效" in rejected.text, rejected.text
+        assert service.store.list()["total"] == 1  # source research only
+        missing = submit("missing", unknown_id)
+        assert missing.status_code == 202, missing.text
+        valid = submit("valid", valid_id)
+        assert valid.status_code == 202, valid.text
+        assert service.store.list()["total"] == 3
+
+    identifier = missing.json()["id"]
+    row = service.store.get(identifier, private=True)
+    assert row["request"]["data"]["warehouse_id"] == unknown_id
+    assert row["execution"]["prepare_state"] == "pending"
+    artifact_paths = {
+        path for root in (service.runs_root, service.data_root) for path in root.rglob("*") if path.is_file()
+    }
+    assert service.store.claim() == identifier
+    finished = run_claimed(service, identifier)
+    assert finished["status"] == "failed" and finished["error_details"]["stage"] == "prepare"
+    assert "版本不存在或已变化" in finished["error"]
+    assert finished["result"] is None
+    assert service.store.get(identifier, private=True)["execution"] == row["execution"]
+    assert not (service.runs_root / "experiments").exists()
+    assert {
+        path for root in (service.runs_root, service.data_root) for path in root.rglob("*") if path.is_file()
+    } == artifact_paths
+    assert service.store.get(valid.json()["id"])["status"] == "queued"
 
 
 def test_handoff_defers_edits_that_need_the_calendar_or_the_source(tmp_path):
@@ -250,11 +329,15 @@ def test_handoff_defers_edits_that_need_the_calendar_or_the_source(tmp_path):
         )
         assert response.status_code == 202, (name, response.text)
         identifier = response.json()["id"]
+        execution = service.store.get(identifier, private=True)["execution"]
+        assert execution["prepare_state"] == "pending"
         assert service.store.claim() == identifier
         task = run_claimed(service, identifier)
-        assert task["status"] == "failed", (name, task)
+        assert task["status"] == "failed" and task["error_details"]["stage"] == "prepare", (name, task)
         assert message in (task["error"] or ""), (name, task["error"])
-    assert not list(store.root.glob("experiments/*/result.json"))
+        assert task["result"] is None
+        assert service.store.get(identifier, private=True)["execution"] == execution
+    assert not (store.root / "experiments").exists()
 
 
 def test_modified_source_after_queue_does_not_run_comparison(tmp_path):
