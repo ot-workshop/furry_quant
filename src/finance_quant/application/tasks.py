@@ -13,7 +13,8 @@ from finance_quant.application.experiment_tasks import (
     experiment_total,
     validate_experiment_document,
 )
-from finance_quant.application.research_requests import validate_request
+from finance_quant.application.research_requests import lookup_snapshot_meta, validate_request
+from finance_quant.checksums import file_sha256
 from finance_quant.task_contracts import TaskConflict as TaskConflict
 from finance_quant.task_contracts import TaskStore
 
@@ -37,6 +38,20 @@ class TaskService:
 
         # Cheap checks only: the expensive validation runs in the worker's prepare stage,
         # so a comparison submission returns as soon as it is queued.
-        validate_experiment_document(document)
-        execution = {"prepare_state": "pending"}
+        plan = validate_experiment_document(document)
+        execution = {
+            "prepare_state": "pending",
+            "candidates": [candidate.id for candidate in plan.candidates],
+        }
+        if document["data"].get("mode") == "snapshot":
+            # Freeze the snapshot the caller picked, reading only its manifest: the worker
+            # re-checks these fields before it touches any market data.
+            relative_dir, manifest = lookup_snapshot_meta(self.data_root, document["data"]["snapshot_id"])
+            directory = Path(self.data_root) / relative_dir
+            execution.update(
+                snapshot_dir=str(directory),
+                data_version=manifest["id"],
+                files=manifest["files"],
+                manifest_sha256=file_sha256(directory / "manifest.json"),
+            )
         return self.store.create_experiment(document, execution, key, total=experiment_total(document))

@@ -366,6 +366,35 @@ def test_web_experiment_submit_never_touches_heavy_paths(tmp_path, monkeypatch):
     assert service.store.list()["total"] == 1
 
 
+
+def test_frozen_snapshot_survives_a_newer_publish(tmp_path):
+    """B is published after the submit; the queued task must still run the frozen A."""
+
+    data, runs = tmp_path / "data", tmp_path / "runs"
+    first = publish_fixture_snapshot(
+        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
+    )
+    seed_earnings(financial_root(data), ("600000.SH", "000001.SZ", "600519.SH"))
+    service = make_service(runs, data)
+    client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
+
+    response = client.post(
+        "/api/v1/research/experiments",
+        json=experiment_request(first["id"]),
+        headers={"Idempotency-Key": "experiment-frozen-a"},
+    )
+    assert response.status_code == 202, response.text
+    task = response.json()
+
+    # A newer snapshot appears while the task is still queued.
+    publish_fixture_snapshot(
+        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
+    )
+
+    assert service.store.claim() == task["id"]
+    finished = run_claimed(service, task["id"])
+    assert finished["status"] == "succeeded", finished["error"]
+
 def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path):
 
     data, runs = tmp_path / "data", tmp_path / "runs"

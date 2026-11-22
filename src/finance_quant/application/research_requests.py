@@ -72,6 +72,35 @@ def _backtest_dict(config):
     return result
 
 
+def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict]:
+    """Resolve a published snapshot to its leaf directory and raw manifest.
+
+    Reads only the manifests under the server-controlled locations `snapshot_registry`
+    uses; unlike that function it never loads market data, so it is safe on the submit
+    path. The returned directory is relative to `data_root`.
+    """
+
+    root = Path(data_root).resolve()
+    candidates = [
+        *sorted(root.glob("research/downloads/*/snapshots/*")),
+        *sorted(root.glob("research/subsets/*")),
+    ]
+    for path in candidates:
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root):
+            continue
+        manifest_path = resolved / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_bytes())
+        except (OSError, ValueError):
+            continue
+        if manifest.get("id") == snapshot_id:
+            return resolved.relative_to(root), manifest
+    raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
+
+
 def snapshot_registry(data_root: Path) -> dict:
     """Only published, valid snapshots below server-controlled locations are selectable.
 
