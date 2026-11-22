@@ -40,10 +40,15 @@ def validate_comparison_inputs(config, plan, request, *, expected_sha=None, froz
             raise ValueError("对照区间需要信号预热，且交易日数须超过最长评估持有期")
 
 
-def _sample(config, candidate, request, expected_sha, allowed=None):
+def _sample(config, candidate, request, expected_sha, allowed=None, *, frozen_snapshot=None):
     current = candidate_config(config, candidate)
     market, _, sessions, meta = load_research_input(
-        request, config.data.root, candidate.factors, config.backtest, expected_sha=expected_sha
+        request,
+        config.data.root,
+        candidate.factors,
+        config.backtest,
+        expected_sha=expected_sha,
+        frozen_snapshot=frozen_snapshot,
     )
     members: dict[str, set[str]] = {}
 
@@ -70,13 +75,16 @@ def _sample(config, candidate, request, expected_sha, allowed=None):
     return members, sessions, meta
 
 
-def prepare_comparison(config, plan, request, *, expected_sha=None):
+def prepare_comparison(config, plan, request, *, expected_sha=None, frozen_snapshot=None):
+    def sample(candidate, allowed=None):
+        return _sample(config, candidate, request, expected_sha, allowed, frozen_snapshot=frozen_snapshot)
+
     first = plan.candidates[0]
-    members, sessions, meta = _sample(config, first, request, expected_sha)
+    members, sessions, meta = sample(first)
     common = {day: set(values) for day, values in members.items()}
     counts = {first.id: {day: len(values) for day, values in members.items()}}
     for candidate in plan.candidates[1:]:
-        members, sessions, meta = _sample(config, candidate, request, expected_sha)
+        members, sessions, meta = sample(candidate)
         for day in common:
             common[day].intersection_update(members.get(day, ()))
         counts[candidate.id] = {day: len(values) for day, values in members.items()}
@@ -94,7 +102,7 @@ def prepare_comparison(config, plan, request, *, expected_sha=None):
         # Re-ranking on the intersection can remove an entire day if industry
         # residuals have no variation. Such a day must be removed for EVERY plan.
         for candidate in plan.candidates:
-            members, _, _ = _sample(config, candidate, request, expected_sha, allowed)
+            members, _, _ = sample(candidate, allowed)
             for day in days:
                 if set(members.get(day, ())) != set(allowed[day]):
                     allowed[day] = []

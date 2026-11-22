@@ -7,7 +7,7 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
-from finance_quant.application.comparison_inputs import validate_comparison_inputs
+from finance_quant.application.comparison_inputs import prepare_comparison, validate_comparison_inputs
 from finance_quant.application.experiment_inputs import dynamic_preflight
 from finance_quant.application.experiment_references import (
     REFERENCE_KEY,
@@ -29,6 +29,7 @@ from finance_quant.application.selection_experiments import (
     verify_queued_selection,
 )
 from finance_quant.application.task_context import attach_outputs, prepare_snapshot, prepare_warehouse
+from finance_quant.checksums import file_sha256
 from finance_quant.configuration import BacktestConfig, DataConfig
 from finance_quant.data.financials import FinancialBinding, financial_root
 from finance_quant.data.market import FrozenMarketSnapshot, load_frozen_snapshot
@@ -348,8 +349,18 @@ def experiment_total(document: dict) -> int:
     return 1 + 2 * len(document["plan"]["candidates"]) + 1
 
 
+def _execution_document(request: dict, plan: ExperimentPlan) -> dict:
+    return {
+        **_research_document(request, plan),
+        **({"financials": request["financials"]} if "financials" in request else {}),
+    }
+
+
 def run_experiment_task(context, request: dict, execution: dict) -> dict:
     pending = execution.get("prepare_state") == "pending"
+    comparison_sample = None
+    comparison_source = None
+    frozen_snapshot = None
     if pending:
         # Legacy fully prepared tasks skip this branch. New fixed-pool tasks must
         # provide a verified leaf; a missing pin must not fall back to the registry.
@@ -369,9 +380,6 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
             frozen_snapshot=frozen_snapshot,
             reference_versions=execution.get(REFERENCE_KEY),
         )
-        # Do not retain the preflight frames while the experiment runs.
-        del frozen_snapshot
-
     if execution.get("prepare_state") == "prepared":
         # A prepared payload belongs to this worker's own single write; seeing it again means
         # the task is being re-run after preparation, which must not project or register again.
@@ -381,7 +389,32 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
     evidence = execution.get("factor_selection")
     verify_queued_selection(context.result_store_factory(None), evidence)
     if pending:
-        # A is verified and the queued selection checked: record the result once, and only
+        if plan.comparison:
+            source_data = (
+                _data_config(frozen_snapshot.inputs[3], request["data"]["codes"])
+                if frozen_snapshot is not None
+                else dynamic_data(Path(execution["warehouse_dir"]), request)
+            )
+            document = _execution_document(request, plan)
+            config = request_config(
+                document,
+                source_data,
+                context.runs_root,
+                context.data_root,
+                references_frozen=REFERENCE_KEY in execution,
+            )
+            prepared_sample = prepare_comparison(
+                config, plan, document, expected_sha=execution.get("manifest_sha256"), frozen_snapshot=frozen_snapshot
+            )
+            # Only the sample decisions cross the write boundary. Warehouse freeze preserves
+            # the manifest bytes; snapshot projection can produce a different dataset below.
+            source_meta = prepared_sample["meta"]
+            comparison_source = (source_meta["id"], source_meta["manifest_sha256"])
+            comparison_sample = {key: value for key, value in prepared_sample.items() if key != "meta"}
+            del prepared_sample, source_meta
+        del frozen_snapshot  # Do not retain the preflight frames during execution.
+
+        # Inputs and sample decisions are verified: record the result once, and only
         # for this still-pending running task. A second write is a conflict, so projection
         # and registration can never run twice for one task.
         saved = {**execution, "prepare_state": "prepared"}
@@ -394,11 +427,10 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
         root, dataset_record = prepare_warehouse(context, request, execution)
         data = dynamic_data(root, request)
     else:
-        _, _, _, data, dataset_record = prepare_snapshot(context, request, execution)
-    document = {
-        **_research_document(request, plan),
-        **({"financials": request["financials"]} if "financials" in request else {}),
-    }
+        _, _, manifest, data, dataset_record = prepare_snapshot(context, request, execution)
+        if comparison_sample is not None:
+            comparison_source = (manifest["id"], file_sha256(data.root / "manifest.json"))
+    document = _execution_document(request, plan)
     config = request_config(
         document, data, context.runs_root, context.data_root, references_frozen=REFERENCE_KEY in execution
     )
@@ -416,6 +448,8 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
         dynamic_request=document if dynamic or plan.comparison else None,
         expected_sha=execution.get("manifest_sha256") if execution["mode"] != "snapshot" else None,
         factor_selection=evidence,
+        comparison_sample=comparison_sample,
+        comparison_source=comparison_source,
     )
     result = {
         "experiment_run_id": completed["run_id"],
