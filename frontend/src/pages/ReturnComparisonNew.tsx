@@ -11,13 +11,10 @@ import {
   Space,
   Typography,
 } from "antd";
-import { CopyOutlined, RocketOutlined } from "@ant-design/icons";
-import {
-  researchApi,
-  type ResearchOptions,
-  type ResearchRequest,
-} from "../api/research";
-import { describeError, newIdempotencyKey } from "../api/http";
+import { CopyOutlined } from "@ant-design/icons";
+import type { ResearchOptions, ResearchRequest } from "../api/research";
+import { ExperimentSubmission } from "../components/ExperimentSubmission";
+import { useExperimentSubmission } from "../hooks/useExperimentSubmission";
 import { navigate, paths } from "../app/routes";
 import { CandidateEditor } from "../components/CandidateEditor";
 import { PageHeader } from "../components/ui";
@@ -43,9 +40,11 @@ import {
 export default function ReturnComparisonNew({
   options,
   research = null,
+  active = true,
 }: {
   options: ResearchOptions;
   research?: ResearchRequest | null;
+  active?: boolean;
 }) {
   const { message } = App.useApp();
   const restored = useMemo(() => {
@@ -101,10 +100,15 @@ export default function ReturnComparisonNew({
   );
   const [baseline, setBaseline] = useState("base");
   const [common, setCommon] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const serial = useRef(2);
-  const submission = useRef<{ fingerprint: string; key: string } | null>(null);
+  const submission = useExperimentSubmission(
+    "return-comparison",
+    (task) => {
+      message.success(`已提交「${task.name || form.name}」`);
+      navigate(paths.tasks(task.id));
+    },
+    active,
+  );
   const update = (patch: Partial<FormState>) =>
     setForm((value) => ({ ...value, ...patch }));
   const built = useMemo(
@@ -112,29 +116,6 @@ export default function ReturnComparisonNew({
     [form, options, candidates, baseline, common],
   );
   const coverage = financialCoverage(form, options);
-  async function submit() {
-    if (!built.request) return;
-    const fingerprint = JSON.stringify(built.request);
-    if (submission.current?.fingerprint !== fingerprint)
-      submission.current = {
-        fingerprint,
-        key: newIdempotencyKey("return-comparison"),
-      };
-    setSubmitting(true);
-    setError(null);
-    try {
-      const task = await researchApi.submitExperiment(
-        built.request,
-        submission.current.key,
-      );
-      message.success(`已提交「${task.name}」`);
-      navigate(paths.tasks(task.id));
-    } catch (e) {
-      setError(describeError(e));
-    } finally {
-      setSubmitting(false);
-    }
-  }
   return (
     <>
       <PageHeader
@@ -261,27 +242,13 @@ export default function ReturnComparisonNew({
                 配置检查通过，所有方案使用相同交易参数和数据版本。
               </Typography.Text>
             )}
-            {error ? (
-              <Alert
-                type="error"
-                showIcon
-                title="提交失败"
-                description={error}
-                style={{ marginTop: 12 }}
-              />
-            ) : null}
-            <Button
-              type="primary"
-              block
-              size="large"
-              icon={<RocketOutlined />}
-              disabled={!built.request}
-              loading={submitting}
-              onClick={submit}
-              style={{ marginTop: 16 }}
-            >
-              运行收益对照
-            </Button>
+            <ExperimentSubmission
+              label="运行收益对照"
+              state={submission.state}
+              fingerprint={built.request ? JSON.stringify(built.request) : null}
+              onSubmit={() => void submission.submit(built.request)}
+              onStop={submission.stopWaiting}
+            />
             <Typography.Paragraph
               type="secondary"
               style={{ marginTop: 12, marginBottom: 0 }}
