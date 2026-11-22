@@ -44,6 +44,8 @@ def run_experiment(
     dynamic_request=None,
     expected_sha=None,
     factor_selection=None,
+    comparison_sample=None,
+    comparison_source: tuple[str, str] | None = None,
 ) -> dict:
     """Run development/validation for every candidate, lock the choice, then test it once.
 
@@ -59,6 +61,8 @@ def run_experiment(
             progress=progress,
             dynamic_request=dynamic_request,
             expected_sha=expected_sha,
+            prepared_sample=comparison_sample,
+            execution_source=comparison_source,
         )
     candidate_coverage = None
     if dynamic_request is None:
@@ -144,6 +148,7 @@ def run_experiment(
                             expected_sha=expected_sha,
                             result_store=store,
                             financials=config.financials,
+                            references_frozen=not config.neutralization.allow_latest,
                         )
                         backtest = {"run_id": completed["backtest_run_id"], "factor_run_id": completed["factor_run_id"]}
                         diagnostic = {

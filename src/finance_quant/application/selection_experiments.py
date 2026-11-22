@@ -58,12 +58,19 @@ def selection_draft(store, reference, data_root, runs_root):
     }
 
 
-def selection_validation(store, document, plan, data_root, runs_root):
+def selection_validation(store, document, plan, data_root, runs_root, *, frozen_snapshot=None, references_frozen=False):
     reference = document.get("factor_selection")
     if reference is None:
         return None
     selection = checked_selection(store, reference)
-    context = source_context(store, reference["evaluation_id"], data_root, runs_root)
+    context = source_context(
+        store,
+        reference["evaluation_id"],
+        data_root,
+        runs_root,
+        frozen_snapshot=frozen_snapshot,
+        references_frozen=references_frozen,
+    )
     _, selected = factor_configs(context["evaluation"], selection)
     cutoff = selection["parameters"]["cutoff"]
     if any(period.start <= cutoff for period in plan.periods):

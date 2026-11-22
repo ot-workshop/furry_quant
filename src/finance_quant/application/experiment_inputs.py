@@ -61,7 +61,7 @@ def preflight(config, plan: ExperimentPlan, market, calendar) -> dict[str, int]:
     return counts
 
 
-def dynamic_preflight(config, plan, request, *, expected_sha=None):
+def dynamic_preflight(config, plan, request, *, expected_sha=None, frozen_snapshot=None):
     """Check each candidate against its own history requirement and the same pool rules.
 
     Inactive/new/suspended members may legitimately be unscorable. Unlike a fixed
@@ -73,7 +73,12 @@ def dynamic_preflight(config, plan, request, *, expected_sha=None):
     counts = None
     for candidate in plan.candidates:
         market, _, sessions, meta = load_research_input(
-            request, config.data.root, candidate.factors, config.backtest, expected_sha=expected_sha
+            request,
+            config.data.root,
+            candidate.factors,
+            config.backtest,
+            expected_sha=expected_sha,
+            frozen_snapshot=frozen_snapshot,
         )
         calendar = pd.DataFrame({"date": sessions, "is_open": True})
         counts, _ = period_counts(config, plan, calendar)

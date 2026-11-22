@@ -22,19 +22,34 @@ LIMITATIONS = [
 ]
 
 
-def run_comparison(config, plan, *, result_store=None, progress=None, dynamic_request=None, expected_sha=None, **_):
-    prepared = prepare_comparison(config, plan, dynamic_request, expected_sha=expected_sha)
+def run_comparison(
+    config,
+    plan,
+    *,
+    result_store=None,
+    progress=None,
+    dynamic_request=None,
+    expected_sha=None,
+    prepared_sample=None,
+    execution_source: tuple[str, str] | None = None,
+    **_,
+):
+    if prepared_sample is None:
+        prepared_sample = prepare_comparison(config, plan, dynamic_request, expected_sha=expected_sha)
+    if execution_source is None:
+        execution_source = (prepared_sample["meta"]["id"], prepared_sample["meta"]["manifest_sha256"])
+    data_version, manifest_sha256 = execution_source
     provenance = {
         **source_provenance(),
-        "data_version": prepared["meta"]["id"],
-        "manifest_sha256": prepared["meta"]["manifest_sha256"],
+        "data_version": data_version,
+        "manifest_sha256": manifest_sha256,
         "plan": plan.as_dict(),
         "backtest": asdict(config.backtest),
         "data": dynamic_request["data"],
         "evaluation": config.evaluation.as_dict(),
         "neutralization": config.neutralization.as_dict(),
         "financials": config.financials.as_dict() if config.financials else None,
-        "sample_sha256": prepared["sample_sha256"],
+        "sample_sha256": prepared_sample["sample_sha256"],
         "policy": "paired_signal_date_samples_v1",
     }
     identifier = "return-comparison-" + fingerprint(provenance)
@@ -75,18 +90,19 @@ def run_comparison(config, plan, *, result_store=None, progress=None, dynamic_re
                             expected_sha=expected_sha,
                             result_store=store,
                             financials=config.financials,
-                            scoring_universe=prepared["allowed"] if mode == "common" else None,
+                            references_frozen=not config.neutralization.allow_latest,
+                            scoring_universe=prepared_sample["allowed"] if mode == "common" else None,
                         )
                         backtest = store.get("backtests", completed["backtest_run_id"])
                         factors = store.get("factors", completed["factor_run_id"], hydrate=False)
                         coverage = factors["metadata"]["coverage_by_date"]
-                        dates = [d["date"] for d in prepared["sample_days"]]
+                        dates = [d["date"] for d in prepared_sample["sample_days"]]
                         eligible = [coverage.get(day, {}).get("eligible", 0) for day in dates]
                         row = {
                             "candidate_id": candidate.id,
                             "sample": mode,
                             "period": "analysis",
-                            "trading_days": prepared["trading_days"],
+                            "trading_days": prepared_sample["trading_days"],
                             **{
                                 key: completed[key] for key in ("backtest_run_id", "factor_run_id", "evaluation_run_id")
                             },
@@ -117,7 +133,7 @@ def run_comparison(config, plan, *, result_store=None, progress=None, dynamic_re
                         "id": identifier,
                         "name": plan.name,
                         "created_at": datetime.now(timezone.utc).isoformat(),
-                        "data_version": prepared["meta"]["id"],
+                        "data_version": data_version,
                         "is_synthetic": False,
                         "validation_kind": "return_comparison",
                         "selected_candidate": None,
@@ -134,7 +150,7 @@ def run_comparison(config, plan, *, result_store=None, progress=None, dynamic_re
                         "evaluation": config.evaluation.as_dict(),
                         "neutralization": config.neutralization.as_dict(),
                     },
-                    "sample_days": prepared["sample_days"],
+                    "sample_days": prepared_sample["sample_days"],
                     "comparisons": return_differences(rows, plan.comparison),
                     "limitations": LIMITATIONS,
                 }
@@ -143,7 +159,7 @@ def run_comparison(config, plan, *, result_store=None, progress=None, dynamic_re
             return {
                 "run_id": identifier,
                 "selected_candidate": None,
-                "data_version": prepared["meta"]["id"],
+                "data_version": data_version,
                 "reused": reused,
                 "report": str(report),
                 "result": str(store.path("experiments", identifier)),

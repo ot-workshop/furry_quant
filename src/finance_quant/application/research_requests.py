@@ -7,9 +7,11 @@ import json
 import re
 import shutil
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
+from os import scandir
 from pathlib import Path
+from stat import S_ISDIR, S_ISREG
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -22,7 +24,7 @@ from finance_quant.application.market_requests import (
     validate_pool_filters,
 )
 from finance_quant.application.research_readiness import validate_warmup
-from finance_quant.checksums import file_sha256, sha256_text
+from finance_quant.checksums import file_sha256, sha256_bytes, sha256_text
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
 from finance_quant.data.benchmarks import benchmark_options
 from finance_quant.data.execution_universe import validate_execution_universe
@@ -30,7 +32,7 @@ from finance_quant.data.financials import FinancialBinding, FinancialStore, cove
 from finance_quant.data.historical_warehouse import warehouse_header, warehouse_option
 from finance_quant.data.industries import optional_industries
 from finance_quant.data.managed import atomic_json, coverage_report
-from finance_quant.data.market import load_market
+from finance_quant.data.market import FrozenMarketSnapshot, load_market
 from finance_quant.data.market_universe import market_option, market_roots
 from finance_quant.data.pool_inputs import security_coverage
 from finance_quant.data.shared_market import validation_counts
@@ -72,6 +74,113 @@ def _backtest_dict(config):
     return result
 
 
+def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict, str]:
+    """Bind one published leaf without opening market data or following filesystem aliases."""
+
+    # Manifest metadata includes security history, not the actual market rows.
+    max_manifest_bytes = 1024 * 1024
+    bytes_left = 32 * max_manifest_bytes
+    entries_left = 4096
+
+    def mode(path):
+        try:
+            return path.lstat().st_mode
+        except FileNotFoundError:
+            return None
+
+    def require_direct(path):
+        if path.resolve(strict=True) != path:
+            raise ValueError("数据快照路径必须位于受管目录内，且不能是链接")
+
+    def directories(parent):
+        nonlocal entries_left
+        parent_mode = mode(parent)
+        if parent_mode is None:
+            return
+        require_direct(parent)
+        if not S_ISDIR(parent_mode):
+            raise ValueError("数据快照路径不是目录")
+        # scandir streams entries; stop rather than silently scan a partial inventory.
+        with scandir(parent) as entries:
+            for entry in entries:
+                entries_left -= 1
+                if entries_left < 0:
+                    raise ValueError("数据快照目录超过扫描上限，无法确认快照唯一")
+                if entry.name.startswith("."):
+                    continue  # Publisher staging directories are not snapshots.
+                path = parent / entry.name
+                if entry.is_dir(follow_symlinks=False) or entry.is_symlink():
+                    require_direct(path)
+                    if not entry.is_dir(follow_symlinks=False):
+                        raise ValueError("数据快照路径不能是链接")
+                    yield path
+
+    def candidates(research):
+        yield from directories(research / "subsets")
+        for batch in directories(research / "downloads"):
+            yield from directories(batch / "snapshots")
+
+    def unique_fields(pairs):
+        fields = {}
+        for key, value in pairs:
+            if key in fields:
+                raise ValueError("Duplicate manifest key")
+            fields[key] = value
+        return fields
+
+    match = None
+    try:
+        root = Path(data_root).resolve()
+        research = root / "research"
+        if mode(research) is not None:
+            require_direct(research)
+        for leaf in candidates(research):
+            manifest_path = leaf / "manifest.json"
+            manifest_mode = mode(manifest_path)
+            if manifest_mode is None:
+                continue  # A leaf without its atomically published manifest is not yet visible.
+            require_direct(manifest_path)
+            if not S_ISREG(manifest_mode):
+                raise ValueError("数据快照清单路径不是普通文件")
+            with manifest_path.open("rb") as manifest_file:
+                payload = manifest_file.read(min(max_manifest_bytes, bytes_left) + 1)
+            if len(payload) > max_manifest_bytes:
+                raise ValueError("数据快照清单超过大小上限")
+            bytes_left -= len(payload)
+            if bytes_left < 0:
+                raise ValueError("数据快照清单超过读取总量上限，无法确认快照唯一")
+            try:
+                manifest = json.loads(payload, object_pairs_hook=unique_fields)
+            except (ValueError, RecursionError) as error:
+                raise ValueError("无法读取数据快照清单，无法确认快照唯一") from error
+            if not isinstance(manifest, dict) or not isinstance(manifest.get("id"), str) or not manifest["id"]:
+                raise ValueError("无法读取数据快照清单标识，无法确认快照唯一")
+            if manifest["id"] != snapshot_id:
+                continue
+            if mode(leaf / "rejected.json") is not None:
+                raise ValueError(f"数据快照已被隔离：{snapshot_id}")
+            if match is not None:
+                raise ValueError(f"数据快照标识重复：{snapshot_id}")
+            if "snapshot_path" in manifest and manifest["snapshot_path"] != f"snapshots/{leaf.name}":
+                raise ValueError("数据快照清单指向其他路径")
+            files = manifest.get("files")
+            if not isinstance(files, dict) or set(files) != {"market.parquet", "benchmark.parquet", "calendar.parquet"}:
+                raise ValueError("数据快照文件摘要不完整")
+            if any(
+                not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                for digest in files.values()
+            ):
+                raise ValueError("数据快照文件摘要无效")
+            match = leaf.relative_to(root), manifest, sha256_bytes(payload)
+    except (OSError, RuntimeError) as error:
+        # Missing published manifests are handled explicitly; any other I/O failure
+        # means the scan cannot prove uniqueness, even if it already saw a match.
+        raise ValueError("无法读取数据快照目录或清单，无法确认快照唯一") from error
+    if match is None:
+        raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
+    return match
+
+
 def snapshot_registry(data_root: Path) -> dict:
     """Only published, valid snapshots below server-controlled locations are selectable.
 
@@ -99,8 +208,20 @@ def snapshot_registry(data_root: Path) -> dict:
     return found
 
 
-def research_options(data_root: Path, runs_root: Path, *, industry_version=None, financial_version=None) -> dict:
-    registry = snapshot_registry(data_root)
+def research_options(
+    data_root: Path,
+    runs_root: Path,
+    *,
+    industry_version=None,
+    financial_version=None,
+    allow_latest_references=True,
+    frozen_snapshot: FrozenMarketSnapshot | None = None,
+) -> dict:
+    registry = (
+        snapshot_registry(data_root)
+        if frozen_snapshot is None
+        else {frozen_snapshot.inputs[3]["id"]: frozen_snapshot.inputs}
+    )
     snapshots = []
     for identifier, (market, _, calendar, manifest) in registry.items():
         names = market.drop_duplicates("instrument").set_index("instrument")["name"].to_dict()
@@ -144,10 +265,15 @@ def research_options(data_root: Path, runs_root: Path, *, industry_version=None,
         else {"mode": "snapshot", "snapshot_id": None, "codes": []}
     )
 
-    historical_indices = [
-        option for root in market_download.warehouse_roots(data_root) if (option := warehouse_option(root))
-    ]
-    market_universes = [option for root in market_roots(data_root) if (option := market_option(root))]
+    # A fixed-pool selection handoff must validate its source against the pinned
+    # snapshot only. Interactive options still enumerate all selectable datasets.
+    historical_indices = []
+    market_universes = []
+    if frozen_snapshot is None:
+        historical_indices = [
+            option for root in market_download.warehouse_roots(data_root) if (option := warehouse_option(root))
+        ]
+        market_universes = [option for root in market_roots(data_root) if (option := market_option(root))]
     if not selected and historical_indices:
         # Only a CSI 300 version exists: default to its newest research range.
         latest = historical_indices[0]
@@ -178,8 +304,12 @@ def research_options(data_root: Path, runs_root: Path, *, industry_version=None,
     factors, evaluation = FactorConfig(), EvaluationConfig()
     neutralization = parse_neutralization()
 
-    industry = optional_industries(industry_version)
-    financial = financial_summary(data_root, version=financial_version)
+    industry = optional_industries(industry_version) if industry_version or allow_latest_references else None
+    financial = (
+        financial_summary(data_root, version=financial_version)
+        if financial_version or allow_latest_references
+        else None
+    )
     return {
         "snapshots": [
             {**row, "financial_coverage": coverage_row(financial, [code["code"] for code in row["codes"]], data_root)}
@@ -263,7 +393,15 @@ def coverage_row(financial: dict | None, codes, data_root: Path) -> dict | None:
     return {"covered": len(covered_codes(manifest, codes)), "total": len(set(codes))}
 
 
-def validate_request(document: dict, data_root: Path, runs_root: Path, *, financials=None) -> tuple[dict, dict]:
+def validate_request(
+    document: dict,
+    data_root: Path,
+    runs_root: Path,
+    *,
+    financials=None,
+    references_frozen=False,
+    frozen_snapshot: FrozenMarketSnapshot | None = None,
+) -> tuple[dict, dict]:
     _fields(
         document,
         ("name", "data", "backtest", "factors", "evaluation"),
@@ -271,6 +409,8 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
         label="研究",
     )
     neutralization = parse_neutralization(document.get("neutralization"))
+    if references_frozen:
+        neutralization = replace(neutralization, allow_latest=False)
     industry = industry_context(neutralization) if "neutralization" in document else None
     neutral_extra = {}
     if "neutralization" in document:
@@ -280,7 +420,9 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
                 **({"industry_version": industry.manifest["id"]} if industry else {}),
             }
         }
-        neutralization = parse_neutralization(neutral_extra["neutralization"])
+        neutralization = replace(
+            neutralization, industry_version=neutral_extra["neutralization"].get("industry_version")
+        )
     name = document["name"]
     if not isinstance(name, str) or not name.strip() or len(name) > 80 or any(ord(c) < 32 for c in name):
         raise ValueError("研究名称须为1至80个字符，不含换行")
@@ -303,14 +445,14 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
             for item in factor_list
         )
     )
-    binding = financials if financials is not None else pin_financials(factors, data_root)
+    binding = financials if financials is not None or references_frozen else pin_financials(factors, data_root)
     if any(spec.name == "gross_margin_ttm" for spec in factors.specs) and not neutralization.industry_version:
         industry = industry_context(neutralization)
         if industry:
             neutral_extra = {
                 "neutralization": {**neutralization.as_dict(), "industry_version": industry.manifest["id"]}
             }
-            neutralization = parse_neutralization(neutral_extra["neutralization"])
+            neutralization = replace(neutralization, industry_version=industry.manifest["id"])
     financial_extra = {"financials": binding.as_dict()} if binding else {}
     obj = document["data"]
     if not isinstance(obj, dict) or obj.get("mode") not in {"snapshot", "index_warehouse", "market_warehouse"}:
@@ -380,9 +522,14 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
         return normalized, pins
     _fields(obj, ("mode", "snapshot_id", "codes"), ("filters",), label="快照")
     identifier = obj["snapshot_id"]
-    if not isinstance(identifier, str) or identifier not in (registry := snapshot_registry(data_root)):
-        raise ValueError("数据快照不存在或未通过校验，请刷新数据列表")
-    market, _, calendar, manifest = registry[identifier]
+    if frozen_snapshot is not None:
+        market, _, calendar, manifest = frozen_snapshot.inputs
+        if identifier != manifest["id"]:
+            raise ValueError("请求的快照标识与提交时冻结版本不一致")
+    else:
+        if not isinstance(identifier, str) or identifier not in (registry := snapshot_registry(data_root)):
+            raise ValueError("数据快照不存在或未通过校验，请刷新数据列表")
+        market, _, calendar, manifest = registry[identifier]
     data = DataConfig(
         Path(manifest["snapshot_dir"]),
         manifest["start"],
@@ -408,8 +555,11 @@ def validate_request(document: dict, data_root: Path, runs_root: Path, *, financ
         raise ValueError("初始资金不能超过一万亿元")
     require_financial_coverage(binding, list(data.codes), factors)
     config = ResearchConfig(data, backtest, runs_root, factors, evaluation, neutralization, binding)
+    if frozen_snapshot is not None:
+        execution["manifest_sha256"] = frozen_snapshot.manifest_sha256
     if "filters" in obj:
-        execution["manifest_sha256"] = file_sha256(Path(manifest["snapshot_dir"]) / "manifest.json")
+        if frozen_snapshot is None:
+            execution["manifest_sha256"] = file_sha256(Path(manifest["snapshot_dir"]) / "manifest.json")
         validate_warmup(data.start, data.end, backtest.start, factors, calendar)
         sessions = pd.DatetimeIndex(calendar.loc[calendar.is_open, "date"])
         if (
@@ -479,7 +629,9 @@ def require_financial_coverage(binding, codes, factors=None) -> None:
         raise ValueError(f"该财务数据版本只覆盖 {len(covered)} 只所选股票，不足以进行横截面评分")
 
 
-def request_config(request: dict, data: DataConfig, runs_root: Path, data_root: Path) -> ResearchConfig:
+def request_config(
+    request: dict, data: DataConfig, runs_root: Path, data_root: Path, *, references_frozen=False
+) -> ResearchConfig:
 
     pinned = request.get("financials", {}).get("version")
     binding = FinancialBinding.from_dict(financial_root(data_root), request["financials"]) if pinned else None
@@ -489,7 +641,7 @@ def request_config(request: dict, data: DataConfig, runs_root: Path, data_root: 
         runs_root,
         FactorConfig(tuple(FactorSpec(**item) for item in request["factors"])),
         EvaluationConfig(**request["evaluation"]),
-        parse_neutralization(request.get("neutralization")),
+        replace(parse_neutralization(request.get("neutralization")), allow_latest=not references_frozen),
         binding,
     )
 

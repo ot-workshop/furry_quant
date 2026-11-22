@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from stat import S_ISREG
 
 import pandas as pd
 
-from finance_quant.checksums import file_sha256, sha256_text
+from finance_quant.checksums import file_sha256, sha256_bytes, sha256_text
 from finance_quant.data.providers import (
     TushareProvider,
 )
@@ -69,6 +71,78 @@ def load_market(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, d
             raise ValueError("Snapshot path escapes batch directory")
         manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
         root = snapshot
+    return _load_leaf(root, manifest)
+
+
+@dataclass(frozen=True)
+class FrozenMarketSnapshot:
+    root: Path
+    manifest_sha256: str
+    inputs: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]
+
+
+def load_frozen_snapshot(data_root: Path, execution: dict) -> FrozenMarketSnapshot:
+    """Verify and load exactly the queued snapshot leaf, never a latest pointer."""
+    raw = execution.get("snapshot_dir")
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("提交时未冻结数据快照")
+    root = data_root.resolve()
+    # Accept absolute paths from earlier pending payloads, but require the same topology.
+    directory = root / raw
+    if not directory.is_relative_to(root):
+        raise ValueError("冻结的数据快照路径不在受控目录内")
+    parts = directory.relative_to(root).parts
+    managed = (len(parts) == 3 and parts[:2] == ("research", "subsets")) or (
+        len(parts) == 5 and parts[:2] == ("research", "downloads") and parts[3] == "snapshots"
+    )
+    if not managed or any(part.startswith(".") for part in parts):
+        raise ValueError("冻结的数据快照路径不在受控目录内")
+    try:
+        resolved = directory.resolve(strict=True)
+    except FileNotFoundError:
+        raise ValueError("提交时的数据快照已不可用，请重新提交") from None
+    if resolved != directory:
+        raise ValueError("冻结的数据快照路径不在受控目录内")
+
+    def regular_file(name):
+        path = directory / name
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            raise ValueError("提交时的数据快照文件已不可用，请重新提交") from None
+        if not S_ISREG(mode) or path.resolve(strict=True) != path:
+            raise ValueError("冻结的数据快照文件路径不合法")
+        return path
+
+    try:
+        (directory / "rejected.json").lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise ValueError("提交时的数据快照已被隔离，请重新提交")
+    with regular_file("manifest.json").open("rb") as stream:
+        payload = stream.read(1024 * 1024 + 1)
+    digest = sha256_bytes(payload)
+    if len(payload) > 1024 * 1024 or digest != execution.get("manifest_sha256"):
+        raise ValueError("排队期间股票池历史状态发生变化，请重新提交")
+    manifest = json.loads(payload)
+    if (
+        not isinstance(manifest, dict)
+        or not isinstance(manifest.get("id"), str)
+        or manifest["id"] != execution.get("data_version")
+        or not isinstance(manifest.get("files"), dict)
+        or manifest["files"] != execution.get("files")
+    ):
+        raise ValueError("排队期间数据版本发生变化，请重新提交")
+    if "snapshot_path" in manifest and manifest["snapshot_path"] != f"snapshots/{directory.name}":
+        raise ValueError("冻结的数据快照清单指向其他路径")
+    # Check physical paths before the normal leaf loader hashes and decodes the three files.
+    for name in ("market.parquet", "benchmark.parquet", "calendar.parquet"):
+        regular_file(name)
+    return FrozenMarketSnapshot(directory, digest, _load_leaf(directory, manifest))
+
+
+def _load_leaf(root, manifest):
     if manifest.get("schema_version") not in {"market-v1", "market-v2", "market-v3", "market-v4-shared"}:
         raise ValueError("Unsupported market snapshot schema")
     if set(manifest["files"]) != {"market.parquet", "benchmark.parquet", "calendar.parquet"}:
