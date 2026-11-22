@@ -13,6 +13,7 @@ from finance_quant.application.experiment_references import REFERENCE_KEY, captu
 from finance_quant.application.experiment_tasks import (
     experiment_total,
     validate_experiment_document,
+    validate_experiment_submission_fields,
     validate_selection_reference,
 )
 from finance_quant.application.research_requests import lookup_snapshot_meta, validate_request
@@ -47,6 +48,7 @@ class TaskService:
         # Cheap checks only: the expensive validation runs in the worker's prepare stage,
         # so a comparison submission returns as soon as it is queued.
         plan = validate_experiment_document(document)
+        validate_experiment_submission_fields(document, plan)
         validate_selection_reference(document, plan)
         execution = {
             "prepare_state": "pending",

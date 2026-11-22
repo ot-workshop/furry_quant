@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from test_experiments import experiment_request
 from test_managed_data import Provider
 
-from finance_quant.application import research_requests
+from finance_quant.application import research_requests, tasks
 from support.fakes import make_app, make_service
 from support.fixed_pool import publish_fixture_snapshot
 
@@ -33,14 +33,45 @@ def submit(tmp_path):
     service = make_service(runs, data)
     client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
 
-    def post(snapshot_id=SNAPSHOT_ID):
+    def post(snapshot_id=SNAPSHOT_ID, *, document=None):
         return client.post(
             "/api/v1/research/experiments",
-            json=experiment_request(snapshot_id),
+            json=experiment_request(snapshot_id) if document is None else document,
             headers={"Idempotency-Key": "experiment-pinned-test"},
         )
 
     return data, service.store, post
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "detail"),
+    [
+        ("data", None, "数据集"),
+        ("data", {"mode": "unknown"}, "数据集"),
+        ("data", {"mode": []}, "数据集"),
+        ("data", {"mode": "snapshot", "codes": ["600000.SH", "000001.SZ"]}, "快照"),
+        ("data", {"mode": "index_warehouse"}, "仓库"),
+        ("data", {"mode": "market_warehouse"}, "仓库"),
+        ("data", {"mode": "market_warehouse", "warehouse_id": "csi300-" + "0" * 20}, "版本标识"),
+        ("evaluation", None, "因子评估"),
+        ("evaluation", {"horizons": [0]}, "horizons"),
+        ("backtest", {"initial_cash": 0}, "initial_cash"),
+        ("neutralization", {"mode": "invalid"}, "中性化"),
+    ],
+)
+def test_invalid_experiment_fields_are_rejected_before_pinning(submit, monkeypatch, field, value, detail):
+    _, store, post = submit
+    document = {**experiment_request(SNAPSHOT_ID), field: value}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Malformed request must fail before any source lookup or reference capture")
+
+    monkeypatch.setattr(tasks, "lookup_snapshot_meta", forbidden)
+    monkeypatch.setattr(tasks, "capture_experiment_references", forbidden)
+    response = post(document=document)
+    assert response.status_code == 422, response.text
+    assert detail in response.json()["detail"]
+    assert store.list()["total"] == 0
 
 
 @pytest.mark.parametrize("relative", ["research/downloads/batch/snapshots/leaf", "research/subsets/leaf"])
