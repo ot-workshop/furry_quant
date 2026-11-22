@@ -235,13 +235,47 @@ def layout(locator, page, width):
     assert page.evaluate("document.documentElement.scrollWidth") == width
 
 
-def stop_case(browser, dist, out, width, height, entry):
+def text_contrast(locator):
+    # Resolve translucent text against the actual ancestor backgrounds, then
+    # use the WCAG sRGB relative luminance ratio for normal-size text.
+    return locator.evaluate("""element => {
+        const rgba = color => {
+            const match = /^rgba?\\((.+)\\)$/.exec(color);
+            if (!match) throw new Error(`Expected computed sRGB: ${color}`);
+            const [r, g, b, a = 1] = match[1].split(',').map(Number);
+            return [r, g, b, a];
+        };
+        const over = ([r, g, b, a], below) =>
+            [r, g, b].map((channel, i) => channel * a + below[i] * (1 - a));
+        const layers = [];
+        for (let node = element; node; node = node.parentElement) {
+            const color = rgba(getComputedStyle(node).backgroundColor);
+            layers.push(color);
+            if (color[3] === 1) break;
+        }
+        if (layers.at(-1)[3] !== 1) throw new Error('No opaque background found');
+        const background = layers.reverse().reduce((below, top) => over(top, below), [0, 0, 0]);
+        const color = getComputedStyle(element).color;
+        const foreground = over(rgba(color), background);
+        const luminance = rgb => rgb.map(value => {
+            const s = value / 255;
+            return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+        }).reduce((sum, value, i) => sum + value * [0.2126, 0.7152, 0.0722][i], 0);
+        const [lo, hi] = [luminance(foreground), luminance(background)].sort((a, b) => a - b);
+        return {color, background, ratio: (hi + 0.05) / (lo + 0.05)};
+    }""")
+
+
+def stop_case(browser, dist, out, width, height, entry, *, theme="light"):
     mode = "touch" if width < 768 else "keyboard" if width == 1366 else "mouse"
-    context = browser.new_context(viewport={"width": width, "height": height}, has_touch=mode == "touch")
+    context = browser.new_context(
+        viewport={"width": width, "height": height}, has_touch=mode == "touch", color_scheme=theme
+    )
     try:
         with serve(dist, ["hold", "hold"]) as (origin, fixture):
             page = context.new_page()
             url = prepare(page, origin, entry, mode)
+            expect(page.locator("html")).to_have_attribute("data-theme", theme)
             submit = primary(page, entry)
             submit.scroll_into_view_if_needed()
             if mode == "mouse":
@@ -258,8 +292,10 @@ def stop_case(browser, dist, out, width, height, entry):
             # Check both rectangles before any scroll or action by the test.
             expect(stop).to_be_in_viewport(ratio=1)
             expect(help_text).to_be_in_viewport(ratio=1)
+            contrast = text_contrast(help_text)
+            assert contrast["ratio"] >= 4.5, (width, entry, theme, contrast)
             if mode == "touch":
-                page.screenshot(path=str(out / f"{width}-{entry}-waiting.png"), animations="disabled")
+                page.screenshot(path=str(out / f"{width}-{entry}-{theme}-waiting.png"), animations="disabled")
             layout(stop, page, width)
             if mode == "keyboard":
                 expect(stop).to_be_focused()
@@ -279,7 +315,7 @@ def stop_case(browser, dist, out, width, height, entry):
             assert task_link.evaluate("""e => e.getBoundingClientRect().right <=
               e.closest('.ant-alert').getBoundingClientRect().right""")
             expect(submit).to_be_enabled()
-            if width in (1024, 320):
+            if width in (1024, 320) and theme == "light":
                 page.screenshot(path=str(out / f"{width}-{entry}-unconfirmed.png"), animations="disabled")
             with context.expect_page() as popup:
                 activate(task_link, mode)
@@ -307,6 +343,8 @@ def stop_case(browser, dist, out, width, height, entry):
                 "viewport": width,
                 "entry": entry,
                 "input": mode,
+                "theme": theme,
+                "waiting_help_contrast": contrast,
                 "posts": 2,
                 "accepted": 1,
                 "result": "accepted-01",
@@ -475,6 +513,10 @@ def main():
         for width, height in WIDTHS:
             for entry in NAMES:
                 results.append(stop_case(browser, args.dist.resolve(), args.out, width, height, entry))
+                if width < 768:
+                    results.append(
+                        stop_case(browser, args.dist.resolve(), args.out, width, height, entry, theme="dark")
+                    )
         for entry in NAMES:
             for failure in ("drop", "503", "504", "422", "409", "bad-json", "missing-id", "hold"):
                 results.append(transport_case(browser, args.dist.resolve(), entry, failure))

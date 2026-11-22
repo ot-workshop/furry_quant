@@ -139,7 +139,7 @@ export function ExperimentSubmission({
       </Button>
       {waiting ? (
         <>
-          <Typography.Text id={waitingHelp} type="secondary">
+          <Typography.Text id={waitingHelp}>
             等待确认时参数不可编辑。停止等待后可继续编辑，这不会取消任务。
           </Typography.Text>
           <Button
