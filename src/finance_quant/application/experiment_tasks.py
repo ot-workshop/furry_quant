@@ -34,7 +34,7 @@ from finance_quant.configuration import BacktestConfig, DataConfig, EvaluationCo
 from finance_quant.data.execution_universe import validate_execution_universe
 from finance_quant.data.financials import FinancialBinding, financial_root
 from finance_quant.data.market import FrozenMarketSnapshot, load_frozen_snapshot
-from finance_quant.data.symbols import to_qlib
+from finance_quant.data.symbols import TS_CODE, to_qlib
 from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.experiments import SELECTION_METRIC, ExperimentPlan
 from finance_quant.research.factor_selection import SelectionParameters
@@ -204,6 +204,8 @@ def validate_experiment_submission_fields(document: dict, plan: ExperimentPlan) 
                 or len(set(codes)) != len(codes)
             ):
                 raise ValueError("自选股票须至少两只、不重复")
+            if any(TS_CODE.fullmatch(code) is None for code in codes):
+                raise ValueError("自选股票代码格式无效，请使用 600000.SH 这样的证券代码")
             if backtest.topk > len(codes):
                 raise ValueError("目标持股不能超过所选股票数")
     if "filters" in data:
