@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
 import stat
 import threading
 import time
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -23,6 +26,11 @@ SYNTHETIC_NOTICE = "合成样本，仅验证系统流程，不代表真实股票
 _SNAPSHOT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 _FIXED_SCHEMAS = {"market-v1", "market-v2", "market-v3", "market-v4-shared"}
 _FIXED_FILES = {"market.parquet", "benchmark.parquet", "calendar.parquet"}
+_WAREHOUSE_SCHEMAS = {
+    "historical": "historical-index-warehouse-v1",
+    "market": "historical-market-warehouse-v1",
+}
+_WAREHOUSE_VIEWS = {"historical": "index-view", "market": "market-view"}
 _SUMMARY_CACHE_TTL_SECONDS = 30.0
 
 
@@ -71,27 +79,68 @@ def historical_indices(data_root) -> list[dict]:
     return items
 
 
-def _load_manifest_object(path: Path) -> dict | None:
-    """Parse a JSON object; ignore missing/malformed JSON while propagating storage read errors."""
+def _confined_entry(
+    path: Path, root: Path, *, entry: os.DirEntry[str] | None = None
+) -> tuple[Path, os.stat_result] | None:
+    """Inspect a child of an already confined directory; never follow an unchecked link."""
 
     try:
-        raw = path.read_text(encoding="utf-8")
-    except (FileNotFoundError, IsADirectoryError):
+        info = entry.stat(follow_symlinks=False) if entry is not None else path.lstat()
+        # Windows junctions are reparse points, even when is_symlink() is false.
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            try:
+                path = path.resolve(strict=True)
+            except RuntimeError as exc:  # Symlink loops on Python 3.11/3.12
+                raise OSError(errno.ELOOP, "Loop resolving inventory path", path) from exc
+            if not path.is_relative_to(root):
+                return None
+            info = path.stat()
+        return path, info
+    except FileNotFoundError:
+        return None
+
+
+def _confined_dir(
+    path: Path, root: Path, *, entry: os.DirEntry[str] | None = None
+) -> tuple[Path, os.stat_result] | None:
+    found = _confined_entry(path, root, entry=entry)
+    return found if found is not None and stat.S_ISDIR(found[1].st_mode) else None
+
+
+def _directories(parent: Path, root: Path) -> Iterator[Path]:
+    try:
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                found = _confined_dir(Path(entry.path), root, entry=entry)
+                if found is not None:
+                    yield found[0]
+    except FileNotFoundError:
+        # A concurrently removed directory is absent, not a storage outage.
+        return
+
+
+def _regular_file(parent: Path, name: str, root: Path) -> bool:
+    found = _confined_entry(parent / name, root)
+    return found is not None and stat.S_ISREG(found[1].st_mode)
+
+
+def _load_manifest_object(parent: Path, root: Path) -> dict | None:
+    """Raise on missing or I/O failure; only wrong type or malformed content counts as invalid."""
+
+    found = _confined_entry(parent / "manifest.json", root)
+    if found is None:
+        raise FileNotFoundError(parent / "manifest.json")
+    path, info = found
+    if not stat.S_ISREG(info.st_mode):
         return None
     try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError):
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, RecursionError):
         return None
-    return parsed if isinstance(parsed, dict) else None
+    return value if isinstance(value, dict) else None
 
 
-def _valid_fixed_snapshot_fields(
-    manifest: dict, present_files: set[str] | None = None, path: Path | None = None
-) -> str | None:
-    """Validate publisher fixed-snapshot header fields without opening parquet payloads."""
-
-    if "projection" in manifest:
-        return None
+def _fixed_snapshot_id(path: Path, root: Path, manifest: dict) -> str | None:
     identifier = manifest.get("id")
     if not isinstance(identifier, str) or not _SNAPSHOT_ID_RE.fullmatch(identifier):
         return None
@@ -104,236 +153,109 @@ def _valid_fixed_snapshot_fields(
     files = manifest.get("files")
     if not isinstance(files, dict) or set(files) != _FIXED_FILES:
         return None
+    # Presence only; full checksums remain the responsibility of the existing data-load paths.
     for name, expected in files.items():
-        if not isinstance(expected, str) or not expected:
-            return None
-        if present_files is not None:
-            if name not in present_files:
-                return None
-        elif path is None or not (path / name).is_file():
+        if not isinstance(expected, str) or not expected or not _regular_file(path, name, root):
             return None
     return identifier
 
 
-def _valid_fixed_snapshot(path: Path, root: Path, manifest: dict) -> str | None:
-    """Verify fixed snapshot publisher manifest without opening or hashing payload files.
-
-    Reuses producer-recorded metadata (`schema_version`, `files` digest map,
-    non-empty `codes`, absence of `rejected.json`) plus file presence; full payload
-    checksum verification remains in `/api/v1/data-status` and data-load paths.
-    """
-
-    try:
-        resolved = path.resolve()
-        if not resolved.is_relative_to(root) or (resolved / "rejected.json").exists():
-            return None
-        return _valid_fixed_snapshot_fields(manifest, path=resolved)
-    except OSError:
-        return None
-
-
-def _valid_warehouse_header(wh_root: Path, expected_schema: str) -> bool:
-    """Verify warehouse publisher manifest readiness without opening or hashing payload files."""
-
-    manifest = _load_manifest_object(wh_root / "manifest.json")
-    if manifest is None:
-        return False
-    schema_version = manifest.get("schema_version")
-    if not isinstance(schema_version, str) or schema_version != expected_schema:
+def _valid_warehouse_header(path: Path, root: Path, manifest: dict, expected_schema: str) -> bool:
+    if manifest.get("schema_version") != expected_schema:
         return False
     assets = manifest.get("assets")
     if not isinstance(assets, dict) or not assets:
         return False
     ref_files = manifest.get("reference_files")
     calendar_sha = ref_files.get("calendar.parquet") if isinstance(ref_files, dict) else None
-    calendar_path = wh_root / "reference/calendar.parquet"
     if not isinstance(calendar_sha, str) or not calendar_sha:
         return False
-    try:
-        return stat.S_ISREG(os.stat(calendar_path).st_mode)
-    except FileNotFoundError:
-        return False
+    reference = _confined_dir(path / "reference", root)
+    return reference is not None and _regular_file(reference[0], "calendar.parquet", root)
 
 
-def _confined_dir_stat(path: Path, root: Path) -> tuple[Path, os.stat_result] | None:
-    """Resolve `path` and stat it only if confined inside `root`; raise non-ENOENT OSErrors."""
-
-    try:
-        resolved = path.resolve()
-    except FileNotFoundError:
-        return None
-    if not resolved.is_relative_to(root):
-        return None
-    try:
-        st = os.stat(resolved)
-    except FileNotFoundError:
-        return None
-    if not stat.S_ISDIR(st.st_mode):
-        return None
-    return resolved, st
+@dataclass(frozen=True)
+class _InventoryContainers:
+    snapshots: tuple[Path, ...]
+    versions: Path | None
+    signature: tuple[tuple[Path, int], ...]
 
 
-def _inventory_container_signature(root: Path) -> tuple[tuple[str, int], ...]:
-    """O(container dirs) mtime signature so new/removed dataset folders invalidate cached counts."""
+def _inventory_containers(root: Path) -> _InventoryContainers:
+    """Discover container paths once and reuse them for both cache validation and cold counts."""
 
-    stamps: list[tuple[str, int]] = []
-    if _confined_dir_stat(root / "research", root) is not None:
-        dl_info = _confined_dir_stat(root / "research/downloads", root)
-    else:
-        dl_info = None
-    if dl_info is None:
-        stamps.append(("research/downloads", -1))
-    else:
-        dl_dir, dl_st = dl_info
-        stamps.append(("research/downloads", dl_st.st_mtime_ns))
-        with os.scandir(dl_dir) as sources:
-            for src in sorted(sources, key=lambda entry: entry.name):
-                if not src.is_dir(follow_symlinks=True):
-                    continue
-                snaps_info = _confined_dir_stat(Path(src.path) / "snapshots", root)
-                if snaps_info is not None:
-                    stamps.append((f"{src.name}/snapshots", snaps_info[1].st_mtime_ns))
+    stamps: list[tuple[Path, int]] = []
+    snapshots: list[Path] = []
+    research = _confined_dir(root / "research", root)
+    downloads = _confined_dir(research[0] / "downloads", root) if research is not None else None
+    if downloads is not None:
+        stamps.append((downloads[0], downloads[1].st_mtime_ns))
+        for source in _directories(downloads[0], root):
+            info = _confined_dir(source / "snapshots", root)
+            if info is not None:
+                snapshots.append(info[0])
+                stamps.append((info[0], info[1].st_mtime_ns))
 
-    if _confined_dir_stat(root / "shared-market", root) is not None:
-        ver_info = _confined_dir_stat(root / "shared-market/versions", root)
-    else:
-        ver_info = None
-    if ver_info is None:
-        stamps.append(("shared-market/versions", -1))
-    else:
-        ver_dir, ver_st = ver_info
-        stamps.append(("shared-market/versions", ver_st.st_mtime_ns))
-        # Touch readable dir handle so EACCES on shared-market/versions surfaces loudly.
-        with os.scandir(ver_dir):
-            pass
-    return tuple(stamps)
+    shared = _confined_dir(root / "shared-market", root)
+    versions = _confined_dir(shared[0] / "versions", root) if shared is not None else None
+    if versions is not None:
+        stamps.append((versions[0], versions[1].st_mtime_ns))
+    return _InventoryContainers(tuple(snapshots), versions[0] if versions else None, tuple(sorted(stamps)))
 
 
-def _scan_fixed_snapshots(root: Path) -> tuple[set[str], int]:
-    """Scan fixed-pool snapshot headers via os.scandir without opening payload files."""
+def _dataset_candidates(root: Path, containers: _InventoryContainers) -> Iterator[tuple[str, Path]]:
+    for snapshots in containers.snapshots:
+        for path in _directories(snapshots, root):
+            yield "fixed", path
+    if containers.versions is not None:
+        for version in _directories(containers.versions, root):
+            if not _regular_file(version, "version.json", root):
+                continue  # The publisher writes this marker last.
+            for kind, name in _WAREHOUSE_VIEWS.items():
+                view = _confined_dir(version / name, root)
+                if view is not None:
+                    yield kind, view[0]
+
+
+def _dataset_counts(root: Path, containers: _InventoryContainers) -> dict[str, int]:
+    """One confined traversal for all three dataset kinds, without opening payload files."""
 
     fixed_ids: set[str] = set()
+    warehouses: dict[str, set[Path]] = {kind: set() for kind in _WAREHOUSE_VIEWS}
+    seen: set[tuple[str, Path]] = set()
     invalid = 0
-    if _confined_dir_stat(root / "research", root) is None:
-        return fixed_ids, invalid
-    dl_info = _confined_dir_stat(root / "research" / "downloads", root)
-    if dl_info is None:
-        return fixed_ids, invalid
-    downloads_dir, _ = dl_info
-    with os.scandir(downloads_dir) as sources:
-        source_entries = sorted(sources, key=lambda entry: entry.name)
-    for src in source_entries:
-        if not src.is_dir(follow_symlinks=True):
+    for kind, path in _dataset_candidates(root, containers):
+        if (kind, path) in seen:
             continue
-        if _confined_dir_stat(Path(src.path), root) is None:
-            continue
-        snaps_info = _confined_dir_stat(Path(src.path) / "snapshots", root)
-        if snaps_info is None:
-            continue
-        snaps_dir, _ = snaps_info
-        with os.scandir(snaps_dir) as entries:
-            snap_entries = sorted(entries, key=lambda entry: entry.name)
-        for entry in snap_entries:
-            if not entry.is_dir(follow_symlinks=True):
-                continue
-            snap_path = Path(entry.path)
-            if entry.is_symlink() or src.is_symlink():
-                if not snap_path.resolve().is_relative_to(root):
-                    continue
-            try:
-                with os.scandir(snap_path) as children:
-                    child_files = {child.name for child in children if child.is_file(follow_symlinks=True)}
-            except FileNotFoundError:
-                continue
-            if "manifest.json" not in child_files:
-                continue
-            manifest = _load_manifest_object(snap_path / "manifest.json")
-            if manifest is None:
-                invalid += 1
-                continue
+        seen.add((kind, path))
+        try:
+            manifest = _load_manifest_object(path, root)
+        except FileNotFoundError:
+            continue  # Incomplete or concurrently removed publication, not corrupt content.
+        if manifest is None:
+            invalid += 1
+        elif kind == "fixed":
             if "projection" in manifest:
                 continue
-            if "rejected.json" in child_files:
-                invalid += 1
-                continue
-            identifier = _valid_fixed_snapshot_fields(manifest, present_files=child_files)
-            if identifier is not None:
-                fixed_ids.add(identifier)
-            else:
-                invalid += 1
-    return fixed_ids, invalid
-
-
-def _path_escaped_root(path: Path, root: Path) -> bool:
-    """Return True when `path` exists (lstat) and its resolved target escapes `root`."""
-
-    try:
-        os.lstat(path)
-    except FileNotFoundError:
-        return False
-    try:
-        return not path.resolve().is_relative_to(root)
-    except FileNotFoundError:
-        return False
-
-
-def _versions_tree_state(root: Path) -> str:
-    """Verify shared-market/versions confinement and surface EACCES before calling glob-based readers."""
-
-    shared_dir = root / "shared-market"
-    versions_dir = shared_dir / "versions"
-    if _path_escaped_root(shared_dir, root) or _path_escaped_root(versions_dir, root):
-        return "escaped"
-    ver_info = _confined_dir_stat(versions_dir, root)
-    if ver_info is None:
-        return "missing"
-    with os.scandir(ver_info[0]) as versions:
-        for ver in versions:
-            if not ver.is_dir(follow_symlinks=True):
-                continue
-            ver_path = Path(ver.path)
-            if not ver_path.resolve().is_relative_to(root):
-                continue
-            for view_name in ("index-view", "market-view"):
-                view_path = ver_path / view_name
-                if _confined_dir_stat(view_path, root) is not None:
-                    with os.scandir(view_path):
-                        pass
-    return "confined"
-
-
-def _dataset_counts(data_root: Path) -> dict[str, int]:
-    """Count published datasets from validated publisher manifests only (not revalidated payloads)."""
-
-    root = Path(data_root).resolve()
-    fixed_ids, invalid = _scan_fixed_snapshots(root)
-
-    historical = 0
-    market = 0
-    if _versions_tree_state(root) != "escaped":
-        for wh_root in market_download.warehouse_roots(root):
             try:
-                if not Path(wh_root).resolve().is_relative_to(root):
+                # A rejection marker need not be opened or followed to exclude the snapshot.
+                (path / "rejected.json").lstat()
+            except FileNotFoundError:
+                identifier = _fixed_snapshot_id(path, root, manifest)
+                if identifier is not None:
+                    fixed_ids.add(identifier)
                     continue
-            except OSError:
-                continue
-            if _valid_warehouse_header(wh_root, "historical-index-warehouse-v1"):
-                historical += 1
-            else:
-                invalid += 1
-
-        for m_root in market_roots(root):
-            try:
-                if not Path(m_root).resolve().is_relative_to(root):
-                    continue
-            except OSError:
-                continue
-            if _valid_warehouse_header(m_root, "historical-market-warehouse-v1"):
-                market += 1
-            else:
-                invalid += 1
-
-    return {"fixed": len(fixed_ids), "historical": historical, "market": market, "invalid": invalid}
+            invalid += 1
+        elif _valid_warehouse_header(path, root, manifest, _WAREHOUSE_SCHEMAS[kind]):
+            warehouses[kind].add(path)
+        else:
+            invalid += 1
+    return {
+        "fixed": len(fixed_ids),
+        "historical": len(warehouses["historical"]),
+        "market": len(warehouses["market"]),
+        "invalid": invalid,
+    }
 
 
 def system_router(
@@ -356,7 +278,7 @@ def system_router(
     counts_cache_lock = threading.Lock()
     counts_fetch_lock = threading.Lock()
     counts_cache_expires: float = 0.0
-    counts_cache_signature: tuple[tuple[str, int], ...] | None = None
+    counts_cache_signature: tuple[tuple[Path, int], ...] | None = None
     counts_cache_value: tuple[dict[str, int], str] | None = None
     counts_epoch: int = 0
 
@@ -388,7 +310,7 @@ def system_router(
     def read_database_summary() -> tuple[dict | None, str]:
         nonlocal cache_expires, cache_value
         loader = market_summary
-        if loader is None and market_status is None:
+        if loader is None:
             return None, datetime.now(UTC).isoformat()
         now = time.monotonic()
         if summary_cache_ttl > 0:
@@ -401,7 +323,7 @@ def system_router(
                 if summary_cache_ttl > 0 and now < cache_expires and cache_value is not None:
                     return cache_value
                 start_epoch = db_epoch
-            raw = loader() if loader is not None else market_status()
+            raw = loader()
             summary = {
                 "securities": int(raw["securities"]),
                 "coverage_start": raw.get("coverage_start"),
@@ -416,14 +338,11 @@ def system_router(
 
     def read_dataset_counts() -> tuple[dict[str, int], str]:
         nonlocal counts_cache_expires, counts_cache_signature, counts_cache_value
-        sig = _inventory_container_signature(resolved_root) if summary_cache_ttl > 0 else ()
-        now = time.monotonic()
-        if summary_cache_ttl > 0:
-            with counts_cache_lock:
-                if now < counts_cache_expires and counts_cache_value is not None and counts_cache_signature == sig:
-                    return counts_cache_value
         with counts_fetch_lock:
-            sig = _inventory_container_signature(resolved_root) if summary_cache_ttl > 0 else ()
+            with counts_cache_lock:
+                start_epoch = counts_epoch
+            containers = _inventory_containers(resolved_root)
+            sig = containers.signature
             now = time.monotonic()
             with counts_cache_lock:
                 if (
@@ -433,8 +352,7 @@ def system_router(
                     and counts_cache_signature == sig
                 ):
                     return counts_cache_value
-                start_epoch = counts_epoch
-            counts = _dataset_counts(resolved_root)
+            counts = _dataset_counts(resolved_root, containers)
             counts_sampled_at = datetime.now(UTC).isoformat()
             with counts_cache_lock:
                 if summary_cache_ttl > 0 and counts_epoch == start_epoch:

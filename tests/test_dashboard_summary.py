@@ -2,11 +2,15 @@ import datetime as dt
 import errno
 import json
 import os
+import subprocess
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 from sqlalchemy import event
@@ -15,7 +19,7 @@ from sqlalchemy.exc import OperationalError
 from finance_quant.api import create_app
 from finance_quant.application import market_download
 from finance_quant.checksums import sha256_bytes
-from finance_quant.data import market_universe, postgres_market
+from finance_quant.data import postgres_market
 from finance_quant.storage import ResultStore
 from finance_quant.web import system as web_system
 from support.fakes import make_app, make_service
@@ -56,8 +60,8 @@ def test_dashboard_summary_counts_headers_without_reading_parquet_or_heavy_table
         {"id": "sub-1", "projection": {"parent_data_version": "snap-1"}},
     )
 
-    # Historical index warehouse and market warehouse (dict assets + verified calendar checksum).
-    wh_root = data / "historical/wh1"
+    # Real published version layout: both warehouse views share one publication marker.
+    wh_root = data / "shared-market/versions/v1/index-view"
     (wh_root / "reference").mkdir(parents=True, exist_ok=True)
     cal_bytes = b"calendar-bytes"
     (wh_root / "reference/calendar.parquet").write_bytes(cal_bytes)
@@ -83,13 +87,11 @@ def test_dashboard_summary_counts_headers_without_reading_parquet_or_heavy_table
     )
     (m_root.parent / "version.json").write_text("{}", encoding="utf-8")
 
-    monkeypatch.setattr(market_download, "warehouse_roots", lambda _root: [wh_root.resolve()])
-    monkeypatch.setattr(market_universe, "market_roots", lambda _root: [m_root.resolve()])
-    monkeypatch.setattr("finance_quant.web.system.market_roots", lambda _root: [m_root.resolve()])
-
     def fail_heavy(*_args, **_kwargs):
         raise AssertionError("dashboard summary must not invoke heavy parquet/table readers")
 
+    monkeypatch.setattr(market_download, "warehouse_roots", fail_heavy)
+    monkeypatch.setattr(web_system, "market_roots", fail_heavy)
     monkeypatch.setattr("finance_quant.web.system.snapshot_registry", fail_heavy)
     monkeypatch.setattr("finance_quant.web.system.warehouse_option", fail_heavy)
     monkeypatch.setattr("finance_quant.web.system.market_option", fail_heavy)
@@ -138,20 +140,21 @@ def test_dashboard_summary_counts_headers_without_reading_parquet_or_heavy_table
     assert second.json()["as_of"] == body["as_of"]
 
 
-def test_dashboard_summary_rejects_non_object_corrupt_quarantined_and_checksum_mismatched_manifests(
-    tmp_path, monkeypatch
-):
+def test_dashboard_summary_rejects_malformed_quarantined_and_incomplete_manifests(tmp_path):
     runs, data = tmp_path / "runs", tmp_path / "data"
 
     # 1 valid fixed snapshot.
     _write_valid_fixed_snapshot(data / "research/downloads/b_ok/snapshots/s_ok", "snap-ok")
 
-    # Bad fixed manifests: JSON array, JSON scalar, invalid syntax, quarantined, missing file, checksum mismatch.
+    # Bad fixed manifests: wrong type, bad syntax or encoding, quarantined, or missing required file.
     _write_json(data / "research/downloads/b_arr/snapshots/s1/manifest.json", ["not", "an", "object"])
     _write_json(data / "research/downloads/b_num/snapshots/s1/manifest.json", 12345)
     bad_syntax = data / "research/downloads/b_badjson/snapshots/s1/manifest.json"
     bad_syntax.parent.mkdir(parents=True, exist_ok=True)
     bad_syntax.write_text("{broken json", encoding="utf-8")
+    bad_encoding = data / "research/downloads/b_encoding/snapshots/s1/manifest.json"
+    bad_encoding.parent.mkdir(parents=True)
+    bad_encoding.write_bytes(b"\xff")
 
     _write_valid_fixed_snapshot(data / "research/downloads/b_rej/snapshots/s1", "snap-rej")
     (data / "research/downloads/b_rej/snapshots/s1/rejected.json").write_text("{}", encoding="utf-8")
@@ -170,10 +173,10 @@ def test_dashboard_summary_rejects_non_object_corrupt_quarantined_and_checksum_m
     )
 
     # Bad historical and market manifests (non-object JSON, list schema_version, missing calendar file).
-    wh_bad_arr = data / "historical/bad_arr"
+    wh_bad_arr = data / "shared-market/versions/v_bad_arr/index-view"
     _write_json(wh_bad_arr / "manifest.json", ["bad"])
 
-    wh_bad_schema = data / "historical/bad_schema"
+    wh_bad_schema = data / "shared-market/versions/v_bad_schema/index-view"
     _write_json(
         wh_bad_schema / "manifest.json",
         {"schema_version": [], "assets": ["000001.SZ"], "reference_files": {"calendar.parquet": "abc"}},
@@ -190,10 +193,13 @@ def test_dashboard_summary_rejects_non_object_corrupt_quarantined_and_checksum_m
     )
     (m_missing_ref.parent / "version.json").write_text("{}", encoding="utf-8")
 
-    monkeypatch.setattr(
-        market_download, "warehouse_roots", lambda _root: [wh_bad_arr.resolve(), wh_bad_schema.resolve()]
-    )
-    monkeypatch.setattr("finance_quant.web.system.market_roots", lambda _root: [m_missing_ref.resolve()])
+    for version in (wh_bad_arr.parent, wh_bad_schema.parent):
+        _write_json(version / "version.json", {})
+
+    # No publish marker: absent, not a failed dataset.
+    _write_json(data / "shared-market/versions/v_staging/market-view/manifest.json", ["not yet published"])
+    (data / "research/downloads/b_ok/snapshots/s_staging").mkdir()
+    (wh_bad_schema.parent / "market-view").mkdir()
 
     app = make_app(
         runs, data_root=data, market_summary=lambda: {"securities": 0, "coverage_start": None, "coverage_end": None}
@@ -202,7 +208,7 @@ def test_dashboard_summary_rejects_non_object_corrupt_quarantined_and_checksum_m
 
     res = client.get("/api/v1/dashboard/summary")
     assert res.status_code == 200
-    assert res.json()["counts"] == {"fixed": 1, "historical": 0, "market": 0, "invalid": 10}
+    assert res.json()["counts"] == {"fixed": 1, "historical": 0, "market": 0, "invalid": 11}
 
 
 def test_dashboard_summary_concurrent_cold_requests_execute_loader_once(tmp_path):
@@ -329,10 +335,10 @@ def test_dashboard_summary_caches_inventory_with_single_flight_and_explicit_inva
     scan_calls = {"count": 0}
     real_scan = web_system._dataset_counts
 
-    def tracked_scan(root):
+    def tracked_scan(root, containers):
         scan_calls["count"] += 1
         time.sleep(0.03)
-        return real_scan(root)
+        return real_scan(root, containers)
 
     monkeypatch.setattr(web_system, "_dataset_counts", tracked_scan)
 
@@ -385,53 +391,18 @@ def test_dashboard_summary_caches_inventory_with_single_flight_and_explicit_inva
     assert refreshed.json()["counts"] == {"fixed": 1, "historical": 0, "market": 0, "invalid": 1}
 
 
-def test_dashboard_summary_fails_on_inaccessible_inventory_and_blocks_inflight_repopulation(tmp_path, monkeypatch):
+def test_dashboard_summary_invalidation_does_not_repopulate_with_inflight_counts(tmp_path, monkeypatch):
     runs, data = tmp_path / "runs", tmp_path / "data"
     _write_valid_fixed_snapshot(data / "research/downloads/b1/snapshots/s1", "snap-1")
 
-    # 1. Top-level EACCES on inventory directory must return HTTP 503, never HTTP 200 with fixed=0.
-    real_scandir = os.scandir
-
-    def deny_downloads_scandir(target):
-        if Path(target).resolve() == (data / "research/downloads").resolve():
-            raise PermissionError(errno.EACCES, "Permission denied", str(target))
-        return real_scandir(target)
-
-    monkeypatch.setattr(os, "scandir", deny_downloads_scandir)
-    app_err = make_app(
-        runs,
-        data_root=data,
-        market_summary=lambda: {"securities": 10, "coverage_start": "2024-01-02", "coverage_end": "2024-01-05"},
-    )
-    assert TestClient(app_err, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary").status_code == 503
-    monkeypatch.undo()
-
-    # 1b. EACCES reading an existing manifest.json must also return HTTP 503, never invalid/empty 200.
-    real_read_text = Path.read_text
-
-    def deny_manifest_read(self, *args, **kwargs):
-        if self.name == "manifest.json":
-            raise PermissionError(errno.EACCES, "Permission denied", str(self))
-        return real_read_text(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", deny_manifest_read)
-    app_manifest_err = make_app(
-        runs,
-        data_root=data,
-        market_summary=lambda: {"securities": 10, "coverage_start": "2024-01-02", "coverage_end": "2024-01-05"},
-    )
-    assert TestClient(app_manifest_err, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary").status_code == 503
-    monkeypatch.undo()
-
-    # 2. Explicit invalidation while an inventory scan is in-flight must prevent stale cache repopulation.
     entered = threading.Event()
     release = threading.Event()
     real_scan = web_system._dataset_counts
     scan_calls = {"count": 0}
 
-    def gated_scan(root):
+    def gated_scan(root, containers):
         scan_calls["count"] += 1
-        result = real_scan(root)
+        result = real_scan(root, containers)
         if scan_calls["count"] == 1:
             entered.set()
             assert release.wait(timeout=5)
@@ -463,82 +434,154 @@ def test_dashboard_summary_fails_on_inaccessible_inventory_and_blocks_inflight_r
     assert second.json()["counts"] == {"fixed": 0, "historical": 0, "market": 0, "invalid": 1}
 
 
-def test_dashboard_summary_rejects_ancestor_symlink_redirected_outside_root(tmp_path, monkeypatch):
-    runs, data, outside = tmp_path / "runs", tmp_path / "data", tmp_path / "outside"
-    _write_valid_fixed_snapshot(outside / "snapshots/ext-1", "snap-outside")
-
-    snapshots_link = data / "research/downloads/b1/snapshots"
-    snapshots_link.parent.mkdir(parents=True, exist_ok=True)
-    # Simulate an ancestor (`snapshots` or `downloads`) whose resolved path escapes `data_root`.
-    real_confined = web_system._confined_dir_stat
-
-    def outside_ancestor(path, root):
-        if Path(path) == snapshots_link:
-            return None
-        return real_confined(path, root)
-
-    # Also test real symlink when host permits, falling back to monkeypatched resolution escape check.
-    try:
-        os.symlink(outside / "snapshots", snapshots_link, target_is_directory=True)
-    except OSError:
-        snapshots_link.mkdir(parents=True, exist_ok=True)
-        _write_valid_fixed_snapshot(snapshots_link / "ext-1", "snap-outside")
-        monkeypatch.setattr(web_system, "_confined_dir_stat", outside_ancestor)
-
-    app = make_app(
-        runs, data_root=data, market_summary=lambda: {"securities": 0, "coverage_start": None, "coverage_end": None}
-    )
-    res = TestClient(app, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary")
-    assert res.status_code == 200
-    assert res.json()["counts"] == {"fixed": 0, "historical": 0, "market": 0, "invalid": 0}
-
-
-def test_dashboard_summary_skips_warehouse_roots_when_versions_ancestor_escapes_root(tmp_path, monkeypatch):
-    runs, data, outside = tmp_path / "runs", tmp_path / "data", tmp_path / "outside"
-    ext_wh = outside / "versions/v1/index-view"
-    (ext_wh / "reference").mkdir(parents=True, exist_ok=True)
-    (ext_wh / "reference/calendar.parquet").write_bytes(b"cal")
-    (ext_wh.parent / "version.json").write_text("{}", encoding="utf-8")
+def _write_warehouse(view: Path, kind: str) -> None:
+    _write_json(view.parent / "version.json", {})
     _write_json(
-        ext_wh / "manifest.json",
+        view / "manifest.json",
         {
-            "schema_version": "historical-index-warehouse-v1",
+            "schema_version": f"historical-{kind}-warehouse-v1",
             "assets": {"000001.SZ": {"file": "a.parquet", "sha256": "x"}},
             "reference_files": {"calendar.parquet": "abc"},
         },
     )
+    (view / "reference").mkdir()
+    (view / "reference/calendar.parquet").write_bytes(b"cal")
 
-    versions_link = data / "shared-market/versions"
-    versions_link.parent.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        web_system,
-        "_path_escaped_root",
-        lambda p, r: Path(p) == versions_link or not Path(p).resolve().is_relative_to(r),
-    )
 
-    def must_not_call_warehouses(_root):
-        raise AssertionError("warehouse_roots must not be called when shared-market/versions escapes data_root")
+def _inventory_client(tmp_path) -> TestClient:
+    app = make_app(tmp_path / "runs", data_root=tmp_path / "data", market_summary=lambda: {"securities": 0})
+    return TestClient(app, base_url="http://127.0.0.1")
 
-    monkeypatch.setattr(market_download, "warehouse_roots", must_not_call_warehouses)
-    monkeypatch.setattr(web_system, "market_roots", lambda _root: [ext_wh.resolve()])
 
-    app = make_app(
-        runs, data_root=data, market_summary=lambda: {"securities": 0, "coverage_start": None, "coverage_end": None}
-    )
-    res = TestClient(app, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary")
-    assert res.status_code == 200
-    assert res.json()["counts"] == {"fixed": 0, "historical": 0, "market": 0, "invalid": 0}
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "research/downloads",
+        "research/downloads/b1/snapshots",
+        "shared-market/versions",
+        "shared-market/versions/v1",
+        "shared-market/versions/v1/index-view",
+        "shared-market/versions/v1/market-view",
+    ],
+)
+def test_dashboard_summary_skips_outside_ancestors_and_both_warehouse_views(tmp_path, monkeypatch, relative):
+    client = _inventory_client(tmp_path)
+    data, outside = tmp_path / "data", tmp_path / "outside"
+    target, link = outside / relative, data / relative
+    if relative.startswith("research"):
+        _write_valid_fixed_snapshot(outside / "research/downloads/b1/snapshots/s1", "snap-outside")
+    else:
+        version = outside / "shared-market/versions/v1"
+        _write_warehouse(version / "index-view", "index")
+        _write_warehouse(version / "market-view", "market")
+        if relative.endswith("-view"):
+            _write_json(link.parent / "version.json", {})
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        if os.name != "nt":
+            raise
+        # Directory junctions need no Windows symlink privilege and must also stay within root.
+        subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
 
-    # Even if versions dir itself is inside root, any warehouse root resolving outside data_root is ignored.
-    monkeypatch.undo()
-    monkeypatch.setattr(market_download, "warehouse_roots", lambda _root: [ext_wh.resolve()])
-    monkeypatch.setattr(web_system, "market_roots", lambda _root: [ext_wh.resolve()])
-    app2 = make_app(
-        runs, data_root=data, market_summary=lambda: {"securities": 0, "coverage_start": None, "coverage_end": None}
-    )
-    res2 = TestClient(app2, base_url="http://127.0.0.1").get("/api/v1/dashboard/summary")
-    assert res2.status_code == 200
-    assert res2.json()["counts"] == {"fixed": 0, "historical": 0, "market": 0, "invalid": 0}
+    real_read = Path.read_text
+
+    def guarded_read(self, *args, **kwargs):
+        assert not self.resolve().is_relative_to(outside), f"outside file read: {self}"
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read)
+    response = client.get("/api/v1/dashboard/summary")
+    assert response.status_code == 200
+    assert response.json()["counts"] == {"fixed": 0, "historical": 0, "market": 0, "invalid": 0}
+
+
+@pytest.mark.parametrize("failure", ["directory", "leaf_metadata", "fixed", "historical", "market"])
+def test_dashboard_summary_reports_inventory_io_failure_and_recovers(tmp_path, monkeypatch, failure):
+    client = _inventory_client(tmp_path)
+    data = tmp_path / "data"
+    fixed = data / "research/downloads/b1/snapshots/s1"
+    historical = data / "shared-market/versions/v1/index-view"
+    market = historical.with_name("market-view")
+    _write_valid_fixed_snapshot(fixed, "snap-1")
+    _write_warehouse(historical, "index")
+    _write_warehouse(market, "market")
+
+    with monkeypatch.context() as patch:
+        if failure == "directory":
+            real_scandir = os.scandir
+
+            def deny_scandir(path):
+                if Path(path) == historical.parent.parent:
+                    raise PermissionError(errno.EACCES, "Inventory directory denied", path)
+                return real_scandir(path)
+
+            patch.setattr(os, "scandir", deny_scandir)
+        elif failure == "leaf_metadata":
+            real_lstat = Path.lstat
+
+            def deny_leaf_stat(self):
+                if self == market / "reference/calendar.parquet":
+                    raise OSError(errno.EIO, "Calendar metadata unavailable", self)
+                return real_lstat(self)
+
+            patch.setattr(Path, "lstat", deny_leaf_stat)
+        else:
+            denied_path = {"fixed": fixed, "historical": historical, "market": market}[failure] / "manifest.json"
+            real_read = Path.read_text
+
+            def deny_read(self, *args, **kwargs):
+                if self == denied_path:
+                    raise PermissionError(errno.EACCES, "Manifest denied", self)
+                return real_read(self, *args, **kwargs)
+
+            patch.setattr(Path, "read_text", deny_read)
+        failed = client.get("/api/v1/dashboard/summary")
+    assert failed.status_code == 503
+    recovered = client.get("/api/v1/dashboard/summary")
+    assert recovered.status_code == 200
+    assert recovered.json()["counts"] == {"fixed": 1, "historical": 1, "market": 1, "invalid": 0}
+
+
+def test_dashboard_summary_discovers_each_container_once_and_keeps_30_second_ttl(tmp_path, monkeypatch):
+    client = _inventory_client(tmp_path)
+    data = tmp_path / "data"
+    snapshots = data / "research/downloads/b1/snapshots"
+    _write_valid_fixed_snapshot(snapshots / "s1", "snap-1")
+    version = data / "shared-market/versions/v1"
+    _write_warehouse(version / "index-view", "index")
+    _write_warehouse(version / "market-view", "market")
+    real_scan = os.scandir
+    visited: Counter[Path] = Counter()
+    root = data.resolve()
+
+    def scan(path):
+        directory = Path(path)
+        if directory.is_relative_to(root):
+            visited[directory] += 1
+        return real_scan(path)
+
+    fake_time = SimpleNamespace(monotonic=lambda: now)
+    now = 100.0
+    monkeypatch.setattr(web_system, "time", fake_time)
+    monkeypatch.setattr(os, "scandir", scan)
+
+    initial = client.get("/api/v1/dashboard/summary").json()
+    assert initial["counts"] == {"fixed": 1, "historical": 1, "market": 1, "invalid": 0}
+    assert visited == {snapshots.parent.parent: 1, snapshots: 1, version.parent: 1}
+
+    (version / "market-view/manifest.json").write_bytes(b"\xfe")
+    now = 129.99
+    still_cached = client.get("/api/v1/dashboard/summary").json()
+    assert still_cached["counts"] == initial["counts"]
+    assert still_cached["counts_as_of"] == initial["counts_as_of"]
+    assert visited[snapshots] == visited[version.parent] == 1
+
+    now = 130.0
+    after_ttl = client.get("/api/v1/dashboard/summary").json()
+    assert after_ttl["counts"] == {"fixed": 1, "historical": 1, "market": 0, "invalid": 1}
+    assert visited[snapshots] == visited[version.parent] == 2
 
 
 class _DummyCtx:
