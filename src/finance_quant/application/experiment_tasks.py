@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 
 from finance_quant.application.comparison_inputs import validate_comparison_inputs
 from finance_quant.application.experiment_inputs import dynamic_preflight
+from finance_quant.application.experiment_references import (
+    REFERENCE_KEY,
+    pin_industry_document,
+    verify_financial_version,
+)
 from finance_quant.application.experiment_workflow import _preflight, run_experiment
 from finance_quant.application.research_requests import (
     MAX_CODES,
@@ -24,6 +30,7 @@ from finance_quant.application.selection_experiments import (
 )
 from finance_quant.application.task_context import attach_outputs, prepare_snapshot, prepare_warehouse
 from finance_quant.configuration import BacktestConfig, DataConfig
+from finance_quant.data.financials import FinancialBinding, financial_root
 from finance_quant.data.market import FrozenMarketSnapshot, load_frozen_snapshot
 from finance_quant.data.symbols import to_qlib
 from finance_quant.data.validation_config import CrosscheckConfig
@@ -178,21 +185,62 @@ def validate_selection_reference(document: dict, plan: ExperimentPlan) -> None:
 
 
 def validate_experiment_inputs(
-    document: dict, data_root, runs_root, *, result_store=None, frozen_snapshot: FrozenMarketSnapshot | None = None
+    document: dict,
+    data_root,
+    runs_root,
+    *,
+    result_store=None,
+    frozen_snapshot: FrozenMarketSnapshot | None = None,
+    reference_versions: dict | None = None,
 ) -> tuple[dict, dict]:
     """Validate the experiment without publishing any research artefacts."""
 
     plan = validate_experiment_document(document)
-    bound = selection_validation(result_store, document, plan, data_root, runs_root, frozen_snapshot=frozen_snapshot)
-    research, execution = validate_request(
-        _research_document(document, plan),
+    references_frozen = reference_versions is not None
+    bound = selection_validation(
+        result_store,
+        document,
+        plan,
         data_root,
         runs_root,
-        financials=bound["context"]["financials"] if bound else None,
+        frozen_snapshot=frozen_snapshot,
+        references_frozen=references_frozen,
+    )
+    research_document = _research_document(document, plan)
+    binding = bound["context"]["financials"] if bound else None
+    if reference_versions is not None:
+        if bound is not None:
+            if reference_versions != {"source": "selection"}:
+                raise ValueError("排队任务的筛选来源绑定不一致，请重新提交")
+            source_filters = bound["context"]["data"].get("filters", {})
+            filters = research_document["data"].get("filters", {})
+            if isinstance(filters, dict) and filters.get("industries") and not filters.get("industry_version"):
+                # The source is authoritative. Never resolve an unpinned selection filter from current.
+                if not source_filters.get("industry_version"):
+                    raise ValueError("来源评估未保存股票池行业版本，请重新评估后筛选")
+                research_document = pin_industry_document(research_document, None, source_filters["industry_version"])
+        else:
+            if reference_versions.get("source") != "submission":
+                raise ValueError("排队任务缺少参考数据绑定，请重新提交")
+            version = reference_versions["financial"]
+            binding = FinancialBinding(financial_root(data_root), version) if version is not None else None
+            research_document = pin_industry_document(
+                research_document, reference_versions["industry"], reference_versions["filter_industry"]
+            )
+        verify_financial_version(binding, plan, research_document["data"])
+    research, execution = validate_request(
+        research_document,
+        data_root,
+        runs_root,
+        financials=binding,
+        references_frozen=references_frozen,
         frozen_snapshot=frozen_snapshot,
     )
     validate_selection_inputs(bound, research)
-    _pin_candidates(research, execution, plan, data_root)
+    if reference_versions is not None:
+        execution[REFERENCE_KEY] = reference_versions
+    else:
+        _pin_candidates(research, execution, plan, data_root)
 
     def snapshot_inputs():
         if frozen_snapshot is not None:
@@ -200,7 +248,7 @@ def validate_experiment_inputs(
         return snapshot_registry(data_root)[research["data"]["snapshot_id"]]
 
     if plan.comparison:
-        base = parse_neutralization(research.get("neutralization"))
+        base = replace(parse_neutralization(research.get("neutralization")), allow_latest=not references_frozen)
         industry = industry_context(base)
         for candidate in plan.candidates:
             neutral = candidate.neutralization or base
@@ -219,7 +267,7 @@ def validate_experiment_inputs(
             if research["data"]["mode"] != "snapshot"
             else _data_config(snapshot_inputs()[3], research["data"]["codes"])
         )
-        config = request_config(research, data_config, runs_root, data_root)
+        config = request_config(research, data_config, runs_root, data_root, references_frozen=references_frozen)
         validate_comparison_inputs(
             config, plan, research, expected_sha=execution.get("manifest_sha256"), frozen_snapshot=frozen_snapshot
         )
@@ -230,13 +278,19 @@ def validate_experiment_inputs(
             if frozen_snapshot is not None
             else dynamic_data(root, research)
         )
-        config = request_config(research, data_config, runs_root, data_root)
+        config = request_config(research, data_config, runs_root, data_root, references_frozen=references_frozen)
         dynamic_preflight(
             config, plan, research, expected_sha=execution.get("manifest_sha256"), frozen_snapshot=frozen_snapshot
         )
     else:
         market, _, calendar, manifest = snapshot_inputs()
-        config = request_config(research, _data_config(manifest, research["data"]["codes"]), runs_root, data_root)
+        config = request_config(
+            research,
+            _data_config(manifest, research["data"]["codes"]),
+            runs_root,
+            data_root,
+            references_frozen=references_frozen,
+        )
         if len(config.data.codes) > MAX_CODES:
             raise ValueError(f"单次实验最多选择{MAX_CODES}只股票")
         selected = market.loc[market.instrument.isin({to_qlib(code) for code in config.data.codes})]
@@ -313,6 +367,7 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
             context.runs_root,
             result_store=context.result_store_factory(None),
             frozen_snapshot=frozen_snapshot,
+            reference_versions=execution.get(REFERENCE_KEY),
         )
         # Do not retain the preflight frames while the experiment runs.
         del frozen_snapshot
@@ -344,7 +399,9 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
         **_research_document(request, plan),
         **({"financials": request["financials"]} if "financials" in request else {}),
     }
-    config = request_config(document, data, context.runs_root, context.data_root)
+    config = request_config(
+        document, data, context.runs_root, context.data_root, references_frozen=REFERENCE_KEY in execution
+    )
     store = context.result_store_factory(dataset_record["id"] if dataset_record else None)
 
     def progress(completed, total, message):

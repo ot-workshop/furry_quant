@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from finance_quant.application.experiment_references import REFERENCE_KEY, capture_experiment_references
 from finance_quant.application.experiment_tasks import (
     experiment_total,
     validate_experiment_document,
@@ -63,4 +64,5 @@ class TaskService:
                 files=manifest["files"],
                 manifest_sha256=manifest_sha256,
             )
+        execution[REFERENCE_KEY] = capture_experiment_references(document, plan, self.data_root)
         return self.store.create_experiment(document, execution, key, total=experiment_total(document))

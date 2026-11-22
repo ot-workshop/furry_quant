@@ -144,6 +144,7 @@ def run_experiment(
                             expected_sha=expected_sha,
                             result_store=store,
                             financials=config.financials,
+                            references_frozen=not config.neutralization.allow_latest,
                         )
                         backtest = {"run_id": completed["backtest_run_id"], "factor_run_id": completed["factor_run_id"]}
                         diagnostic = {

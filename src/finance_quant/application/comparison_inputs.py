@@ -16,7 +16,7 @@ def candidate_config(config, candidate):
     version = config.neutralization.industry_version
     if override.industry_version and override.industry_version != version:
         raise ValueError("所有方案必须使用同一历史行业版本")
-    neutral = NeutralizationConfig(override.mode, version, override.industry_level)
+    neutral = NeutralizationConfig(override.mode, version, override.industry_level, config.neutralization.allow_latest)
     return replace(config, factors=candidate.factors, neutralization=neutral)
 
 

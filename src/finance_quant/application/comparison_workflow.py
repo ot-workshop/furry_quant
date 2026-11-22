@@ -75,6 +75,7 @@ def run_comparison(config, plan, *, result_store=None, progress=None, dynamic_re
                             expected_sha=expected_sha,
                             result_store=store,
                             financials=config.financials,
+                            references_frozen=not config.neutralization.allow_latest,
                             scoring_universe=prepared["allowed"] if mode == "common" else None,
                         )
                         backtest = store.get("backtests", completed["backtest_run_id"])

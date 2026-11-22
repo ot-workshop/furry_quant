@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -99,6 +100,7 @@ def run_historical_research(
     result_store=None,
     financials=None,
     scoring_universe=None,
+    references_frozen=False,
 ):
     stage = stage or (lambda *args: None)
     runs_root = Path(runs_root)
@@ -106,7 +108,7 @@ def run_historical_research(
     backtest = BacktestConfig(**request["backtest"])
     evaluation = EvaluationConfig(**request["evaluation"])
 
-    neutralization = parse_neutralization(request.get("neutralization"))
+    neutralization = replace(parse_neutralization(request.get("neutralization")), allow_latest=not references_frozen)
     industry = industry_context(neutralization)
     if neutralization.mode == "industry":
         industry.validate_range(backtest.end)

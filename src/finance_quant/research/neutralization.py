@@ -15,6 +15,8 @@ class NeutralizationConfig:
     mode: str = "off"
     industry_version: str | None = None
     industry_level: str = "L1"
+    # Internal runtime constraint, not part of public request syntax.
+    allow_latest: bool = True
 
     def __post_init__(self):
         if not isinstance(self.mode, str) or self.mode not in {"off", "industry"}:
@@ -51,7 +53,8 @@ def parse_neutralization(value=None):
 def industry_context(config=None, history=None):
 
     config = config or NeutralizationConfig()
-    history = history or optional_industries(config.industry_version)
+    if history is None and (config.industry_version is not None or config.allow_latest):
+        history = optional_industries(config.industry_version)
     if config.mode == "industry" and history is None:
         raise ValueError("历史行业数据尚未下载，请先在数据管理中下载行业数据")
     if config.mode == "industry":
