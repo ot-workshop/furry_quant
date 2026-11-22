@@ -679,6 +679,70 @@ def test_retrying_a_lost_response_after_the_frozen_snapshot_is_quarantined(tmp_p
     _replay_after_the_frozen_snapshot_turns_unusable(tmp_path, quarantine)
 
 
+def test_experiment_submission_rejects_bodies_the_request_can_judge(tmp_path):
+    """Every field a body alone can prove wrong is a 422 with no task row, never a 500."""
+
+    data, runs = tmp_path / "data", tmp_path / "runs"
+    manifest = publish_fixture_snapshot(
+        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
+    )
+    seed_earnings(financial_root(data), ("600000.SH", "000001.SZ", "600519.SH"))
+    service = make_service(runs, data)
+    client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
+    body = experiment_request(manifest["id"])
+
+    def no_data(changed):
+        changed["data"] = None
+
+    def no_snapshot_id(changed):
+        del changed["data"]["snapshot_id"]
+
+    def unknown_mode(changed):
+        changed["data"]["mode"] = "another-mode"
+
+    def no_warehouse_id(changed):
+        changed["data"] = {"mode": "index_warehouse", "filters": {}}
+
+    def blank_warehouse_id(changed):
+        changed["data"] = {"mode": "index_warehouse", "warehouse_id": " "}
+
+    def no_evaluation(changed):
+        changed["evaluation"] = None
+
+    def unknown_evaluation_field(changed):
+        changed["evaluation"]["unexpected"] = 1
+
+    def zero_cash(changed):
+        changed["backtest"]["initial_cash"] = 0
+
+    def unknown_neutralization(changed):
+        changed["neutralization"] = {"mode": "magic"}
+
+    cases = [
+        ("data-null", no_data),
+        ("snapshot-id-missing", no_snapshot_id),
+        ("mode-unknown", unknown_mode),
+        ("warehouse-id-missing", no_warehouse_id),
+        ("warehouse-id-blank", blank_warehouse_id),
+        ("evaluation-null", no_evaluation),
+        ("evaluation-field", unknown_evaluation_field),
+        ("cash-zero", zero_cash),
+        ("neutralization-mode", unknown_neutralization),
+    ]
+    for name, change in cases:
+        changed = json.loads(json.dumps(body))
+        change(changed)
+        response = client.post(
+            "/api/v1/research/experiments", json=changed, headers={"Idempotency-Key": f"body-{name}"}
+        )
+        assert response.status_code == 422, (name, response.status_code, response.text)
+    assert service.store.list()["total"] == 0
+
+    accepted = client.post("/api/v1/research/experiments", json=body, headers={"Idempotency-Key": "body-valid"})
+    assert accepted.status_code == 202, accepted.text
+    assert service.store.list()["total"] == 1
+
+
 def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path):
 
     data, runs = tmp_path / "data", tmp_path / "runs"

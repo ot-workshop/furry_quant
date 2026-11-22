@@ -30,6 +30,7 @@ from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.experiments import SELECTION_METRIC, ExperimentPlan
 from finance_quant.research.factor_selection import SelectionParameters
 from finance_quant.research.neutralization import industry_context, parse_neutralization
+from finance_quant.research.registry import EvaluationConfig
 
 SHARED_BACKTEST_FIELDS = tuple(name for name in BacktestConfig.__dataclass_fields__ if name not in {"start", "end"})
 
@@ -72,12 +73,55 @@ def _pin_candidates(research: dict, execution: dict, plan: ExperimentPlan, data_
         execution["financials"] = binding.as_dict()
 
 
+DATA_MODES = ("snapshot", "index_warehouse", "market_warehouse")
+DATA_FIELDS = {
+    "snapshot": (("mode", "snapshot_id"), ("codes", "filters")),
+    "index_warehouse": (("mode", "warehouse_id"), ("filters", "codes")),
+    "market_warehouse": (("mode", "warehouse_id"), ("filters", "codes")),
+}
+
+
+def _data_block(document: dict) -> None:
+    """The data block alone: which dataset, named by an identifier; nothing is read here."""
+
+    data = document["data"]
+    if not isinstance(data, dict) or data.get("mode") not in DATA_MODES:
+        raise ValueError("请选择数据集：固定股票池快照或沪深300历史成分仓库")
+    required, optional = DATA_FIELDS[data["mode"]]
+    _fields(data, required, optional, label="数据")
+    identifier = data["snapshot_id" if data["mode"] == "snapshot" else "warehouse_id"]
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise ValueError("数据集标识无效，请刷新数据列表后重新选择")
+    if "codes" in data and (
+        not isinstance(data["codes"], list) or not all(isinstance(code, str) for code in data["codes"])
+    ):
+        raise ValueError("股票代码须为代码列表")
+    if "filters" in data and not isinstance(data["filters"], dict):
+        raise ValueError("股票池筛选条件须为对象")
+
+
+def _evaluation_block(document: dict) -> None:
+    """Evaluation options validated as parameters, never read from a result."""
+
+    _fields(document["evaluation"], (), ("horizons", "groups", "min_cross_section"), "因子评估")
+    EvaluationConfig(**document["evaluation"])
+
+
+def _backtest_block(document: dict, plan: ExperimentPlan) -> None:
+    """Shared backtest options validated against the plan's own span; no data is read."""
+
+    _fields(document["backtest"], (), SHARED_BACKTEST_FIELDS, label="共用回测参数")
+    BacktestConfig(**document["backtest"], start=plan.periods[0].start, end=plan.periods[-1].end)
+
+
 def validate_experiment_document(document: dict):
     """Cheap, request-path checks only: shape, plan, and the comparison/factor rule.
 
     Everything expensive (pinning, selection inputs, preflight, industry context) stays in
     `validate_experiment_request`, which the worker runs in its `prepare` stage before any
-    artefact is written.
+    artefact is written. Only rules the body itself can prove belong here, so a bad field is a
+    422 that never queues: the data block, the evaluation options, the shared backtest options
+    and the neutralization mode are all validated as parameters.
     """
 
     _fields(
@@ -86,8 +130,13 @@ def validate_experiment_document(document: dict):
         ("neutralization", "financial_policy", "factor_selection"),
         label="实验",
     )
-    _fields(document["backtest"], (), SHARED_BACKTEST_FIELDS, label="共用回测参数")
+    _data_block(document)
+    _evaluation_block(document)
+    if "neutralization" in document:
+        # Parsing only: reading the industry history is the worker's step.
+        parse_neutralization(document["neutralization"])
     plan = _plan(document)
+    _backtest_block(document, plan)
     if plan.comparison and document.get("factor_selection"):
         raise ValueError("收益来源对照不参与MILP样本外方案选择，请使用分段比较")
     return plan
