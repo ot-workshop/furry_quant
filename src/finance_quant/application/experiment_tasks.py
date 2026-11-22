@@ -30,7 +30,8 @@ from finance_quant.application.selection_experiments import (
 )
 from finance_quant.application.task_context import attach_outputs, prepare_snapshot, prepare_warehouse
 from finance_quant.checksums import file_sha256
-from finance_quant.configuration import BacktestConfig, DataConfig
+from finance_quant.configuration import BacktestConfig, DataConfig, EvaluationConfig, _normalize_codes
+from finance_quant.data.execution_universe import validate_execution_universe
 from finance_quant.data.financials import FinancialBinding, financial_root
 from finance_quant.data.market import FrozenMarketSnapshot, load_frozen_snapshot
 from finance_quant.data.symbols import to_qlib
@@ -38,6 +39,7 @@ from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.experiments import SELECTION_METRIC, ExperimentPlan
 from finance_quant.research.factor_selection import SelectionParameters
 from finance_quant.research.neutralization import industry_context, parse_neutralization
+from finance_quant.research.universe import parse_filters
 
 SHARED_BACKTEST_FIELDS = tuple(name for name in BacktestConfig.__dataclass_fields__ if name not in {"start", "end"})
 
@@ -106,6 +108,57 @@ WAREHOUSE_IDS = {
     "index_warehouse": re.compile(r"csi300-[0-9a-f]{20}"),
     "market_warehouse": re.compile(r"market-[0-9a-f]{20}"),
 }
+
+
+def validate_experiment_submission_fields(document: dict, plan: ExperimentPlan) -> None:
+    """Validate new submissions without loading any resolved data or changing the public request."""
+    data = document["data"]
+    mode = data.get("mode") if isinstance(data, dict) else None
+    if not isinstance(mode, str) or mode not in ("snapshot", *WAREHOUSE_IDS):
+        raise ValueError("请选择数据集：固定股票池快照、沪深300历史成分或全市场行情仓库")
+
+    backtest = BacktestConfig(**document["backtest"], start=plan.periods[0].start, end=plan.periods[-1].end)
+    _fields(document["evaluation"], (), ("horizons", "groups", "min_cross_section"), "因子评估")
+    EvaluationConfig(**document["evaluation"])
+    parse_neutralization(document.get("neutralization"))
+    if backtest.initial_cash > 1e12:
+        raise ValueError("初始资金不能超过一万亿元")
+
+    if mode == "snapshot":
+        _fields(data, ("mode", "snapshot_id", "codes"), ("filters",), label="快照")
+        if not isinstance(data["snapshot_id"], str) or not data["snapshot_id"].strip():
+            raise ValueError("快照版本标识无效")
+        codes = _normalize_codes(data["codes"])
+        if len(codes) > MAX_CODES:
+            raise ValueError(f"单次研究最多选择{MAX_CODES}只股票")
+        validate_execution_universe(codes)
+        if backtest.topk > len(codes):
+            raise ValueError("目标持股不能超过所选股票数")
+    else:
+        _fields(
+            data,
+            ("mode", "warehouse_id"),
+            ("filters", "codes") if mode == "market_warehouse" else ("filters",),
+            label="行情仓库",
+        )
+        identifier = data["warehouse_id"]
+        if not isinstance(identifier, str) or WAREHOUSE_IDS[mode].fullmatch(identifier) is None:
+            raise ValueError("仓库版本标识格式无效或与股票池模式不符")
+        if backtest.topk > 300:
+            raise ValueError("目标持股最多300只")
+        codes = data.get("codes")
+        if codes is not None:
+            if (
+                not isinstance(codes, list)
+                or any(not isinstance(code, str) for code in codes)
+                or len(codes) < 2
+                or len(set(codes)) != len(codes)
+            ):
+                raise ValueError("自选股票须至少两只、不重复")
+            if backtest.topk > len(codes):
+                raise ValueError("目标持股不能超过所选股票数")
+    if "filters" in data:
+        parse_filters(data["filters"])
 
 
 def validate_selection_reference(document: dict, plan: ExperimentPlan) -> None:
