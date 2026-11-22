@@ -136,6 +136,17 @@ class MemoryTaskStore:
                 raise TaskConflict("任务已中断")
             row.update(stage=stage, message=message, completed=completed)
 
+    def save_prepared(self, identifier, request, execution):
+        """Mirror PgTaskStore.save_prepared: only a still-pending running row is updated once."""
+
+        with self._lock:
+            row = self._rows.get(identifier)
+            if row is None or row["status"] != "running":
+                raise TaskConflict("任务状态已变化，无法写入终态")
+            if (row["execution"] or {}).get("prepare_state") != "pending":
+                raise TaskConflict("任务状态已变化，无法写入终态")
+            row["execution"] = copy.deepcopy(execution)
+
     def finish(self, identifier, status, *, result=None, error=None, error_details=None):
         if status not in TERMINAL_MESSAGES:
             raise ValueError("Unsupported terminal task status")

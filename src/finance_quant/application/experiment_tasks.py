@@ -214,6 +214,12 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
         # Legacy fully prepared tasks skip this branch. New fixed-pool tasks must
         # provide a verified leaf; a missing pin must not fall back to the registry.
         context.stage("prepare", "准备股票池并检查各候选方案的历史预热", 0)
+    if execution.get("prepare_state") == "pending":
+        # Freeze the verified payload once; a second write (or a task that already moved on)
+        # is a conflict, so the projection below can never run twice for one task.
+        saved = {**execution, "prepare_state": "prepared"}
+        context.store.save_prepared(context.identifier, request, saved)
+        execution = saved
         data = request.get("data")
         frozen_snapshot = (
             load_frozen_snapshot(context.data_root, execution)

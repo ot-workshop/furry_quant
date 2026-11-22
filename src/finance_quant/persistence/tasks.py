@@ -224,6 +224,29 @@ class PgTaskStore:
             if changed != 1:
                 raise conflict("任务已中断")
 
+    def save_prepared(self, identifier, request, execution, *, connection=None):
+        """Persist the worker-verified request/execution exactly once.
+
+        One UPDATE matches the identifier, `status='running'` **and** the still-pending
+        marker in the stored execution; a second call, a finished task or an old payload
+        that never queued as pending therefore touches 0 rows and is a conflict.
+        """
+
+        statement = (
+            update(task)
+            .where(
+                task.c.id == identifier,
+                task.c.status == "running",
+                task.c.execution["prepare_state"].astext == "pending",
+            )
+            .values(request=request, execution=execution)
+        )
+        if connection is not None:
+            self._require_single_row(connection.execute(statement))
+            return
+        with self.engine.begin() as own:
+            self._require_single_row(own.execute(statement))
+
     def finish(self, identifier, status, *, result=None, error=None, error_details=None, connection=None):
         if status not in {"succeeded", "failed", "interrupted", "paused"}:
             raise ValueError("Unsupported terminal task status")
