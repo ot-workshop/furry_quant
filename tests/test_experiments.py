@@ -2,16 +2,18 @@ import json
 import pathlib
 import shutil
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from test_managed_data import Provider
 
-from finance_quant.application import experiment_tasks, research_requests
+from finance_quant.application import experiment_tasks, research_requests, task_context, task_worker
 from finance_quant.application import experiment_workflow as workflow
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
 from finance_quant.data.financials import financial_root
+from finance_quant.persistence.market import MarketRepository
 from finance_quant.research.evaluation import forward_open_labels
 from finance_quant.research.experiments import (
     ExperimentPlan,
@@ -24,6 +26,7 @@ from finance_quant.research.market_factors import market_factors
 from finance_quant.research.registry import EvaluationConfig
 from finance_quant.research.universe import UniverseFilters
 from finance_quant.storage import ResultStore
+from finance_quant.task_contracts import TaskConflict
 from support.fakes import make_app, make_service, run_claimed
 from support.financial import seed_earnings
 from support.fixed_pool import download_dataset, publish_fixture_snapshot
@@ -450,72 +453,172 @@ def test_frozen_snapshot_survives_a_newer_publish(tmp_path, monkeypatch, filtere
     assert saved["metadata"]["provenance"]["data_checksums"] == first["files"]
 
 
-def _submitted(tmp_path, key):
+def _worker_fixture(tmp_path):
     data, runs = tmp_path / "data", tmp_path / "runs"
-    manifest = publish_fixture_snapshot(
-        data, ("600000.SH", "000001.SZ", "600519.SH"), "20241202", "20250228", provider=Provider()
-    )
-    seed_earnings(financial_root(data), ("600000.SH", "000001.SZ", "600519.SH"))
-    service = make_service(runs, data)
-    client = TestClient(make_app(runs, data, service=service), base_url="http://127.0.0.1")
-    response = client.post(
-        "/api/v1/research/experiments",
-        json=experiment_request(manifest["id"]),
-        headers={"Idempotency-Key": key},
-    )
+    codes = ("600000.SH", "000001.SZ", "600519.SH")
+    manifest = publish_fixture_snapshot(data, codes, "20241202", "20250228", provider=Provider())
+    seed_earnings(financial_root(data), codes)
+    document = experiment_request(manifest["id"])
+    # If the worker reaches projection, it must create a real subset, not reuse the whole leaf.
+    document["data"]["codes"] = list(codes[:2])
+    return make_service(runs, data), document, manifest
+
+
+def _submitted(tmp_path, key):
+    service, document, _ = _worker_fixture(tmp_path)
+    client = TestClient(make_app(service.runs_root, service.data_root, service=service), base_url="http://127.0.0.1")
+    response = client.post("/api/v1/research/experiments", json=document, headers={"Idempotency-Key": key})
     assert response.status_code == 202, response.text
-    return data, runs, service, response.json()
+    return service, response.json()["id"]
 
 
-def test_frozen_snapshot_missing_fails_without_artefacts(tmp_path):
-    data, runs, service, task = _submitted(tmp_path, "experiment-frozen-missing")
-    raw = service.store.get(task["id"], private=True)["execution"]["snapshot_dir"]
-    frozen = pathlib.Path(raw) if pathlib.Path(raw).is_absolute() else pathlib.Path(data) / raw
-    shutil.rmtree(frozen)
+def _unexpected(effect):
+    def fail(*args, **kwargs):
+        pytest.fail(f"unexpected {effect}")
 
-    assert service.store.claim() == task["id"]
-    finished = run_claimed(service, task["id"])
-    assert finished["status"] == "failed"
-    assert not (runs / task["id"]).exists()
+    return fail
 
 
-def test_frozen_snapshot_bytes_changed_fails_without_artefacts(tmp_path):
-    data, runs, service, task = _submitted(tmp_path, "experiment-frozen-changed")
-    raw = service.store.get(task["id"], private=True)["execution"]["snapshot_dir"]
-    frozen = pathlib.Path(raw) if pathlib.Path(raw).is_absolute() else pathlib.Path(data) / raw
-    manifest_path = frozen / "manifest.json"
-    payload = json.loads(manifest_path.read_bytes())
-    payload["note"] = "tampered"
-    manifest_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+def _run_without_side_effects(service, identifier, monkeypatch):
+    data, runs = service.data_root, service.runs_root
+    paths_before = set(data.rglob("*"))
+    assert not (data / "research/subsets").exists()
+    assert not runs.exists()
+    repository = Mock(spec_set=MarketRepository)
+    monkeypatch.setattr(task_context, "project_snapshot", _unexpected("snapshot projection"))
+    for method in ("publish", "publish_report", "publish_experiment_record"):
+        monkeypatch.setattr(ResultStore, method, _unexpected(f"result write: {method}"))
 
-    assert service.store.claim() == task["id"]
-    finished = run_claimed(service, task["id"])
-    assert finished["status"] == "failed"
-    assert "排队期间" in (finished["error"] or "")
-    assert not (runs / task["id"]).exists()
+    task_worker.run_task(
+        runs,
+        data,
+        identifier,
+        task_store=service.store,
+        result_store_factory=lambda dataset_id=None: ResultStore(runs),
+        market_repository=repository,
+    )
+
+    assert repository.mock_calls == [], "worker unexpectedly registered or froze data"
+    assert set(data.rglob("*")) == paths_before, "worker changed the data tree"
+    assert {path.relative_to(runs).as_posix() for path in runs.rglob("*")} <= {"tasks", "tasks/execution.lock"}
+    row = service.store.get(identifier, private=True)
+    assert row["result"] is None
+    return row
 
 
-def test_frozen_snapshot_changed_market_bytes_fail_before_preflight(tmp_path, monkeypatch):
-    data, runs, service, task = _submitted(tmp_path, "experiment-frozen-market-bytes")
-    execution = service.store.get(task["id"], private=True)["execution"]
-    frozen = data / execution["snapshot_dir"]
-    manifest = (frozen / "manifest.json").read_bytes()
-    market_path = frozen / "market.parquet"
-    market_path.write_bytes(market_path.read_bytes() + b"modified")
-    assert (frozen / "manifest.json").read_bytes() == manifest
+@pytest.mark.parametrize(
+    ("damage", "error"),
+    [
+        ("missing", "不可用"),
+        ("quarantined", "已被隔离"),
+        ("manifest-changed", "排队期间股票池历史状态发生变化"),
+        ("market-bytes-changed", "checksum mismatch"),
+    ],
+)
+def test_frozen_snapshot_failure_stays_pending_without_side_effects(tmp_path, monkeypatch, damage, error):
+    service, identifier = _submitted(tmp_path, "frozen-worker-failure")
+    execution = service.store.get(identifier, private=True)["execution"]
+    assert execution["prepare_state"] == "pending"
+    leaf = service.data_root / execution["snapshot_dir"]
+    manifest_path = leaf / "manifest.json"
+    manifest_bytes = manifest_path.read_bytes()
+    if damage == "missing":
+        shutil.rmtree(leaf)
+    elif damage == "quarantined":
+        (leaf / "rejected.json").write_text("{}", encoding="utf-8")
+        assert manifest_path.read_bytes() == manifest_bytes
+    elif damage == "manifest-changed":
+        # A semantically identical manifest with different raw bytes is still not the frozen manifest.
+        manifest_path.write_bytes(manifest_bytes + b"\n")
+    else:
+        market_path = leaf / "market.parquet"
+        market_path.write_bytes(market_path.read_bytes() + b"modified")
+        assert manifest_path.read_bytes() == manifest_bytes
 
-    def no_preflight(*args, **kwargs):
-        pytest.fail("checksum failure must precede all preflight and projection")
-
-    monkeypatch.setattr(experiment_tasks, "validate_experiment_inputs", no_preflight)
-    monkeypatch.setattr(experiment_tasks, "prepare_snapshot", no_preflight)
-    assert service.store.claim() == task["id"]
-    finished = run_claimed(service, task["id"])
+    monkeypatch.setattr(experiment_tasks, "validate_experiment_inputs", _unexpected("preflight with invalid data"))
+    monkeypatch.setattr(service.store, "save_prepared", _unexpected("preparation write for invalid data"))
+    assert service.store.claim() == identifier
+    finished = _run_without_side_effects(service, identifier, monkeypatch)
     assert finished["status"] == "failed"
     assert finished["error_details"]["stage"] == "prepare"
-    assert "checksum mismatch" in finished["error"]
-    assert not (data / "research/subsets").exists()
-    assert all(not (runs / category).exists() for category in ("experiments", "factors", "evaluations", "backtests"))
+    assert error in finished["error"]
+    assert finished["execution"] == execution
+
+
+def test_worker_prepared_write_conflict_leaves_terminal_row_and_no_side_effects(tmp_path, monkeypatch):
+    service, identifier = _submitted(tmp_path, "frozen-worker-conflict")
+    original = service.store.get(identifier, private=True)["execution"]
+    save_prepared = service.store.save_prepared
+    conflicts = []
+
+    def lose_conditional_write(task_id, execution):
+        assert task_id == identifier
+        assert execution["prepare_state"] == "prepared"
+        assert execution["manifest_sha256"] == original["manifest_sha256"]
+        assert service.store.get(task_id)["status"] == "running"
+        # Simulate recovery winning the race after worker preflight, before the actual store call.
+        service.store.finish(task_id, "interrupted", error="recovery won")
+        try:
+            save_prepared(task_id, execution)
+        except TaskConflict:
+            conflicts.append(task_id)
+            raise
+
+    monkeypatch.setattr(service.store, "save_prepared", lose_conditional_write)
+    assert service.store.claim() == identifier
+    finished = _run_without_side_effects(service, identifier, monkeypatch)
+    assert conflicts == [identifier]
+    assert finished["status"] == "interrupted" and finished["error"] == "recovery won"
+    assert finished["execution"] == original
+
+
+def test_worker_rejects_already_prepared_payload_without_side_effects(tmp_path, monkeypatch):
+    service, identifier = _submitted(tmp_path, "frozen-worker-already-prepared")
+    row = service.store.get(identifier, private=True)
+    assert service.store.claim() == identifier
+    # Create the state a later dispatch would see after a previous worker wrote its preparation.
+    leaf = service.data_root / row["execution"]["snapshot_dir"]
+    frozen = experiment_tasks.load_frozen_snapshot(service.data_root, row["execution"])
+    _, execution = experiment_tasks.validate_experiment_inputs(
+        row["request"], service.data_root, service.runs_root, frozen_snapshot=frozen
+    )
+    assert pathlib.Path(execution["snapshot_dir"]) == leaf
+    execution["prepare_state"] = "prepared"
+    service.store.save_prepared(identifier, execution)
+
+    monkeypatch.setattr(service.store, "save_prepared", _unexpected("second preparation write"))
+    monkeypatch.setattr(experiment_tasks, "validate_experiment_inputs", _unexpected("preflight repeated"))
+    finished = _run_without_side_effects(service, identifier, monkeypatch)
+    assert finished["status"] == "failed"
+    assert finished["error_details"]["stage"] == "prepare"
+    assert "准备结果已记录" in finished["error"]
+    assert finished["execution"] == execution
+
+
+def test_worker_accepts_legacy_prevalidated_experiment_without_preparation_write(tmp_path, monkeypatch):
+    service, document, manifest = _worker_fixture(tmp_path)
+    # Before async submission, POST queued the fully normalized pair from this validator.
+    request, execution = experiment_tasks.validate_experiment_request(document, service.data_root, service.runs_root)
+    assert "prepare_state" not in execution and pathlib.Path(execution["snapshot_dir"]).is_absolute()
+    task = service.store.create_experiment(request, execution, "frozen-worker-legacy", total=6)
+    monkeypatch.setattr(service.store, "save_prepared", _unexpected("preparation write for legacy task"))
+    monkeypatch.setattr(experiment_tasks, "load_frozen_snapshot", _unexpected("loading pending pin for legacy task"))
+    monkeypatch.setattr(
+        experiment_tasks, "validate_experiment_inputs", _unexpected("preflight repeated for legacy task")
+    )
+
+    assert service.store.claim() == task["id"]
+    finished = run_claimed(service, task["id"])
+    assert finished["status"] == "succeeded", finished["error"]
+    assert finished["progress"] == {"completed": 6, "total": 6}
+    assert service.store.get(task["id"], private=True)["execution"] == execution
+    saved = ResultStore(service.runs_root).get("experiments", finished["result"]["experiment_run_id"], hydrate=False)
+    assert len(saved["rows"]) == 5
+    subsets = list((service.data_root / "research/subsets").glob("*/manifest.json"))
+    assert len(subsets) == 1
+    projection = json.loads(subsets[0].read_bytes())["projection"]
+    assert projection["parent_data_version"] == manifest["id"]
+    assert projection["codes"] == sorted(document["data"]["codes"])
 
 
 def test_web_experiment_task_validates_queues_runs_and_exposes_results(tmp_path):
