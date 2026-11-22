@@ -46,7 +46,7 @@ class TaskService:
         # Cheap checks only: the expensive validation runs in the worker's prepare stage,
         # so a comparison submission returns as soon as it is queued.
         plan = validate_experiment_document(document)
-        validate_selection_reference(document, plan, self.data_root)
+        validate_selection_reference(document, plan)
         execution = {
             "prepare_state": "pending",
             "candidates": [candidate.id for candidate in plan.candidates],
