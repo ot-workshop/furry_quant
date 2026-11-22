@@ -16,6 +16,7 @@ import {
   formatNumber,
   formatPercent,
   formatWeight,
+  isFiniteNumber,
   metricLabel,
   REBALANCE_LABELS,
   SIGNED_METRICS,
@@ -253,10 +254,57 @@ const COST_KEYS: Array<[keyof CostBreakdown, string]> = [
   ["stamp_tax", "印花税"],
   ["transfer_fee", "过户费"],
   ["impact", "冲击成本"],
-  ["legacy_fee", "综合费用"],
+  ["legacy_fee", "旧版费用（综合费率）"],
 ];
 
-export function TradesPanel({ runId }: { runId: string }) {
+const ITEMIZED_COST_KEYS = new Set<keyof CostBreakdown>([
+  "commission",
+  "stamp_tax",
+  "transfer_fee",
+]);
+
+export function applicableCostEntries(
+  breakdown: Partial<CostBreakdown>,
+  costMode?: "legacy" | "itemized",
+): Array<{
+  key: keyof CostBreakdown;
+  label: string;
+  value: number | undefined;
+}> {
+  return COST_KEYS.filter(([key]) => {
+    const value = breakdown[key];
+    const positive = isFiniteNumber(value) && value > 0;
+    if (key === "legacy_fee") return positive || costMode !== "itemized";
+    if (ITEMIZED_COST_KEYS.has(key)) return positive || costMode !== "legacy";
+    return true;
+  }).map(([key, label]) => ({
+    key,
+    label,
+    value: breakdown[key],
+  }));
+}
+
+export function costSummaryRows(
+  summary: Partial<CostBreakdown>,
+  costs?: BacktestDetail["execution_costs"],
+): Array<{
+  key: keyof CostBreakdown;
+  label: string;
+  value: number | undefined;
+}> {
+  return [
+    ...applicableCostEntries(summary, costs?.cost_mode),
+    { key: "total", label: "合计", value: summary.total },
+  ];
+}
+
+export function TradesPanel({
+  runId,
+  costMode,
+}: {
+  runId: string;
+  costMode?: "legacy" | "itemized";
+}) {
   const [page, setPage] = useState(1);
   const trades = useApiResource(
     (signal) =>
@@ -289,11 +337,14 @@ export function TradesPanel({ runId }: { runId: string }) {
               expandedRowRender: (row) => (
                 <Descriptions
                   size="small"
-                  column={5}
-                  items={COST_KEYS.map(([key, label]) => ({
+                  column={{ xs: 1, sm: 2, md: 5 }}
+                  items={applicableCostEntries(
+                    row.cost_breakdown ?? {},
+                    costMode,
+                  ).map(({ key, label, value }) => ({
                     key,
                     label,
-                    children: formatMoney(row.cost_breakdown?.[key]),
+                    children: formatMoney(value),
                   }))}
                 />
               ),
@@ -356,39 +407,54 @@ export function CostsPanel({ detail }: { detail: BacktestDetail }) {
     cost_summary: summary,
     rebalance_policy: rebalance,
   } = detail;
-  if (!costs && !rebalance)
+  if (!costs && !rebalance && !summary)
     return (
       <Section title="调仓与费用">
         <EmptyState title="该结果未保存费用明细" />
       </Section>
     );
+  const summaryRows = summary ? costSummaryRows(summary, costs) : [];
+  const legacyRow = summaryRows.find((row) => row.key === "legacy_fee");
+  const legacyValue = legacyRow?.value;
+  const hasLegacyValue = isFiniteNumber(legacyValue);
+  const legacyCharged =
+    hasLegacyValue && (legacyValue > 0 || costs?.cost_mode === "legacy");
+  const costSummaryNote = legacyCharged
+    ? "冲击成本在两种计费模式下都单独计入合计；旧版费用（综合费率）按旧版买卖综合费率计收，已计入合计。"
+    : costs?.cost_mode === "legacy" && legacyRow && !hasLegacyValue
+      ? "冲击成本在两种计费模式下都单独计入合计；当前旧版模式记录未保存旧版费用金额，缺失项以「—」区分。"
+      : legacyRow
+        ? "冲击成本在两种计费模式下都单独计入合计；当前记录未明确计费模式，缺失项以「—」区分。"
+        : "冲击成本在两种计费模式下都单独计入合计。";
   return (
     <div className="grid-2">
       <Section title="费用构成" description="累计金额（元）">
         {summary ? (
-          <Table
-            size="small"
-            pagination={false}
-            rowKey="key"
-            dataSource={[
-              ...COST_KEYS,
-              ["total", "合计"] as [keyof CostBreakdown, string],
-            ].map(([key, label]) => ({
-              key,
-              label,
-              value: summary[key],
-            }))}
-            columns={[
-              { title: "项目", dataIndex: "label" },
-              {
-                title: "金额",
-                align: "right",
-                render: (_, row) => (
-                  <span className="numeric">{formatMoney(row.value)}</span>
-                ),
-              },
-            ]}
-          />
+          <>
+            <Table
+              aria-label="费用构成表"
+              size="small"
+              pagination={false}
+              rowKey="key"
+              dataSource={summaryRows}
+              columns={[
+                { title: "项目", dataIndex: "label" },
+                {
+                  title: "金额",
+                  align: "right",
+                  render: (_, row) => (
+                    <span className="numeric">{formatMoney(row.value)}</span>
+                  ),
+                },
+              ]}
+            />
+            <Typography.Text
+              type="secondary"
+              style={{ display: "block", marginTop: 8, fontSize: 12 }}
+            >
+              {costSummaryNote}
+            </Typography.Text>
+          </>
         ) : (
           <EmptyState title="未保存费用汇总" />
         )}
