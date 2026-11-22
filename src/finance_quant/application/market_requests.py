@@ -40,6 +40,9 @@ def validate_pool_filters(value, option, backtest, factors, calendar):
 
 
 def pool_industry_display(data, neutral_extra, neutralization):
+    if not neutralization.allow_latest and neutralization.industry_version is not None:
+        # A frozen scoring version is independent of the pool filter, even with neutralization off.
+        return neutral_extra
     filters = data.get("filters", {})
     pinned = filters.get("industry_version") if filters.get("industries") else None
     if neutralization.mode == "off" and pinned:

@@ -14,8 +14,10 @@ from test_industry_neutralization import history
 from test_managed_data import Provider
 
 from finance_quant.application import experiment_references
+from finance_quant.application.market_requests import pool_industry_display
 from finance_quant.data.financials import FinancialStore, financial_root
 from finance_quant.data.industries import industry_root, publish_industries
+from finance_quant.research.neutralization import parse_neutralization
 from finance_quant.storage import ResultStore
 from support.fakes import make_app, make_service, run_claimed
 from support.financial import income, publish, seed_earnings
@@ -226,3 +228,63 @@ def test_selection_handoff_uses_its_source_versions_not_submission_current(tmp_p
     for entry in saved["rows"]:
         provenance = store.get("factors", entry["factor_run_id"], hydrate=False)["metadata"]["provenance"]
         assert provenance["industry_version"] == originals["industry"]
+
+
+@pytest.mark.parametrize(
+    "pin_scoring,pin_filter",
+    [(True, True), (False, True), (True, False), (False, False)],
+    ids=["distinct-pins", "filter-only", "scoring-only", "neither"],
+)
+def test_scoring_and_filter_industries_stay_separate(workspace_ref, pin_scoring, pin_filter):
+    service, client, document = workspace_ref
+    seed_earnings(financial_root(service.data_root), CODES)
+    scoring = None
+    if pin_scoring:
+        scoring = publish_industries(history(SYMBOLS).frame).manifest["id"]
+        document["neutralization"] = {"mode": "off", "industry_version": scoring}
+    if pin_filter:
+        filter_frame = history(SYMBOLS).frame.assign(
+            industry_code=["KEEP", "DROP", "KEEP"], industry_name=["Keep", "Drop", "Keep"]
+        )
+        filter_version = publish_industries(filter_frame).manifest["id"]
+        document["data"]["filters"] = {
+            "exclude_st": False,
+            "min_listing_days": 0,
+            "industries": ["KEEP"],
+            "industry_version": filter_version,
+        }
+    else:
+        filter_version = None
+    accepted = submit(client, document)
+    assert accepted.status_code == 202, accepted.text
+    identifier = accepted.json()["id"]
+    expected_score_version = scoring if pin_scoring else filter_version
+    pins = service.store.get(identifier, private=True)["execution"]["reference_versions"]
+    assert pins["industry"] == expected_score_version
+    assert pins["filter_industry"] == filter_version
+    _, latest = publish_b(service)
+    assert latest not in {scoring, filter_version}
+
+    task = claim_and_run(service, identifier)
+    assert task["status"] == "succeeded", task["error"]
+    store = ResultStore(service.runs_root)
+    saved = store.get("experiments", task["result"]["experiment_run_id"], hydrate=False)
+    assert len(saved["rows"]) == 5
+    expected_members = {SYMBOLS[0], SYMBOLS[2]} if pin_filter else set(SYMBOLS)
+    for entry in saved["rows"]:
+        factor = store.get("factors", entry["factor_run_id"])
+        provenance = factor["metadata"]["provenance"]
+        assert provenance.get("industry_version") == expected_score_version
+        assert provenance.get("universe_filters", {}).get("industry_version") == filter_version
+        assert {row["instrument"] for row in factor["history"]} == expected_members
+        expected_labels = {"I0", "I1"} if pin_scoring else {"KEEP"} if pin_filter else {None}
+        assert {row.get("industry_code") for row in factor["history"]} == expected_labels
+
+
+def test_unfrozen_research_preserves_legacy_filter_industry_display():
+    requested = {"mode": "off", "industry_version": "a" * 64}
+    filters = {"industries": ["KEEP"], "industry_version": "b" * 64}
+    normalized = pool_industry_display(
+        {"filters": filters}, {"neutralization": requested}, parse_neutralization(requested)
+    )
+    assert normalized == {"neutralization": {"mode": "off", "industry_version": "b" * 64}}
