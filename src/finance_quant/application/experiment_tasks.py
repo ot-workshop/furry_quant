@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -191,6 +192,35 @@ def experiment_total(document: dict) -> int:
     return 1 + 2 * len(document["plan"]["candidates"]) + 1
 
 
+def _verify_frozen_snapshot(context, frozen: dict) -> Path:
+    """Check the submitted snapshot (A) before anything reads market data."""
+
+    raw = frozen.get("snapshot_dir")
+    if not raw:
+        raise ValueError("提交时未冻结数据快照")
+    root = Path(context.data_root).resolve()
+    directory = Path(raw)
+    if not directory.is_absolute():
+        directory = root / directory
+    directory = directory.resolve()
+    if not directory.is_relative_to(root):
+        raise ValueError("冻结的数据快照路径不在受控目录内")
+    if not directory.is_dir():
+        raise ValueError("提交时的数据快照已不可用，请重新提交")
+    if (directory / "rejected.json").exists():
+        raise ValueError("提交时的数据快照已被隔离，请重新提交")
+    manifest_path = directory / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError("提交时的数据快照缺少清单，请重新提交")
+    payload = manifest_path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != frozen.get("manifest_sha256"):
+        raise ValueError("排队期间股票池历史状态发生变化，请重新提交")
+    manifest = json.loads(payload)
+    if manifest.get("id") != frozen.get("data_version") or manifest.get("files") != frozen.get("files"):
+        raise ValueError("排队期间数据版本发生变化，请重新提交")
+    return directory
+
+
 def run_experiment_task(context, request: dict, execution: dict) -> dict:
 
     if execution.get("prepare_state") == "pending":
@@ -202,6 +232,8 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
             for key in ("snapshot_dir", "data_version", "files", "manifest_sha256")
             if key in execution
         }
+        if frozen_execution:
+            _verify_frozen_snapshot(context, frozen_execution)
         request, execution = validate_experiment_inputs(
             request,
             context.data_root,
