@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Statistic, Table, Typography } from "antd";
+import { Alert, Button, Card, Flex, Statistic, Table, Typography } from "antd";
 import { DatabaseOutlined, PlusCircleOutlined } from "@ant-design/icons";
 import { api } from "../api/client";
 import { researchApi } from "../api/research";
@@ -264,9 +264,12 @@ export default function DashboardPage() {
                       width: 136,
                       align: "right",
                       render: (_, row) => (
-                        <span className="result-list-secondary result-list-number">
+                        <Flex
+                          justify="end"
+                          className="result-list-secondary result-list-number"
+                        >
                           {formatDateTime(row.created_at)}
-                        </span>
+                        </Flex>
                       ),
                     },
                   ]}
