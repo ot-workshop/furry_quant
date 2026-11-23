@@ -19,16 +19,30 @@ from finance_quant.data.symbols import to_qlib
 from finance_quant.persistence.forward import SHANGHAI, canonical_sha256, registration_evidence_digest
 from finance_quant.persistence.schema import forward_attempt, forward_registration
 from finance_quant.persistence.tasks import PgTaskStore, worker_lock
-from finance_quant.task_contracts import TaskConflict
+from finance_quant.task_contracts import TaskConflict, submission_fingerprint
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("FINANCE_QUANT_TEST_POSTGRES") != "1", reason="requires isolated PostgreSQL"
 )
 CODES = ["000001.SZ", "600000.SH", "600001.SH"]
 KEY = "synthetic-forward-score"
+SOURCE = "synthetic-source"
 
 
-def _fixture(engine, root, *, late=False, missing=False, direction="high", capture=True, drift=False, future=False):
+def _fixture(
+    engine,
+    root,
+    *,
+    late=False,
+    missing=False,
+    direction="high",
+    capture=True,
+    closed_session=None,
+    future=False,
+    future_calendar=True,
+    dataset_id=SOURCE,
+    capture_source=SOURCE,
+):
     with engine.connect() as connection:
         today = connection.scalar(text("select (clock_timestamp() at time zone 'Asia/Shanghai')::date"))
     signal = today - timedelta(days=3)
@@ -43,7 +57,7 @@ def _fixture(engine, root, *, late=False, missing=False, direction="high", captu
         "factor": "momentum",
         "factor_window": 2,
         "factor_direction": direction,
-        "dataset_id": None,
+        "dataset_id": dataset_id,
     }
     # Historical registration evidence is synthetic. The queue, capture qualification,
     # worker, commit barriers and score deadline all use the real PostgreSQL clock.
@@ -52,7 +66,7 @@ def _fixture(engine, root, *, late=False, missing=False, direction="high", captu
         **_freeze_registration(document, signal, calendar),
         "id": "fwd-synthetic",
         "idempotency_key": "synthetic-registration",
-        "fingerprint": canonical_sha256(document),
+        "fingerprint": submission_fingerprint("forward-registration", document, "synthetic-registration"),
         "request": document,
         "status": "registered",
         "written_at": proof,
@@ -81,11 +95,13 @@ def _fixture(engine, root, *, late=False, missing=False, direction="high", captu
         rows[-1].update(close=None, is_suspended=None)
     if future:
         rows.append({**rows[-1], "date": entry})
+    calendar_dates = calendar.sessions if future_calendar else history
+    closed = {"warmup": history[0], "entry": entry, "exit": entry + timedelta(days=1)}.get(closed_session)
     frames = {
         "market.parquet": pd.DataFrame(rows).assign(date=lambda frame: pd.to_datetime(frame.date)),
         "benchmark.parquet": pd.DataFrame({"date": pd.to_datetime(history)}),
         "calendar.parquet": pd.DataFrame(
-            {"date": pd.to_datetime(calendar.sessions), "is_open": [not drift, True, True, True, True]}
+            {"date": pd.to_datetime(calendar_dates), "is_open": [day != closed for day in calendar_dates]}
         ),
     }
     for name, frame in frames.items():
@@ -101,6 +117,8 @@ def _fixture(engine, root, *, late=False, missing=False, direction="high", captu
             "data_end": signal.isoformat(),
             "pool_codes": CODES,
         }
+        if capture_source is not None:
+            manifest["score_capture"]["source_dataset_id"] = capture_source
     (leaf / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return registration["id"], leaf, datetime.combine(entry, time(9, 15), tzinfo=SHANGHAI)
 
@@ -127,8 +145,12 @@ def _execute(store, root, binding):
         ("late", "missed", "deadline-passed"),
         ("missing", "failed", "incomplete-score"),
         ("calendar", "failed", "snapshot-calendar-mismatch"),
+        ("entry-closed", "failed", "snapshot-calendar-mismatch"),
+        ("exit-closed", "failed", "snapshot-calendar-mismatch"),
+        ("future-calendar-uncovered", "succeeded", None),
         ("future", "failed", "score-data-outside-frozen-calendar"),
         ("tampered-file", "failed", "invalid-score-snapshot"),
+        ("source-at-worker", "failed", "score-source-dataset-mismatch"),
         ("unsealed", "failed", "registration-unsealed"),
         ("lock", "failed", "score-dependency-lock-mismatch"),
         ("code", "failed", "score-code-mismatch"),
@@ -142,8 +164,11 @@ def test_score_worker(engine, tmp_path, monkeypatch, case, status, reason):
         late=case == "late",
         missing=case == "missing",
         direction="low" if case == "low" else "high",
-        drift=case == "calendar",
+        closed_session={"calendar": "warmup", "entry-closed": "entry", "exit-closed": "exit"}.get(case),
         future=case == "future",
+        future_calendar=case != "future-calendar-uncovered",
+        dataset_id=None if case == "low" else SOURCE,
+        capture_source=None if case == "low" else SOURCE,
     )
     store = PgTaskStore(engine=engine)
     submit = forward_score.enqueue_forward_score
@@ -155,6 +180,25 @@ def test_score_worker(engine, tmp_path, monkeypatch, case, status, reason):
     if case == "unsealed":
         with engine.begin() as connection:
             connection.execute(forward_registration.update().values(confirmed_at=None))
+    if case == "source-at-worker":
+        # Simulate restoring a validly sealed registration and an older queue binding
+        # that accepted a capture from the wrong source. The pinned file hashes are valid.
+        with engine.begin() as connection:
+            row = dict(connection.execute(select(forward_registration)).mappings().one())
+            request = {**row["request"], "dataset_id": "other-source"}
+            row.update(
+                dataset_id=request["dataset_id"],
+                request=request,
+                fingerprint=submission_fingerprint("forward-registration", request, row["idempotency_key"]),
+            )
+            connection.execute(
+                forward_registration.update().values(
+                    dataset_id=row["dataset_id"],
+                    request=request,
+                    fingerprint=row["fingerprint"],
+                    confirmed_evidence_sha256=registration_evidence_digest(row),
+                )
+            )
     if case in {"code", "lock"}:
         field = "code_sha256" if case == "code" else "dependency_lock_sha256"
         source = forward_score.source_provenance()
@@ -186,6 +230,13 @@ def test_score_worker(engine, tmp_path, monkeypatch, case, status, reason):
             submit(store, tmp_path, reg, leaf.name, key=KEY + "-new")
     else:
         assert row["sealed_at"] is None and row["staging_at"] is None
+    if case in {"entry-closed", "exit-closed"}:
+        with engine.connect() as connection:
+            entry_date, exit_date = connection.execute(
+                select(forward_registration.c.entry_date, forward_registration.c.exit_date)
+            ).one()
+        assert entry_date == deadline.date()
+        assert exit_date == entry_date + timedelta(days=1)
     if case == "late":
         assert row["evidence"]["candidate_codes"] == [CODES[0]]
     if case == "missing":
@@ -205,6 +256,21 @@ def test_unproven_capture_does_not_bind_or_enqueue(engine, tmp_path):
     assert store.list()["total"] == 0
     with engine.connect() as connection:
         assert connection.scalar(select(forward_registration.c.score_snapshot)) is None
+
+
+@pytest.mark.parametrize(
+    ("capture_source", "reason"),
+    [("other-source", "score-source-dataset-mismatch"), (None, "missing-score-source-dataset")],
+)
+def test_frozen_source_is_required_before_binding(engine, tmp_path, capture_source, reason):
+    reg, leaf, _ = _fixture(engine, tmp_path, capture_source=capture_source)
+    store = PgTaskStore(engine=engine)
+    with pytest.raises(forward_score.ScoreInputError, match=reason):
+        forward_score.enqueue_forward_score(store, tmp_path, reg, leaf.name, key=KEY)
+    assert store.list()["total"] == 0
+    with engine.connect() as connection:
+        assert connection.scalar(select(forward_registration.c.score_snapshot)) is None
+        assert connection.scalar(select(forward_attempt.c.id)) is None
 
 
 @pytest.mark.parametrize("recovery", [False, True], ids=["cancel", "restart"])

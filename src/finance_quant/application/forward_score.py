@@ -79,6 +79,13 @@ def _capture_time(row: dict, manifest: dict, deadline: datetime, now: datetime) 
         raise ScoreInputError("score-data-end-mismatch")
     if capture.get("pool_codes") != row["pool_codes"]:
         raise ScoreInputError("score-pool-mismatch")
+    if row["dataset_id"] is not None:
+        # The source dataset and the independently captured snapshot have distinct IDs.
+        source = capture.get("source_dataset_id")
+        if not isinstance(source, str) or not source.strip():
+            raise ScoreInputError("missing-score-source-dataset")
+        if source != row["dataset_id"]:
+            raise ScoreInputError("score-source-dataset-mismatch")
     return captured_at
 
 
@@ -172,10 +179,14 @@ def _compute_score(row: dict, sessions: tuple[date, ...], market, benchmark, cal
     opened = calendar["is_open"]
     if not dates.is_unique or opened.isna().any() or not pd.api.types.is_bool_dtype(opened):
         raise ScoreInputError("snapshot-calendar-mismatch")
-    # The snapshot can include future calendar dates, but they never determine the deadline.
     comparable = dates[opened & (dates <= signal) & (dates >= frozen_dates[0])].sort_values()
     expected = frozen_dates[(frozen_dates >= dates.min()) & (frozen_dates <= signal)]
     if signal not in comparable or not comparable.equals(expected):
+        raise ScoreInputError("snapshot-calendar-mismatch")
+    # Compare only future calendar rows the snapshot actually covers. Expected trading
+    # sessions and the deadline still come from the frozen registration.
+    covered = (dates > signal) & (dates <= pd.Timestamp(row["exit_date"]))
+    if (opened[covered].to_numpy(dtype=bool) != dates[covered].isin(frozen_dates)).any():
         raise ScoreInputError("snapshot-calendar-mismatch")
     for frame in (market, benchmark):
         if not frame.empty and not _market_dates(frame).isin(comparable).all():
