@@ -1,5 +1,6 @@
 """Forward enqueue and replay against the migrated PostgreSQL schema."""
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from threading import Barrier
@@ -12,6 +13,10 @@ from finance_quant.persistence.forward import AttemptActive, enqueue_attempt
 from finance_quant.persistence.schema import forward_attempt, forward_registration, research_task
 from finance_quant.persistence.tasks import PgTaskStore
 from finance_quant.task_contracts import TaskConflict
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("FINANCE_QUANT_TEST_POSTGRES") != "1", reason="requires isolated PostgreSQL"
+)
 
 KEY = "forward-score-original"
 
