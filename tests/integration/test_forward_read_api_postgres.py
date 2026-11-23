@@ -222,6 +222,44 @@ def test_untrusted_proof_never_makes_a_result_available(engine, tmp_path, client
     assert detail["attempts"][-1]["sealed"] is False
 
 
+@pytest.mark.parametrize("damage", ["return", "missing", "zero-open", "boolean-open", "omitted-open"])
+def test_rehashed_labels_must_agree_with_the_stored_adjusted_opens(engine, tmp_path, client, damage):
+    store, row, _ = _registered(engine, tmp_path)
+    _publish_labels(tmp_path, row, "flat-label", zero=True)
+    queued = enqueue_forward_verification(store, tmp_path, row["id"], key="inconsistent-label-api-fixture")
+    assert _execute(store, tmp_path, queued)[1]["status"] == "succeeded"
+    before, _ = _detail(client, row["id"])
+    assert before["state"] == "verified" and before["result"]["excess_return_pp"] == 0.0
+
+    attempt = forward_attempt.c
+    with engine.begin() as connection:
+        evidence = connection.scalar(select(attempt.evidence).where(attempt.id == queued["attempt_id"]))
+        result = evidence["result"]
+        assert all(label["entry_adjusted_open"] == label["exit_adjusted_open"] == 10.0 for label in result["labels"])
+        if damage == "return":
+            result["labels"][0]["return"] = 0.2
+            result.update(candidate_return=0.2, pool_return=0.2 / 3, excess_return_pp=100 * (0.2 - 0.2 / 3))
+        elif damage == "missing":
+            result["labels"][-1].update({"return": None, "reasons": ["exit-missing-quote"]})
+            result.update(pool_valid=2, pool_return=None, excess_return_pp=None, missing_codes=[CODES[-1]])
+        elif damage == "omitted-open":
+            del result["labels"][0]["entry_adjusted_open"]
+        else:
+            result["labels"][0]["entry_adjusted_open"] = 0.0 if damage == "zero-open" else True
+        connection.execute(
+            forward_attempt.update()
+            .where(attempt.id == queued["attempt_id"])
+            .values(evidence=evidence, evidence_sha256=canonical_sha256(evidence))
+        )
+        connection.execute(forward_registration.update().values(result=result))
+
+    detail, _ = _detail(client, row["id"])
+    assert detail["state"] == "invalid_evidence"
+    assert (detail["pool_size"], detail["top_k"]) == (3, 1)
+    assert detail["result"] is None
+    assert detail["attempts"][-1]["sealed"] is False
+
+
 def test_attempt_with_private_error_exposes_only_safe_category(engine, tmp_path, client):
     store, row, _ = _registered(engine, tmp_path)
     _publish_labels(tmp_path, row, "ready-label")

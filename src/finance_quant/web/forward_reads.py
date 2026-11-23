@@ -115,6 +115,25 @@ def _missing_score(row: dict, attempt: dict | None) -> list[dict]:
     return missing
 
 
+def _checked_label_return(label: dict, reasons: list[str]) -> float | None:
+    opening, closing = label["entry_adjusted_open"], label["exit_adjusted_open"]
+    if any(price is not None and (not _is_number(price) or price <= 0) for price in (opening, closing)):
+        raise VerificationInputError("invalid-result-labels")
+    value = label["return"]
+    if opening is None or closing is None:
+        missing_sides = [side for side, price in (("entry", opening), ("exit", closing)) if price is None]
+        if value is None and [reason.split("-", 1)[0] for reason in reasons] == missing_sides:
+            return None
+    else:
+        expected = float(closing) / float(opening) - 1
+        if _is_number(expected):
+            if not reasons and _is_number(value) and value == expected:
+                return expected
+        elif value is None and reasons == ["nonfinite-return"]:
+            return None
+    raise VerificationInputError("invalid-result-labels")
+
+
 def _public_metrics(row: dict, result: dict, candidates: list[str]) -> dict:
     labels, codes = result.get("labels"), row["pool_codes"]
     if not isinstance(labels, list) or len(labels) != len(codes):
@@ -124,15 +143,14 @@ def _public_metrics(row: dict, result: dict, candidates: list[str]) -> dict:
     for code, label in zip(codes, labels, strict=True):
         if not isinstance(label, dict) or label.get("code") != code or "return" not in label:
             raise VerificationInputError("invalid-result-labels")
-        reasons, value = label.get("reasons"), label["return"]
+        reasons = label.get("reasons")
         if not isinstance(reasons, list) or any(reason not in _LABEL_REASONS for reason in reasons):
             raise VerificationInputError("invalid-result-labels")
-        if reasons and value is None:
+        value = _checked_label_return(label, reasons)
+        if value is None:
             missing.append({"code": code, "reasons": reasons})
-        elif reasons == [] and _is_number(value):
-            returns[code] = value
         else:
-            raise VerificationInputError("invalid-result-labels")
+            returns[code] = value
     top_k, pool_size = row["top_k"], row["pool_size"]
     candidate_valid = sum(code in returns for code in candidates)
     candidate_return = math.fsum(returns[code] / top_k for code in candidates) if candidate_valid == top_k else None
