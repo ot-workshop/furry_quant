@@ -410,7 +410,7 @@ def registration_row_confirmed(row: Mapping[str, Any]) -> bool:
     )
 
 
-_LIST_COLUMNS = (
+REGISTRATION_SUMMARY_FIELDS = (
     "id",
     "name",
     "status",
@@ -432,7 +432,7 @@ def list_registrations(connection: Connection, *, limit: int = 50, offset: int =
     offset = max(0, int(offset))
     rows = connection.execute(
         text(
-            "select " + ", ".join(_LIST_COLUMNS) + " from forward_registration "
+            "select " + ", ".join(REGISTRATION_SUMMARY_FIELDS) + " from forward_registration "
             "order by created_at desc, id desc limit :limit offset :offset"
         ),
         {"limit": limit, "offset": offset},
@@ -440,7 +440,7 @@ def list_registrations(connection: Connection, *, limit: int = 50, offset: int =
     return [dict(row) for row in rows]
 
 
-def get_registration(connection: Connection, registration_id: str) -> dict | None:
+def get_registration(connection: Connection, registration_id: str, *, include_evidence: bool = False) -> dict | None:
     """One row plus its attempts; the caller decides which fields to expose."""
     row = (
         connection.execute(text("select * from forward_registration where id = :id"), {"id": registration_id})
@@ -450,13 +450,23 @@ def get_registration(connection: Connection, registration_id: str) -> dict | Non
     if row is None:
         return None
     detail = dict(row)
+    attempt = forward_attempt.c
+    fields = [
+        attempt.id,
+        attempt.kind,
+        attempt.attempt_no,
+        attempt.status,
+        attempt.deadline_at,
+        attempt.staging_at,
+        attempt.sealed_at,
+        attempt.evidence_sha256,
+        attempt.error,
+        attempt.created_at,
+    ]
+    if include_evidence:
+        fields.extend((attempt.registration_id, attempt.task_id, attempt.evidence_row_id, attempt.evidence))
     attempts = connection.execute(
-        text(
-            "select id, kind, attempt_no, status, deadline_at, staging_at, sealed_at, "
-            "evidence_sha256, error, created_at from forward_attempt "
-            "where registration_id = :id order by kind, attempt_no"
-        ),
-        {"id": registration_id},
+        select(*fields).where(attempt.registration_id == registration_id).order_by(attempt.kind, attempt.attempt_no)
     ).mappings()
     detail["attempts"] = [dict(item) for item in attempts]
     return detail
