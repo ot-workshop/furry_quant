@@ -10,9 +10,10 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, select, text, update
 
-from finance_quant.task_contracts import TaskConflict, submission_fingerprint
+from finance_quant.task_contracts import FORWARD_SCORE_MODE, TaskConflict, submission_fingerprint
 
 from .database import check_schema, make_engine
+from .schema import forward_attempt
 from .schema import research_task as task
 
 WORKER_LOCK = 663420119
@@ -220,8 +221,10 @@ class PgTaskStore:
             )
 
     def cancel(self, identifier):
-        self.get(identifier)
+        current = self.get(identifier, private=True)
         with self.engine.begin() as connection:
+            if current["execution"].get("mode") == FORWARD_SCORE_MODE:
+                self._close_score_attempt(connection, identifier, "cancelled", "task-cancelled")
             changed = connection.execute(
                 update(task)
                 .where(task.c.id == identifier, task.c.status == "queued")
@@ -265,6 +268,19 @@ class PgTaskStore:
         with self.engine.begin() as own:
             self._require_single_row(own.execute(statement))
 
+    @staticmethod
+    def _close_score_attempt(connection, identifier, status, error):
+        # Attempt before task, matching the seal transaction's lock order.
+        connection.execute(
+            update(forward_attempt)
+            .where(
+                forward_attempt.c.task_id == identifier,
+                forward_attempt.c.kind == "score",
+                forward_attempt.c.status.in_(("queued", "running")),
+            )
+            .values(status=status, error=error)
+        )
+
     def finish(self, identifier, status, *, result=None, error=None, error_details=None, connection=None):
         if status not in {"succeeded", "failed", "interrupted", "paused"}:
             raise ValueError("Unsupported terminal task status")
@@ -282,15 +298,31 @@ class PgTaskStore:
         if status == "succeeded":
             values["completed"] = task.c.total
         statement = update(task).where(task.c.id == identifier, task.c.status == "running").values(**values)
-        if connection is not None:
+
+        def finish_in(connection):
+            if status != "succeeded" and connection.scalar(
+                select(task.c.id).where(task.c.id == identifier, task.c.execution["mode"].astext == FORWARD_SCORE_MODE)
+            ):
+                attempt_status = "failed" if status == "failed" else "interrupted"
+                self._close_score_attempt(connection, identifier, attempt_status, error or f"task-{status}")
             self._require_single_row(connection.execute(statement))
+
+        if connection is not None:
+            finish_in(connection)
             return
         with self.engine.begin() as own:
-            self._require_single_row(own.execute(statement))
+            finish_in(own)
 
     def recover(self):
         """Caller must hold worker_lock; no recovery based solely on heartbeat age."""
         with self.engine.begin() as connection:
+            score_tasks = connection.scalars(
+                select(task.c.id).where(
+                    task.c.status == "running", task.c.execution["mode"].astext == FORWARD_SCORE_MODE
+                )
+            ).all()
+            for identifier in score_tasks:
+                self.finish(identifier, "interrupted", error="worker-restarted", connection=connection)
             connection.execute(
                 update(task)
                 .where(task.c.status == "running")
