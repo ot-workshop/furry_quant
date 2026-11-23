@@ -16,7 +16,7 @@ from test_forward_registration_postgres import submission as submission
 from test_postgres_runtime import engine as engine
 
 from finance_quant.application.forward_registration import ForwardCalendar, register_forward
-from finance_quant.persistence import forward_registration as registration_store
+from finance_quant.persistence import forward as registration_proof
 from finance_quant.persistence.forward import registration_confirmed
 from finance_quant.persistence.forward_registration import RegistrationExpired
 from finance_quant.persistence.schema import forward_registration
@@ -51,7 +51,7 @@ def test_actual_shanghai_midnight_in_the_past_leaves_an_expired_audit_row(engine
             db_deadline = connection.scalar(
                 text("select cast(:signal as timestamp) at time zone 'Asia/Shanghai'"), {"signal": signal}
             )
-        assert registration_store.registration_deadline(signal) == db_deadline
+        assert registration_proof.registration_deadline(signal) == db_deadline
         assert db_deadline.utcoffset() == timedelta(hours=8 if zone == "Asia/Shanghai" else 0)
         with pytest.raises(RegistrationExpired, match="上海时间 00:00") as expired:
             register_forward(engine, request, calendar, key=KEY)
@@ -76,7 +76,7 @@ def test_registration_needs_two_committed_proofs_before_the_deadline(engine, sub
     with engine.connect() as connection:
         cutoff = connection.scalar(text("select clock_timestamp() + interval '2 seconds'"))
     # Compress the business deadline for barriers. PostgreSQL still supplies the real clock.
-    monkeypatch.setattr(registration_store, "registration_deadline", lambda signal: cutoff)
+    monkeypatch.setattr(registration_proof, "registration_deadline", lambda signal: cutoff)
     delayed_commit = {"evidence-commit": 1, "staging-commit": 2, "success-commit": 3}.get(barrier)
     commits = []
     started = 0

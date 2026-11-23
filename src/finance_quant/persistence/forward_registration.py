@@ -5,39 +5,16 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, time
-from zoneinfo import ZoneInfo
+from datetime import datetime
 
 from sqlalchemy import Connection, Engine, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from finance_quant.task_contracts import TaskConflict, submission_fingerprint
 
-from .forward import Confirmation, canonical_sha256
+from . import forward
+from .forward import Confirmation
 from .schema import forward_registration
-
-SHANGHAI = ZoneInfo("Asia/Shanghai")
-_DATES = ("signal_date", "entry_date", "exit_date")
-_EVIDENCE_FIELDS = (
-    "id",
-    "idempotency_key",
-    "fingerprint",
-    "request",
-    "name",
-    *_DATES,
-    "calendar_version",
-    "calendar_fingerprint",
-    "pool_codes",
-    "pool_size",
-    "top_k",
-    "factor",
-    "factor_window",
-    "factor_direction",
-    "data_rules",
-    "strategy_rules",
-    "dataset_id",
-    "code_sha256",
-)
 
 
 @dataclass(frozen=True)
@@ -50,17 +27,6 @@ class RegistrationExpired(TaskConflict):
     def __init__(self, registration_id: str):
         self.registration_id = registration_id
         super().__init__("登记确认未在信号日上海时间 00:00 前完成")
-
-
-def registration_deadline(signal_date: date) -> datetime:
-    return datetime.combine(signal_date, time.min, tzinfo=SHANGHAI)
-
-
-def _evidence_digest(row: dict) -> str:
-    evidence = {key: row[key] for key in _EVIDENCE_FIELDS}
-    for key in _DATES:
-        evidence[key] = row[key].isoformat()
-    return canonical_sha256(evidence)
 
 
 def register_and_confirm(
@@ -103,7 +69,7 @@ def _record_registration(
             status="registered",
         )
         # Bind the initial evidence at its commit. confirmed_at controls usability.
-        row["confirmed_evidence_sha256"] = _evidence_digest(row)
+        row["confirmed_evidence_sha256"] = forward.registration_evidence_digest(row)
         identifier = connection.scalar(
             insert(table)
             .values(**row)
@@ -123,16 +89,16 @@ def _record_registration(
 def _advance_proof(connection: Connection, identifier: str, *, stage: bool) -> Confirmation:
     table = forward_registration
     row = dict(connection.execute(select(table).where(table.c.id == identifier).with_for_update()).mappings().one())
-    if _evidence_digest(row) != row["confirmed_evidence_sha256"]:
+    if not forward.registration_evidence_matches(row):
         raise TaskConflict("登记证据与原摘要不匹配")
     if row["status"] == "expired":
         return Confirmation(False, None, "expired")
 
-    deadline = registration_deadline(row["signal_date"])
+    deadline = forward.registration_deadline(row["signal_date"])
     staged_at, confirmed_at = row["staging_at"], row["confirmed_at"]
     valid_stage = staged_at is not None and staged_at < deadline
     if confirmed_at is not None:
-        if not valid_stage or confirmed_at >= deadline:
+        if not forward.registration_proof_times_valid(row, deadline):
             raise TaskConflict("已封存的登记证明无效")
         return Confirmation(True, confirmed_at, "already-sealed")
     if (staged_at is not None or not stage) and not valid_stage:
@@ -148,5 +114,7 @@ def _advance_proof(connection: Connection, identifier: str, *, stage: bool) -> C
     if stage:
         connection.execute(update.values(staging_at=sampled))
         return Confirmation(False, sampled, "staged")
+    if sampled < staged_at:
+        raise TaskConflict("封存采样早于暂存证明")
     connection.execute(update.values(confirmed_at=sampled))
     return Confirmation(True, sampled, "sealed")

@@ -8,9 +8,9 @@ from datetime import date, datetime, time
 from sqlalchemy import Engine
 
 from finance_quant.data.symbols import split_ts_code
-from finance_quant.persistence.forward import canonical_sha256
-from finance_quant.persistence.forward_registration import SHANGHAI, RegistrationReceipt, register_and_confirm
-from finance_quant.provenance import code_sha256
+from finance_quant.persistence.forward import SHANGHAI, canonical_sha256
+from finance_quant.persistence.forward_registration import RegistrationReceipt, register_and_confirm
+from finance_quant.provenance import source_provenance
 from finance_quant.research.registry import FactorSpec
 
 
@@ -89,6 +89,10 @@ def _freeze_registration(document: dict, signal_date: date, calendar: ForwardCal
         raise ValueError("冻结日历必须覆盖入场日和退出日")
     entry_date, exit_date = next_sessions
     frozen_calendar = {"version": calendar.version, "trading_dates": [session.isoformat() for session in sessions]}
+    provenance = source_provenance()
+    lock_digest = provenance["dependency_lock_sha256"]
+    if lock_digest is None:
+        raise ValueError("缺少依赖锁，无法冻结登记证据")
 
     return {
         **document,
@@ -98,9 +102,10 @@ def _freeze_registration(document: dict, signal_date: date, calendar: ForwardCal
         "calendar_version": calendar.version,
         "calendar_fingerprint": canonical_sha256(frozen_calendar),
         "pool_size": len(codes),
-        "code_sha256": code_sha256(),
+        "code_sha256": provenance["code_sha256"],
         "data_rules": {
             "calendar": frozen_calendar,
+            "dependency_lock_sha256": lock_digest,
             "timezone": "Asia/Shanghai",
             "score_data_end": signal_date.isoformat(),
             "score_capture_after": "signal_close",
