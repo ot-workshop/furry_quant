@@ -106,6 +106,39 @@ def assert_fits(page):
         card.scrollWidth <= card.clientWidth + 1)""")
 
 
+def assert_status_contrast(page, scheme, width):
+    page.wait_for_function("""() => [...document.querySelectorAll('.forward-page .ant-tag')]
+        .every(tag => tag.getAnimations().length === 0)""")
+    samples = page.locator(".forward-page .ant-tag").evaluate_all("""tags => {
+        const canvas = Object.assign(document.createElement('canvas'), {width: 1, height: 1});
+        const context = canvas.getContext('2d', {willReadFrequently: true});
+        const luminance = ([r, g, b]) => [r, g, b].map(channel => {
+            const value = channel / 255;
+            return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+        }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+        const paint = color => {
+            context.fillStyle = color;
+            context.fillRect(0, 0, 1, 1);
+        };
+        return tags.map(tag => {
+            const layers = [];
+            for (let element = tag; element; element = element.parentElement)
+                layers.push(getComputedStyle(element).backgroundColor);
+            paint('#fff');
+            layers.reverse().forEach(paint);
+            const background = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+            paint(getComputedStyle(tag).color);
+            const foreground = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+            const values = [luminance(background), luminance(foreground)].sort((a, b) => a - b);
+            return {label: tag.textContent.trim(), foreground, background,
+                ratio: (values[1] + 0.05) / (values[0] + 0.05)};
+        });
+    }""")
+    for sample in samples:
+        print(f"contrast {scheme=} {width=} {sample}")
+        assert sample["ratio"] >= 4.5, sample
+
+
 def activate(page, link, mobile):
     if mobile:
         assert link.bounding_box()["height"] >= 44
@@ -224,13 +257,18 @@ def test_forward_navigation_and_five_viewports(engine, tmp_path, browser):
 @pytest.mark.parametrize(
     ("case", "label"),
     [
+        ("unsealed", "登记未封存"),
+        ("awaiting_score", "待评分"),
         ("awaiting_exit", "等待退出日"),
         ("awaiting_quote", "等待绑定合格标签"),
+        ("awaiting_verification", "待验证"),
         ("score_queued", "评分已排队"),
         ("scoring", "正在评分"),
         ("verify_queued", "验证已排队"),
         ("verifying", "正在验证"),
         ("failed", "评分失败"),
+        ("verify_failed", "到期验证失败"),
+        ("expired", "登记已过期"),
         ("missed", "已错过截止"),
         ("invalid_evidence", "证据无效"),
         ("missing_labels", "缺少收益数据"),
@@ -238,12 +276,25 @@ def test_forward_navigation_and_five_viewports(engine, tmp_path, browser):
     ],
 )
 def test_details_show_server_states_and_missing_data(engine, tmp_path, browser, case, label):
-    if case in {"score_queued", "scoring", "failed", "missed", "invalid_evidence"}:
+    if case in {
+        "unsealed",
+        "awaiting_score",
+        "score_queued",
+        "scoring",
+        "failed",
+        "expired",
+        "missed",
+        "invalid_evidence",
+    }:
         identifier, leaf, _ = _fixture(engine, tmp_path, late=case == "missed", missing=case == "failed")
         if case == "invalid_evidence":
             with engine.begin() as connection:
                 connection.execute(forward_registration.update().values(confirmed_evidence_sha256="0" * 64))
-        elif case != "missed":
+        elif case in {"unsealed", "expired"}:
+            values = {"status": "expired"} if case == "expired" else {"confirmed_at": None}
+            with engine.begin() as connection:
+                connection.execute(forward_registration.update().values(**values))
+        elif case in {"score_queued", "scoring", "failed"}:
             store = PgTaskStore(engine=engine)
             binding = enqueue_forward_score(store, tmp_path, identifier, leaf.name, key="browser-score")
             if case == "scoring":
@@ -258,34 +309,39 @@ def test_details_show_server_states_and_missing_data(engine, tmp_path, browser, 
         if case not in {"awaiting_exit", "awaiting_quote"}:
             _publish_labels(tmp_path, row, "browser-label", missing=CODES[-1] if case == "missing_labels" else None)
             binding = enqueue_forward_verification(store, tmp_path, identifier, key="browser-verify")
-            if case == "verifying":
+            if case == "awaiting_verification":
+                store.cancel(binding["task_id"])
+            elif case in {"verifying", "verify_failed"}:
                 assert store.claim() == binding["task_id"]
                 with engine.begin() as connection:
                     start_forward_attempt(connection, binding["task_id"], identifier, kind="verify")
+                if case == "verify_failed":
+                    store.finish(binding["task_id"], "failed", error="verification-execution-failed")
             elif case in {"missing_labels", "verified"}:
                 assert _execute(store, tmp_path, binding)[1]["status"] == "succeeded"
-    with (
-        serve(engine, tmp_path) as origin,
-        browser.new_context(
-            viewport={"width": 390, "height": 800},
-            is_mobile=True,
-            has_touch=True,
-            color_scheme="dark" if case == "missing_labels" else "light",
-        ) as context,
-    ):
-        page = context.new_page()
-        assert page.goto(f"{origin}{REGISTRATIONS}/{identifier}").status == 200
-        expect(page.locator(".forward-outcome .ant-tag")).to_have_text(label)
-        expect(page.locator(".forward-metric-value")).to_have_text("13.33 个百分点" if case == "verified" else "—")
-        if case == "missing_labels":
-            expect(page.get_by_text("有效收益数 · 前 K 1/1，全池 2/3", exact=True)).to_be_visible()
-            expect(page.get_by_text("退出缺行情", exact=False)).to_be_visible()
-        if case == "failed":
-            expect(page.get_by_text("评分样本不全", exact=True).first).to_be_visible()
-            expect(page.locator(".forward-missing")).to_contain_text(CODES[-1])
-        assert_fits(page)
-        if case in {"awaiting_quote", "failed", "missing_labels"}:
-            screen(page, f"state-{case}-390")
+    widths = (1440, 1366, 1024, 390, 320) if case in {"failed", "missing_labels"} else (390,)
+    with serve(engine, tmp_path) as origin:
+        for width in widths:
+            with browser.new_context(viewport={"width": width, "height": 800}, color_scheme="light") as context:
+                page = context.new_page()
+                assert page.goto(f"{origin}{REGISTRATIONS}/{identifier}").status == 200
+                for scheme in ("light", "dark"):
+                    page.emulate_media(color_scheme=scheme)
+                    expect(page.locator("html")).to_have_attribute("data-theme", scheme)
+                    expect(page.locator(".forward-outcome .ant-tag")).to_have_text(label)
+                    expect(page.locator(".forward-metric-value")).to_have_text(
+                        "13.33 个百分点" if case == "verified" else "—"
+                    )
+                    if case == "missing_labels":
+                        expect(page.get_by_text("有效收益数 · 前 K 1/1，全池 2/3", exact=True)).to_be_visible()
+                        expect(page.get_by_text("退出缺行情", exact=False)).to_be_visible()
+                    if case == "failed":
+                        expect(page.get_by_text("评分样本不全", exact=True).first).to_be_visible()
+                        expect(page.locator(".forward-missing")).to_contain_text(CODES[-1])
+                    assert_status_contrast(page, scheme, width)
+                    assert_fits(page)
+                    if case in {"awaiting_quote", "failed", "missing_labels"} and width == 390:
+                        screen(page, f"state-{case}-{scheme}-390")
 
 
 def test_empty_not_found_and_retry(engine, tmp_path, browser):
@@ -317,3 +373,87 @@ def test_empty_not_found_and_retry(engine, tmp_path, browser):
         expect(page.get_by_text("任务加载失败", exact=True)).to_be_visible()
         page.get_by_role("button", name=re.compile(r"重\s*试")).click()
         expect(page.get_by_text("任务不可用", exact=True)).to_be_visible()
+
+
+def ordinary_task(index):
+    return {
+        "id": f"task-{index:032x}",
+        "kind": "research",
+        "name": f"普通研究 {index:02}",
+        "status": "running",
+        "stage": "prepare",
+        "message": "正在准备数据",
+        "created_at": "2026-11-20T12:00:00Z",
+        "started_at": "2026-11-20T12:01:00Z",
+        "finished_at": None,
+        "progress": {"completed": 0, "total": 2},
+        "request": {
+            "data": {"mode": "snapshot", "codes": ["000001.SZ"]},
+            "backtest": {"start": "2026-11-01", "end": "2026-11-20", "topk": 1, "initial_cash": 10000},
+            "factors": [],
+        },
+        "error": None,
+        "result": None,
+    }
+
+
+@pytest.mark.parametrize("refresh", ["button", "poll"])
+def test_historical_task_refreshes_by_id(engine, tmp_path, browser, refresh):
+    task = ordinary_task(101)
+    task.update(
+        forward_stage="score",
+        forward_attempt_id="fat-historical",
+        request={"registration_id": "fwd-history", "score_snapshot_id": "synthetic-score"},
+    )
+
+    with serve(engine, tmp_path) as origin, browser.new_context() as context:
+        page = context.new_page()
+        if refresh == "button":
+            # Prove the button reaches the detail even when automatic task polling is absent.
+            page.add_init_script("""(() => {
+                const schedule = window.setInterval.bind(window);
+                window.setInterval = (callback, delay, ...args) =>
+                    delay === 3000 ? 0 : schedule(callback, delay, ...args);
+            })()""")
+        else:
+            page.clock.install()
+        page.route(f"**{TASKS}/{task['id']}", lambda route: route.fulfill(json=task))
+        page.goto(f"{origin}/tasks?focus={task['id']}")
+        status = page.locator(".section-card", has=page.get_by_text("指定任务", exact=True)).locator(".ant-tag")
+        expect(status).to_have_text("运行中")
+        task.update(status="succeeded", stage="finished", message="计算完成", finished_at="2026-11-20T12:02:00Z")
+        if refresh == "button":
+            page.get_by_role("button", name=re.compile(r"刷\s*新")).click(timeout=2000)
+        else:
+            page.clock.fast_forward(3100)
+        expect(status).to_have_text("已完成", timeout=2000)
+
+
+def test_task_poll_keeps_user_page_after_initial_focus(engine, tmp_path, browser):
+    tasks = [ordinary_task(index) for index in range(70)]
+    first, next_focus = tasks[5]["id"], tasks[28]["id"]
+
+    with serve(engine, tmp_path) as origin, browser.new_context() as context:
+        page = context.new_page()
+        page.clock.install()
+        page.route(f"**{TASKS}", lambda route: route.fulfill(json={"items": tasks, "total": len(tasks)}))
+        page.goto(f"{origin}/tasks?focus={first}")
+        active_page = page.locator(".task-list-wrap .ant-pagination-item-active")
+        expect(active_page).to_have_text("1")
+        expect(page.locator(f"#task-detail-{first}")).to_be_visible()
+        page.locator('.task-list-wrap .ant-pagination-item[title="3"]').click()
+        expect(page.locator(".task-row").first).to_have_attribute("data-task-id", tasks[40]["id"])
+        tasks.insert(0, ordinary_task(100))
+        page.clock.fast_forward(3100)
+        expect(page.locator(".task-row").first).to_have_attribute("data-task-id", tasks[40]["id"])
+        expect(active_page).to_have_text("3")
+
+        page.evaluate(
+            """id => {
+                history.pushState(null, '', `/tasks?focus=${id}`);
+                dispatchEvent(new PopStateEvent('popstate'));
+            }""",
+            next_focus,
+        )
+        expect(active_page).to_have_text("2")
+        expect(page.locator(f"#task-detail-{next_focus}")).to_be_visible()

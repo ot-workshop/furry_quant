@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RightOutlined } from "@ant-design/icons";
 import { poolLabel } from "../utils/format";
 import {
@@ -328,6 +328,8 @@ export function TaskTable({
   const focusedIndex = expandedId
     ? tasks.findIndex((task) => task.id === expandedId)
     : -1;
+  const lastResetKey = useRef(resetKey);
+  const locatedFocus = useRef({ id: expandedId, positioned: false });
   const maxPage = Math.max(1, Math.ceil(tasks.length / PAGE_SIZE));
   const [expandedDetails, setExpandedDetails] = useState<
     Record<string, boolean>
@@ -337,7 +339,10 @@ export function TaskTable({
   >({});
 
   useEffect(() => {
-    setPage(1);
+    if (lastResetKey.current !== resetKey) {
+      lastResetKey.current = resetKey;
+      setPage(1);
+    }
   }, [resetKey]);
 
   useEffect(() => {
@@ -345,7 +350,14 @@ export function TaskTable({
   }, [page, maxPage]);
 
   useEffect(() => {
-    if (focusedIndex >= 0) setPage(Math.floor(focusedIndex / PAGE_SIZE) + 1);
+    // A new target can move the page. Polling an already located target cannot.
+    if (locatedFocus.current.id !== expandedId) {
+      locatedFocus.current = { id: expandedId, positioned: false };
+    }
+    if (focusedIndex >= 0 && !locatedFocus.current.positioned) {
+      locatedFocus.current.positioned = true;
+      setPage(Math.floor(focusedIndex / PAGE_SIZE) + 1);
+    }
   }, [expandedId, focusedIndex]);
 
   useEffect(() => {

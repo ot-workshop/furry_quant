@@ -15,6 +15,7 @@ import {
 import { useApiResource } from "../hooks/useApiResource";
 
 type Filter = "all" | "active" | "succeeded" | "failed";
+const TASK_POLL_MS = 3000;
 
 const MATCH: Record<Filter, (task: ResearchTask) => boolean> = {
   all: () => true,
@@ -26,7 +27,7 @@ const MATCH: Record<Filter, (task: ResearchTask) => boolean> = {
 
 export default function TasksPage({ focus }: { focus: string | null }) {
   const tasks = useApiResource((signal) => researchApi.tasks(signal), [], {
-    pollMs: 3000,
+    pollMs: TASK_POLL_MS,
   });
   const [filter, setFilter] = useState<Filter>("all");
   const listed = tasks.data?.items.some((task) => task.id === focus);
@@ -34,7 +35,12 @@ export default function TasksPage({ focus }: { focus: string | null }) {
   const focused = useApiResource(
     lookup ? (signal) => researchApi.task(lookup, signal) : null,
     [lookup],
+    { pollMs: TASK_POLL_MS },
   );
+  function refresh() {
+    tasks.reload();
+    if (lookup) focused.reload();
+  }
   const items = useMemo(
     () => (tasks.data?.items ?? []).filter(MATCH[filter]),
     [tasks.data, filter],
@@ -58,8 +64,8 @@ export default function TasksPage({ focus }: { focus: string | null }) {
           <>
             <Button
               icon={<ReloadOutlined />}
-              loading={tasks.refreshing}
-              onClick={tasks.reload}
+              loading={tasks.refreshing || focused.refreshing}
+              onClick={refresh}
             >
               刷新
             </Button>

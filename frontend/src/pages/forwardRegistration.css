@@ -12,15 +12,40 @@
 .forward-page .ant-tag {
   margin-inline-end: 0;
   max-width: 100%;
+  transition: none;
   white-space: normal;
 }
 
-.forward-page :is(.ant-tag-success, .ant-tag-processing, .ant-tag-warning) {
-  color: var(--ant-color-text);
+.forward-page .ant-tag-success {
+  --forward-tag-color: var(--ant-color-success);
 }
 
 .forward-page .ant-tag-error {
-  color: var(--ant-color-error-text);
+  --forward-tag-color: var(--ant-color-error);
+}
+
+.forward-page .ant-tag-processing {
+  --forward-tag-color: var(--ant-color-info);
+}
+
+.forward-page .ant-tag-warning {
+  --forward-tag-color: var(--ant-color-warning);
+}
+
+/* Match the Tag variant and disabled selector so the status preset cannot win. */
+.forward-page
+  .ant-tag.ant-tag-filled:not(.ant-tag-disabled):is(
+    .ant-tag-success,
+    .ant-tag-error,
+    .ant-tag-processing,
+    .ant-tag-warning
+  ) {
+  color: var(--ant-color-text);
+  color: color-mix(
+    in srgb,
+    var(--forward-tag-color) 40%,
+    var(--ant-color-text)
+  );
 }
 
 .forward-link {
