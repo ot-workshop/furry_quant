@@ -18,15 +18,19 @@ returned by RETURNING.
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, time
+from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Connection, select, text
 
 from finance_quant.checksums import sha256_text
 from finance_quant.task_contracts import TaskConflict
 
-from .schema import forward_attempt
+from .schema import forward_attempt, forward_registration
 from .tasks import PgTaskStore, lock_submissions
 
 
@@ -37,6 +41,56 @@ def canonical_json(payload: object) -> str:
 
 def canonical_sha256(payload: object) -> str:
     return sha256_text(canonical_json(payload))
+
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+_REGISTRATION_DATES = ("signal_date", "entry_date", "exit_date")
+_REGISTRATION_EVIDENCE_FIELDS = (
+    "id",
+    "idempotency_key",
+    "fingerprint",
+    "request",
+    "name",
+    *_REGISTRATION_DATES,
+    "calendar_version",
+    "calendar_fingerprint",
+    "pool_codes",
+    "pool_size",
+    "top_k",
+    "factor",
+    "factor_window",
+    "factor_direction",
+    "data_rules",
+    "strategy_rules",
+    "dataset_id",
+    "code_sha256",
+)
+
+
+def registration_deadline(signal_date: date) -> datetime:
+    return datetime.combine(signal_date, time.min, tzinfo=SHANGHAI)
+
+
+def registration_evidence_digest(row: Mapping[str, Any]) -> str:
+    evidence = {key: row[key] for key in _REGISTRATION_EVIDENCE_FIELDS}
+    for key in _REGISTRATION_DATES:
+        evidence[key] = row[key].isoformat()
+    return canonical_sha256(evidence)
+
+
+def registration_evidence_matches(row: Mapping[str, Any]) -> bool:
+    rules = row["data_rules"]
+    lock_digest = rules.get("dependency_lock_sha256") if isinstance(rules, dict) else None
+    return (
+        isinstance(lock_digest, str)
+        and re.fullmatch(r"[0-9a-f]{64}", lock_digest) is not None
+        and registration_evidence_digest(row) == row["confirmed_evidence_sha256"]
+    )
+
+
+def registration_proof_times_valid(row: Mapping[str, Any], deadline: datetime) -> bool:
+    staged, sealed = row["staging_at"], row["confirmed_at"]
+    return staged is not None and sealed is not None and staged <= sealed < deadline
 
 
 class AttemptActive(RuntimeError):
@@ -171,16 +225,18 @@ def _seal_success(
 
 
 def registration_confirmed(connection: Connection, registration_id: str) -> bool:
-    """A registration counts only when both phases happened before its signal-day deadline."""
+    """Check the frozen evidence and both proof samples on the same persisted row."""
     row = (
-        connection.execute(
-            text("select confirmed_at, status from forward_registration where id = :id"),
-            {"id": registration_id},
-        )
+        connection.execute(select(forward_registration).where(forward_registration.c.id == registration_id))
         .mappings()
         .first()
     )
-    return bool(row) and row["status"] != "expired" and row["confirmed_at"] is not None
+    return (
+        row is not None
+        and row["status"] != "expired"
+        and registration_proof_times_valid(row, registration_deadline(row["signal_date"]))
+        and registration_evidence_matches(row)
+    )
 
 
 _LIST_COLUMNS = (
