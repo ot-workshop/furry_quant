@@ -120,6 +120,7 @@ def confirm_attempt(
     evidence: dict,
     task_result: dict | None = None,
     finish_on_miss: bool = False,
+    record_registration_result: bool = False,
 ) -> Confirmation:
     """Publish, stage, and seal evidence in separate transactions on one primary connection.
 
@@ -138,7 +139,15 @@ def confirm_attempt(
         if staged.detail != "staged":
             return staged
         with connection.begin():
-            return _seal_success(store, connection, attempt_id, digest, task_result, finish_on_miss=finish_on_miss)
+            return _seal_success(
+                store,
+                connection,
+                attempt_id,
+                digest,
+                task_result,
+                finish_on_miss=finish_on_miss,
+                record_registration_result=record_registration_result,
+            )
 
 
 def _stopped_attempt(row: dict, digest: str) -> Confirmation | None:
@@ -159,6 +168,21 @@ def _matches_evidence(row: dict, digest: str) -> bool:
         and row["evidence"] is not None
         and row["evidence_sha256"] == digest
         and canonical_sha256(row["evidence"]) == digest
+    )
+
+
+def attempt_sealed(row: dict, boundary: datetime) -> bool:
+    """Check a persisted seal against its expected frozen time and evidence."""
+    staged, sealed = row["staging_at"], row["sealed_at"]
+    return (
+        row["status"] == "succeeded"
+        and row["deadline_at"] == boundary
+        and staged is not None
+        and sealed is not None
+        and staged <= sealed
+        and _eligible_sample(row, staged)
+        and _eligible_sample(row, sealed)
+        and _matches_evidence(row, row["evidence_sha256"])
     )
 
 
@@ -186,6 +210,22 @@ def _mark_missed(connection: Connection, row: dict, sampled: datetime, store: Pg
     return Confirmation(False, sampled, reason)
 
 
+def _eligible_sample(row: dict, sampled: datetime) -> bool:
+    # The existing time column stores the upper bound for a score and the earliest
+    # permissible instant for a maturity verification. Verification has no upper bound.
+    if row["kind"] == "verify":
+        return sampled >= row["deadline_at"]
+    return sampled < row["deadline_at"]
+
+
+def _outside_time_bound(
+    connection: Connection, row: dict, sampled: datetime, store: PgTaskStore | None
+) -> Confirmation:
+    if row["kind"] == "verify":
+        return Confirmation(False, sampled, "before-verification-maturity")
+    return _mark_missed(connection, row, sampled, store)
+
+
 def _stage_evidence(
     connection: Connection, attempt_id: str, digest: str, store: PgTaskStore | None = None
 ) -> Confirmation:
@@ -195,13 +235,13 @@ def _stage_evidence(
     if not _matches_evidence(row, digest):
         return Confirmation(False, None, "evidence-mismatch")
     if row["staging_at"] is not None:
-        if row["staging_at"] >= row["deadline_at"]:
+        if not _eligible_sample(row, row["staging_at"]):
             return Confirmation(False, None, "invalid-staging-proof")
         return Confirmation(False, row["staging_at"], "staged")
 
     sampled = connection.execute(text("select clock_timestamp()")).scalar_one()
-    if sampled >= row["deadline_at"]:
-        return _mark_missed(connection, row, sampled, store)
+    if not _eligible_sample(row, sampled):
+        return _outside_time_bound(connection, row, sampled, store)
     connection.execute(forward_attempt.update().where(forward_attempt.c.id == attempt_id).values(staging_at=sampled))
     return Confirmation(False, sampled, "staged")
 
@@ -214,6 +254,7 @@ def _seal_success(
     task_result: dict | None,
     *,
     finish_on_miss: bool = False,
+    record_registration_result: bool = False,
 ) -> Confirmation:
     row = _lock_attempt(connection, attempt_id)
     if (stopped := _stopped_attempt(row, digest)) is not None:
@@ -222,28 +263,78 @@ def _seal_success(
         return Confirmation(False, None, "no-staging-proof")
     if not _matches_evidence(row, digest):
         return Confirmation(False, None, "evidence-mismatch")
-    if row["staging_at"] >= row["deadline_at"]:
+    if not _eligible_sample(row, row["staging_at"]):
         return Confirmation(False, None, "invalid-staging-proof")
     if row["task_id"] is None:
         return Confirmation(False, None, "attempt-task-missing")
+    if record_registration_result and not _verification_evidence_current(connection, row):
+        return Confirmation(False, None, "verification-evidence-changed")
 
     sampled = connection.execute(text("select clock_timestamp()")).scalar_one()
-    if sampled >= row["deadline_at"]:
-        return _mark_missed(connection, row, sampled, store if finish_on_miss else None)
+    if not _eligible_sample(row, sampled):
+        return _outside_time_bound(connection, row, sampled, store if finish_on_miss else None)
     if sampled < row["staging_at"]:
         return Confirmation(False, None, "invalid-staging-proof")
     connection.execute(
         forward_attempt.update().where(forward_attempt.c.id == attempt_id).values(status="succeeded", sealed_at=sampled)
     )
+    if record_registration_result:
+        evidence = row["evidence"]
+        registration = forward_registration
+        changed = connection.execute(
+            registration.update()
+            .where(
+                registration.c.id == row["registration_id"],
+                registration.c.confirmed_evidence_sha256 == evidence["registration_sha256"],
+                registration.c.label_snapshot == evidence["label_snapshot"],
+            )
+            .values(result=evidence["result"], result_recorded_at=sampled)
+        )
+        if changed.rowcount != 1:
+            raise TaskConflict("verification-registration-binding-changed")
     store.finish(row["task_id"], "succeeded", result=task_result, connection=connection)
     return Confirmation(True, sampled, "sealed")
 
 
-def _lock_score_task_attempt(connection: Connection, task_id: str) -> dict | None:
+def _verification_evidence_current(connection: Connection, attempt: dict) -> bool:
+    """Lock and re-read the sealed score and registration before publishing a metric."""
+    if attempt["kind"] != "verify":
+        return False
+    evidence = attempt["evidence"]
+    registration = (
+        connection.execute(
+            select(forward_registration)
+            .where(forward_registration.c.id == attempt["registration_id"])
+            .with_for_update()
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if (
+        registration is None
+        or not registration_row_confirmed(registration)
+        or registration["confirmed_evidence_sha256"] != evidence["registration_sha256"]
+        or registration["label_snapshot"] != evidence["label_snapshot"]
+        or registration["result_recorded_at"] is not None
+        or attempt["staging_at"] < datetime.fromisoformat(evidence["label_snapshot"]["captured_at"])
+    ):
+        return False
+    score = _lock_attempt(connection, evidence["score_attempt_id"])
+    return (
+        bool(score)
+        and score["kind"] == "score"
+        and score["registration_id"] == registration["id"]
+        and attempt_sealed(score, datetime.combine(registration["entry_date"], time(9, 15), tzinfo=SHANGHAI))
+        and score["evidence_sha256"] == evidence["score_evidence_sha256"]
+        and score["evidence"]["score_snapshot"] == registration["score_snapshot"]
+    )
+
+
+def _lock_forward_task_attempt(connection: Connection, task_id: str, kind: str) -> dict | None:
     row = (
         connection.execute(
             select(forward_attempt)
-            .where(forward_attempt.c.task_id == task_id, forward_attempt.c.kind == "score")
+            .where(forward_attempt.c.task_id == task_id, forward_attempt.c.kind == kind)
             .with_for_update()
         )
         .mappings()
@@ -252,20 +343,22 @@ def _lock_score_task_attempt(connection: Connection, task_id: str) -> dict | Non
     return dict(row) if row is not None else None
 
 
-def start_score_attempt(connection: Connection, task_id: str, registration_id: str) -> dict:
-    row = _lock_score_task_attempt(connection, task_id)
+def start_forward_attempt(connection: Connection, task_id: str, registration_id: str, *, kind: str) -> dict:
+    row = _lock_forward_task_attempt(connection, task_id, kind)
     if row is None or row["registration_id"] != registration_id or row["status"] not in {"queued", "running"}:
-        raise TaskConflict("score-attempt-unavailable")
+        raise TaskConflict(f"{kind}-attempt-unavailable")
     connection.execute(forward_attempt.update().where(forward_attempt.c.id == row["id"]).values(status="running"))
     return row
 
 
-def fail_score_task(store: PgTaskStore, task_id: str, reason: str, *, evidence: dict | None = None) -> bool:
+def fail_forward_task(
+    store: PgTaskStore, task_id: str, reason: str, *, kind: str, evidence: dict | None = None
+) -> bool:
     """Retain diagnostics and finish the queue task together, including after an uncertain COMMIT."""
     try:
         with store.engine.connect().execution_options(isolation_level="READ COMMITTED") as connection:
             with connection.begin():
-                row = _lock_score_task_attempt(connection, task_id)
+                row = _lock_forward_task_attempt(connection, task_id, kind)
                 if row is not None and row["status"] == "succeeded":
                     return False
                 if row is not None and evidence is not None and row["status"] == "running" and row["evidence"] is None:
@@ -371,21 +464,9 @@ def enqueue_attempt(
     if kind not in ("score", "verify"):
         raise ValueError("unknown attempt kind")
     lock_submissions(connection)
-    attempt = connection.execute(
-        select(
-            forward_attempt.c.id,
-            forward_attempt.c.registration_id,
-            forward_attempt.c.kind,
-            forward_attempt.c.task_id,
-        ).where(forward_attempt.c.idempotency_key == task_key)
-    ).one_or_none()
-    if attempt is not None:
-        if (attempt.registration_id, attempt.kind) != (registration_id, kind):
-            raise TaskConflict("该请求标识已用于其他登记或阶段")
-        task = store.find_research_replay(request, task_key, connection=connection)
-        if task is None or task["id"] != attempt.task_id:
-            raise TaskConflict("该请求标识的前瞻尝试与任务绑定不一致")
-        return {"attempt_id": attempt.id, "task_id": attempt.task_id}
+    replay = find_attempt_replay(store, connection, registration_id, kind, task_key, request)
+    if replay is not None:
+        return replay
 
     if attempt_active(connection, registration_id, kind):
         raise AttemptActive("该阶段已有排队/运行中的尝试")
@@ -406,6 +487,29 @@ def enqueue_attempt(
         )
     )
     return {"attempt_id": identifier, "task_id": task["id"]}
+
+
+def find_attempt_replay(
+    store: PgTaskStore, connection: Connection, registration_id: str, kind: str, key: str, request: dict
+) -> dict | None:
+    """Look up an already committed pair without rereading its physical snapshot."""
+    attempt = connection.execute(
+        select(
+            forward_attempt.c.id,
+            forward_attempt.c.registration_id,
+            forward_attempt.c.kind,
+            forward_attempt.c.task_id,
+        ).where(forward_attempt.c.idempotency_key == key)
+    ).one_or_none()
+    if attempt is not None:
+        if (attempt.registration_id, attempt.kind) != (registration_id, kind):
+            raise TaskConflict("该请求标识已用于其他登记或阶段")
+        task = store.find_research_replay(request, key, connection=connection)
+        if task is None or task["id"] != attempt.task_id:
+            raise TaskConflict("该请求标识的前瞻尝试与任务绑定不一致")
+        return {"attempt_id": attempt.id, "task_id": attempt.task_id}
+
+    return None
 
 
 def attempt_active(connection: Connection, registration_id: str, kind: str) -> bool:

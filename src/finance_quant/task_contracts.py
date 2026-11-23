@@ -7,6 +7,8 @@ from typing import Any, Protocol
 from finance_quant.checksums import sha256_text
 
 FORWARD_SCORE_MODE = "forward_score"
+FORWARD_VERIFY_MODE = "forward_verify"
+FORWARD_ATTEMPT_KINDS = {FORWARD_SCORE_MODE: "score", FORWARD_VERIFY_MODE: "verify"}
 
 
 def submission_fingerprint(kind: str, request: dict, key: str) -> str:

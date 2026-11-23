@@ -23,6 +23,7 @@ from finance_quant.application.evaluation_workflow import evaluate_configured
 from finance_quant.application.experiment_tasks import run_experiment_task
 from finance_quant.application.factor_workflow import publish_factor_run
 from finance_quant.application.forward_score import run_forward_score
+from finance_quant.application.forward_verification import run_forward_verification
 from finance_quant.application.real_workflow import run_configured
 from finance_quant.application.research_requests import request_config, validate_research_data
 from finance_quant.application.task_context import (
@@ -40,7 +41,7 @@ from finance_quant.data.shared_market import configure_store
 from finance_quant.persistence.market import MarketRepository
 from finance_quant.persistence.results import PgResultStore
 from finance_quant.persistence.tasks import PgTaskStore
-from finance_quant.task_contracts import FORWARD_SCORE_MODE, TaskConflict
+from finance_quant.task_contracts import FORWARD_SCORE_MODE, FORWARD_VERIFY_MODE, TaskConflict
 
 LOGGER = logging.getLogger(__name__)
 
@@ -124,6 +125,8 @@ def run_task(
         kind = task.get("kind", "research")
         if kind == "research" and task["execution"].get("mode") == FORWARD_SCORE_MODE:
             return run_forward_score(store, task, data_root)
+        if kind == "research" and task["execution"].get("mode") == FORWARD_VERIFY_MODE:
+            return run_forward_verification(store, task, data_root)
         if kind == "maintenance":
             try:
                 return execute(store, task, root=storage_root)

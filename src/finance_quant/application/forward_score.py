@@ -18,9 +18,9 @@ from finance_quant.persistence.forward import (
     canonical_sha256,
     confirm_attempt,
     enqueue_attempt,
-    fail_score_task,
+    fail_forward_task,
     registration_row_confirmed,
-    start_score_attempt,
+    start_forward_attempt,
 )
 from finance_quant.persistence.schema import forward_attempt, forward_registration
 from finance_quant.persistence.tasks import PgTaskStore, lock_submissions
@@ -261,7 +261,7 @@ def run_forward_score(store: PgTaskStore, task: dict, data_root: Path) -> None:
     try:
         registration_id = task["request"]["registration_id"]
         with store.engine.begin() as connection:
-            attempt = start_score_attempt(connection, identifier, registration_id)
+            attempt = start_forward_attempt(connection, identifier, registration_id, kind="score")
             row = dict(
                 connection.execute(select(forward_registration).where(forward_registration.c.id == registration_id))
                 .mappings()
@@ -300,7 +300,7 @@ def run_forward_score(store: PgTaskStore, task: dict, data_root: Path) -> None:
             **_compute_score(row, sessions, market, benchmark, calendar),
         }
         if evidence["candidate_codes"] is None:
-            fail_score_task(store, identifier, "incomplete-score", evidence=evidence)
+            fail_forward_task(store, identifier, "incomplete-score", kind="score", evidence=evidence)
             return
         proof = confirm_attempt(
             store,
@@ -310,10 +310,10 @@ def run_forward_score(store: PgTaskStore, task: dict, data_root: Path) -> None:
             finish_on_miss=True,
         )
         if not proof.sealed and proof.detail != "deadline-passed":
-            fail_score_task(store, identifier, proof.detail)
+            fail_forward_task(store, identifier, proof.detail, kind="score")
     except ScoreInputError as error:
-        fail_score_task(store, identifier, str(error))
+        fail_forward_task(store, identifier, str(error), kind="score")
     except Exception as error:
         # Exception arguments from filesystem or DB errors can carry private paths or connection settings.
-        if fail_score_task(store, identifier, "score-execution-failed"):
+        if fail_forward_task(store, identifier, "score-execution-failed", kind="score"):
             LOGGER.error("Forward score task %s failed (%s)", identifier, type(error).__name__)

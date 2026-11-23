@@ -76,6 +76,18 @@ def _backtest_dict(config):
 
 def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict, str]:
     """Bind one published leaf without opening market data or following filesystem aliases."""
+    matches = _find_snapshot_metas(data_root, snapshot_id)
+    if snapshot_id not in matches:
+        raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
+    return matches[snapshot_id]
+
+
+def lookup_label_snapshot_metas(data_root: Path) -> list[tuple[Path, dict, str]]:
+    """Find unambiguous managed leaves that advertise a label capture."""
+    return list(_find_snapshot_metas(data_root, None).values())
+
+
+def _find_snapshot_metas(data_root: Path, snapshot_id: str | None) -> dict[str, tuple[Path, dict, str]]:
 
     # Manifest metadata includes security history, not the actual market rows.
     max_manifest_bytes = 1024 * 1024
@@ -128,7 +140,8 @@ def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict,
             fields[key] = value
         return fields
 
-    match = None
+    matches: dict[str, tuple[Path, dict, str]] = {}
+    seen: set[str] = set()
     try:
         root = Path(data_root).resolve()
         research = root / "research"
@@ -155,30 +168,44 @@ def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict,
                 raise ValueError("无法读取数据快照清单，无法确认快照唯一") from error
             if not isinstance(manifest, dict) or not isinstance(manifest.get("id"), str) or not manifest["id"]:
                 raise ValueError("无法读取数据快照清单标识，无法确认快照唯一")
-            if manifest["id"] != snapshot_id:
+            identifier = manifest["id"]
+            if snapshot_id is not None and identifier != snapshot_id:
                 continue
+            if snapshot_id is None:
+                if identifier in seen:
+                    matches.pop(identifier, None)
+                    continue
+                seen.add(identifier)
+                if "label_capture" not in manifest:
+                    continue
             if mode(leaf / "rejected.json") is not None:
+                if snapshot_id is None:
+                    continue
                 raise ValueError(f"数据快照已被隔离：{snapshot_id}")
-            if match is not None:
+            if identifier in matches:
                 raise ValueError(f"数据快照标识重复：{snapshot_id}")
             if "snapshot_path" in manifest and manifest["snapshot_path"] != f"snapshots/{leaf.name}":
+                if snapshot_id is None:
+                    continue
                 raise ValueError("数据快照清单指向其他路径")
             files = manifest.get("files")
             if not isinstance(files, dict) or set(files) != {"market.parquet", "benchmark.parquet", "calendar.parquet"}:
+                if snapshot_id is None:
+                    continue
                 raise ValueError("数据快照文件摘要不完整")
             if any(
                 not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
                 for digest in files.values()
             ):
+                if snapshot_id is None:
+                    continue
                 raise ValueError("数据快照文件摘要无效")
-            match = leaf.relative_to(root), manifest, sha256_bytes(payload)
+            matches[identifier] = leaf.relative_to(root), manifest, sha256_bytes(payload)
     except (OSError, RuntimeError) as error:
         # Missing published manifests are handled explicitly; any other I/O failure
         # means the scan cannot prove uniqueness, even if it already saw a match.
         raise ValueError("无法读取数据快照目录或清单，无法确认快照唯一") from error
-    if match is None:
-        raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
-    return match
+    return matches
 
 
 def snapshot_registry(data_root: Path) -> dict:
