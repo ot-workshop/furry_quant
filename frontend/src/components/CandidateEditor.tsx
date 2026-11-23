@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 import {
   Button,
   Card,
@@ -19,6 +19,7 @@ import type {
 } from "../api/research";
 import {
   FAMILY_ORDER,
+  FINANCIAL_VERSION_REQUIRED,
   factorAvailable,
   type FactorRow,
   type FormState,
@@ -48,6 +49,8 @@ export function CandidateEditor({
   individualIndustry?: boolean;
 }) {
   const enabled = value.factors.filter((row) => row.enabled);
+  const financialVersionHintId = useId();
+  const hasFinancialVersion = Boolean(options.financial_data?.version);
   const setRow = (rowKey: string, patch: Partial<FactorRow>) =>
     onChange({
       ...value,
@@ -73,10 +76,14 @@ export function CandidateEditor({
         options: items.map((definition) => ({
           value: definition.name,
           label: definition.label,
-          disabled: !factorAvailable(definition, coverage),
+          disabled:
+            !factorAvailable(definition, coverage, hasFinancialVersion) &&
+            !value.factors.some(
+              (row) => row.key === definition.name && row.enabled,
+            ),
         })),
       }));
-  }, [definitions, coverage]);
+  }, [definitions, coverage, hasFinancialVersion, value.factors]);
   return (
     <Card
       size="small"
@@ -133,6 +140,10 @@ export function CandidateEditor({
       ) : null}
       <Select
         mode="multiple"
+        aria-label="选择因子"
+        aria-describedby={
+          hasFinancialVersion ? undefined : financialVersionHintId
+        }
         value={enabled.map((row) => row.key)}
         onChange={(keys: string[]) =>
           onChange({
@@ -168,8 +179,19 @@ export function CandidateEditor({
         style={{ width: "100%" }}
         placeholder="选择因子"
       />
+      {!hasFinancialVersion ? (
+        <Typography.Paragraph
+          id={financialVersionHintId}
+          style={{ margin: "6px 0 0" }}
+        >
+          {FINANCIAL_VERSION_REQUIRED}
+        </Typography.Paragraph>
+      ) : null}
       {enabled.map((row) => {
         const definition = definitions.find((d) => d.name === row.name);
+        const available =
+          !definition ||
+          factorAvailable(definition, coverage, hasFinancialVersion);
         return (
           <Flex
             key={row.key}
@@ -194,6 +216,7 @@ export function CandidateEditor({
               min={0}
               max={100}
               value={row.weight}
+              disabled={!available}
               suffix="%"
               style={{ width: 110 }}
               onChange={(v) => setRow(row.key, { weight: Number(v ?? 0) })}
@@ -202,6 +225,7 @@ export function CandidateEditor({
               <FactorMissingPolicy
                 label={definition?.label ?? row.name}
                 value={row.missingPolicy}
+                disabled={!available}
                 onChange={(missingPolicy) => setRow(row.key, { missingPolicy })}
               />
             ) : null}
@@ -211,6 +235,7 @@ export function CandidateEditor({
                 min={2}
                 max={252}
                 value={row.window}
+                disabled={!available}
                 prefix="窗口"
                 suffix="日"
                 style={{ width: 130 }}

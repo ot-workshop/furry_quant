@@ -1,5 +1,5 @@
 import { NeutralizationControls } from "./NeutralizationControls";
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import {
   Alert,
@@ -21,9 +21,11 @@ import {
   addFactorInstance,
   equalWeights,
   FAMILY_ORDER,
+  FINANCIAL_VERSION_REQUIRED,
   factorAvailable,
   financialCoverage,
   removeFactorInstance,
+  requiresFinancialVersion,
   weightTotal,
   type FormState,
 } from "../form";
@@ -40,6 +42,8 @@ export function FactorSection({
   setForm: Dispatch<SetStateAction<FormState>>;
 }) {
   const total = weightTotal(form);
+  const financialVersionHintId = useId();
+  const hasFinancialVersion = Boolean(options.financial_data?.version);
   const definitions = useMemo(
     () =>
       Object.fromEntries(options.factor_definitions.map((d) => [d.name, d])),
@@ -74,14 +78,25 @@ export function FactorSection({
     const definition = definitions[row.name];
     if (!definition) return null;
     const extra = row.key !== row.name;
-    const available = factorAvailable(definition, coverage);
+    const label = extra ? `${definition.label} · ${row.key}` : definition.label;
+    const available = factorAvailable(
+      definition,
+      coverage,
+      hasFinancialVersion,
+    );
     return (
       <div className="factor-row" key={row.key}>
         <Flex align="center" gap={12} wrap>
           <Switch
             size="small"
             checked={row.enabled}
-            disabled={!available}
+            disabled={!available && !row.enabled}
+            aria-label={label}
+            aria-describedby={
+              !hasFinancialVersion && requiresFinancialVersion(definition)
+                ? financialVersionHintId
+                : undefined
+            }
             onChange={(enabled) => setRow(row.key, { enabled })}
           />
           <Flex vertical style={{ flex: "0 0 230px" }}>
@@ -96,8 +111,7 @@ export function FactorSection({
                     : "secondary"
                 }
               >
-                {definition.label}
-                {extra ? ` · ${row.key}` : ""}
+                {label}
               </Typography.Text>
               <FactorDataHint
                 definition={definition}
@@ -191,7 +205,7 @@ export function FactorSection({
               <FactorMissingPolicy
                 label={definition.label}
                 value={row.missingPolicy}
-                disabled={!row.enabled}
+                disabled={!row.enabled || !available}
                 onChange={(missingPolicy) => setRow(row.key, { missingPolicy })}
               />
             ) : null}
@@ -246,7 +260,15 @@ export function FactorSection({
         </Space>
       }
     >
-      {coverage ? (
+      {!hasFinancialVersion ? (
+        <Alert
+          id={financialVersionHintId}
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          title={FINANCIAL_VERSION_REQUIRED}
+        />
+      ) : coverage ? (
         <Alert
           type={coverage.covered >= 2 ? "success" : "warning"}
           showIcon

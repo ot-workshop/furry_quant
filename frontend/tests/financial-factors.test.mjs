@@ -28,11 +28,27 @@ test("financial coverage comes from the selected dataset", () => {
 
 test("fundamental factors are only selectable when statements cover the pool", () => {
   const definition = options().factor_definitions.find((item) => item.name === "roe_ttm");
-  assert.equal(f.factorAvailable(definition, { covered: 2, total: 3 }), true);
-  assert.equal(f.factorAvailable(definition, { covered: 1, total: 3 }), false);
-  assert.equal(f.factorAvailable(definition, null), false);
+  assert.equal(f.factorAvailable(definition, { covered: 2, total: 3 }, true), true);
+  assert.equal(f.factorAvailable(definition, { covered: 1, total: 3 }, true), false);
+  assert.equal(f.factorAvailable(definition, null, true), false);
   const price = options().factor_definitions[0];
-  assert.equal(f.factorAvailable(price, null), true);
+  assert.equal(f.factorAvailable(price, null, false), true);
+});
+
+test("earnings yield and gross margin need a version even when missing stock scores can be filled", () => {
+  for (const name of ["value", "gross_margin_ttm"]) {
+    const definition = { name, requires_financials: true };
+    assert.equal(f.factorAvailable(definition, null, false), false);
+    assert.equal(f.factorAvailable(definition, { covered: 3, total: 3 }, false), false);
+    assert.equal(f.factorAvailable(definition, { covered: 1, total: 3 }, true), true);
+  }
+});
+
+test("a new form with no financial version starts with a submit-ready price-only default", () => {
+  const opts = { ...options(), financial_data: null };
+  const built = f.buildRequest(f.defaultForm(opts), opts);
+  assert.deepEqual(built.errors, []);
+  assert.deepEqual(built.request.factors.map(({ name, weight }) => [name, weight]), [["momentum", 1]]);
 });
 
 test("requests name no financial version: the server pins it when it validates", () => {

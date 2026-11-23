@@ -63,12 +63,13 @@ function candidate(
   names: string[],
   definitions: FactorDefinition[],
   coverage: FinancialCoverage | null,
+  hasFinancialVersion: boolean,
 ): Candidate {
   const rows = factorRows([], definitions).map((row) => {
     const definition = definitions.find((item) => item.name === row.name);
     return names.includes(row.name) &&
       definition &&
-      factorAvailable(definition, coverage)
+      factorAvailable(definition, coverage, hasFinancialVersion)
       ? {
           ...row,
           enabled: true,
@@ -207,6 +208,7 @@ function ExperimentForm({
         },
   );
   const coverage = financialCoverage(form, options);
+  const hasFinancialVersion = Boolean(options.financial_data?.version);
   const [candidates, setCandidates] = useState<Candidate[]>(() =>
     seed
       ? seed.candidates.map((item) => ({
@@ -214,8 +216,14 @@ function ExperimentForm({
           factors: factorRows(item.factors, definitions),
         }))
       : [
-          candidate(0, ["momentum"], definitions, coverage),
-          candidate(1, ["value"], definitions, coverage),
+          candidate(
+            0,
+            ["momentum"],
+            definitions,
+            coverage,
+            hasFinancialVersion,
+          ),
+          candidate(1, ["value"], definitions, coverage, hasFinancialVersion),
         ],
   );
   const [splits, setSplits] = useState<{ validation: string; test: string }>({
@@ -336,6 +344,7 @@ function ExperimentForm({
                       ["momentum"],
                       definitions,
                       coverage,
+                      hasFinancialVersion,
                     ),
                   ])
                 }
