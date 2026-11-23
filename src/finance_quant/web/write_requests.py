@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 
-from finance_quant.persistence.maintenance import write_gate
+from finance_quant.persistence.maintenance import MaintenanceBusy, write_gate
 
 
 @contextmanager
@@ -15,7 +15,7 @@ def research_write_gate(engine):
     try:
         with write_gate(engine) if engine is not None else nullcontext() as connection:
             yield connection
-    except RuntimeError as error:
+    except MaintenanceBusy as error:
         raise HTTPException(409, "数据维护期间暂停写入，请稍后重试") from error
 
 

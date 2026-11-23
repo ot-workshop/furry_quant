@@ -519,10 +519,8 @@ def enqueue_attempt(
     return {"attempt_id": identifier, "task_id": task["id"]}
 
 
-def find_attempt_replay(
-    store: PgTaskStore, connection: Connection, registration_id: str, kind: str, key: str, request: dict
-) -> dict | None:
-    """Look up an already committed pair without rereading its physical snapshot."""
+def attempt_for_submission_key(connection: Connection, registration_id: str, kind: str, key: str):
+    """Find a committed attempt, enforcing that this key belongs to its original stage and registration."""
     attempt = connection.execute(
         select(
             forward_attempt.c.id,
@@ -531,9 +529,17 @@ def find_attempt_replay(
             forward_attempt.c.task_id,
         ).where(forward_attempt.c.idempotency_key == key)
     ).one_or_none()
+    if attempt is not None and (attempt.registration_id, attempt.kind) != (registration_id, kind):
+        raise TaskConflict("该请求标识已用于其他登记或阶段")
+    return attempt
+
+
+def find_attempt_replay(
+    store: PgTaskStore, connection: Connection, registration_id: str, kind: str, key: str, request: dict
+) -> dict | None:
+    """Look up an already committed pair without rereading its physical snapshot."""
+    attempt = attempt_for_submission_key(connection, registration_id, kind, key)
     if attempt is not None:
-        if (attempt.registration_id, attempt.kind) != (registration_id, kind):
-            raise TaskConflict("该请求标识已用于其他登记或阶段")
         task = store.find_research_replay(request, key, connection=connection)
         if task is None or task["id"] != attempt.task_id:
             raise TaskConflict("该请求标识的前瞻尝试与任务绑定不一致")
