@@ -74,7 +74,18 @@ def _registered(engine, root, *, mature=True):
     return store, row, score
 
 
-def _publish_labels(root, row, identifier, *, seconds=0, missing=None, source=SOURCE, wrong_calendar=False, zero=False):
+def _publish_labels(
+    root,
+    row,
+    identifier,
+    *,
+    seconds=0,
+    missing=None,
+    source=SOURCE,
+    wrong_calendar=False,
+    zero=False,
+    trading_state=True,
+):
     leaf = root / "research" / "subsets" / identifier
     leaf.mkdir(parents=True)
     entry, exit_ = row["entry_date"], row["exit_date"]
@@ -104,8 +115,11 @@ def _publish_labels(root, row, identifier, *, seconds=0, missing=None, source=SO
                     "is_suspended": False,
                 }
             )
+    market = pd.DataFrame(records).assign(date=lambda frame: pd.to_datetime(frame.date))
+    if not trading_state:
+        market = market.drop(columns="is_suspended")
     frames = {
-        "market.parquet": pd.DataFrame(records).assign(date=lambda frame: pd.to_datetime(frame.date)),
+        "market.parquet": market,
         "benchmark.parquet": pd.DataFrame({"date": pd.to_datetime([entry, exit_])}),
         "calendar.parquet": pd.DataFrame(
             {"date": pd.to_datetime([entry, exit_]), "is_open": [True, not wrong_calendar]}
@@ -202,6 +216,23 @@ def test_before_maturity_does_not_bind_or_enqueue(engine, tmp_path):
         enqueue_forward_verification(store, tmp_path, row["id"], key=VERIFY_KEY)
     assert _stored_registration(engine)["label_snapshot"] is None
     assert store.list()["total"] == 1
+
+
+def test_missing_trading_state_column_keeps_original_denominators_and_null_metric(engine, tmp_path):
+    store, row, _ = _registered(engine, tmp_path)
+    _publish_labels(tmp_path, row, "missing-trading-state", trading_state=False)
+    queued = enqueue_forward_verification(store, tmp_path, row["id"], key=VERIFY_KEY)
+    attempt, task = _execute(store, tmp_path, queued)
+    assert task["status"] == attempt["status"] == "succeeded"
+    result = _stored_registration(engine)["result"]
+    assert result == attempt["evidence"]["result"]
+    assert (result["top_k"], result["pool_size"], result["candidate_codes"]) == (1, 3, [CODES[0]])
+    assert (result["candidate_valid"], result["pool_valid"]) == (0, 0)
+    assert result["missing_codes"] == CODES
+    assert result["candidate_return"] is result["pool_return"] is result["excess_return_pp"] is None
+    for item in result["labels"]:
+        assert item["reasons"] == ["entry-missing-trading-state", "exit-missing-trading-state"]
+        assert item["return"] is None
 
 
 @pytest.mark.parametrize("zone", ["UTC", "Asia/Shanghai"])
@@ -320,7 +351,8 @@ def test_lost_response_keeps_already_sealed_verification(engine, tmp_path, monke
     assert _stored_registration(engine)["result"]["excess_return_pp"] == pytest.approx(13.333333333)
 
 
-def test_score_evidence_invalidated_after_worker_read_prevents_seal(engine, tmp_path, monkeypatch):
+@pytest.mark.parametrize("damage", ["attempt-digest", "task-status", "task-result", "task-binding"])
+def test_score_evidence_invalidated_after_worker_read_prevents_seal(engine, tmp_path, monkeypatch, damage):
     store, row, score = _registered(engine, tmp_path)
     _publish_labels(tmp_path, row, "label-version")
     queued = enqueue_forward_verification(store, tmp_path, row["id"], key=VERIFY_KEY)
@@ -328,11 +360,25 @@ def test_score_evidence_invalidated_after_worker_read_prevents_seal(engine, tmp_
 
     def invalidate_then_confirm(*args, **kwargs):
         with engine.begin() as connection:
-            connection.execute(
-                forward_attempt.update()
-                .where(forward_attempt.c.id == score["attempt_id"])
-                .values(evidence_sha256="0" * 64)
-            )
+            if damage == "attempt-digest":
+                connection.execute(
+                    forward_attempt.update()
+                    .where(forward_attempt.c.id == score["attempt_id"])
+                    .values(evidence_sha256="0" * 64)
+                )
+            else:
+                update = research_task.update().where(research_task.c.id == score["task_id"])
+                if damage == "task-status":
+                    connection.execute(update.values(status="failed"))
+                elif damage == "task-result":
+                    connection.execute(
+                        update.values(result={"registration_id": row["id"], "score_attempt_id": "other"})
+                    )
+                else:
+                    execution = connection.scalar(
+                        select(research_task.c.execution).where(research_task.c.id == score["task_id"])
+                    )
+                    connection.execute(update.values(execution={**execution, "binding_sha256": "0" * 64}))
         return confirm(*args, **kwargs)
 
     monkeypatch.setattr(forward_verification, "confirm_attempt", invalidate_then_confirm)
@@ -340,7 +386,12 @@ def test_score_evidence_invalidated_after_worker_read_prevents_seal(engine, tmp_
     assert task["status"] == attempt["status"] == "failed"
     assert task["error"] == attempt["error"] == "verification-evidence-changed"
     assert attempt["staging_at"] is not None and attempt["sealed_at"] is None
-    assert _stored_registration(engine)["result"] is None
+    assert attempt["evidence"]["score_attempt_id"] == score["attempt_id"]
+    assert attempt["evidence"]["score_task_id"] == score["task_id"]
+    assert canonical_sha256(attempt["evidence"]) == attempt["evidence_sha256"]
+    saved = _stored_registration(engine)
+    assert saved["result"] is saved["result_recorded_at"] is None
+    assert saved["label_snapshot"] == attempt["evidence"]["label_snapshot"]
 
 
 def test_concurrent_first_submission_replays_one_attempt_and_binding(engine, tmp_path):

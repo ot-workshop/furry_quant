@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import Connection, select, text
 
 from finance_quant.checksums import sha256_text
-from finance_quant.task_contracts import TaskConflict
+from finance_quant.task_contracts import FORWARD_SCORE_MODE, TaskConflict
 
-from .schema import forward_attempt, forward_registration
+from .schema import forward_attempt, forward_registration, research_task
 from .tasks import PgTaskStore, lock_submissions
 
 
@@ -186,6 +186,21 @@ def attempt_sealed(row: dict, boundary: datetime) -> bool:
     )
 
 
+def score_task_matches(connection: Connection, score: Mapping[str, Any], binding: dict, *, lock: bool = False) -> bool:
+    """Check the queue's successful result and execution against the sealed score."""
+    task = research_task.c
+    query = select(task.status, task.result, task.execution).where(task.id == score["task_id"])
+    row = connection.execute(query.with_for_update() if lock else query).one_or_none()
+    return (
+        row is not None
+        and row.status == "succeeded"
+        and row.result == {"registration_id": score["registration_id"], "score_attempt_id": score["id"]}
+        and isinstance(row.execution, dict)
+        and row.execution.get("mode") == FORWARD_SCORE_MODE
+        and row.execution.get("binding_sha256") == canonical_sha256(binding)
+    )
+
+
 def _record_evidence(connection: Connection, attempt_id: str, evidence: dict, digest: str) -> Confirmation | None:
     row = _lock_attempt(connection, attempt_id)
     if (stopped := _stopped_attempt(row, digest)) is not None:
@@ -297,7 +312,7 @@ def _seal_success(
 
 
 def _verification_evidence_current(connection: Connection, attempt: dict) -> bool:
-    """Lock and re-read the sealed score and registration before publishing a metric."""
+    """Lock the registration, sealed score and its queue task before publishing a metric."""
     if attempt["kind"] != "verify":
         return False
     evidence = attempt["evidence"]
@@ -320,13 +335,18 @@ def _verification_evidence_current(connection: Connection, attempt: dict) -> boo
     ):
         return False
     score = _lock_attempt(connection, evidence["score_attempt_id"])
+    binding = registration["score_snapshot"]
     return (
-        bool(score)
+        isinstance(binding, dict)
+        and bool(score)
         and score["kind"] == "score"
         and score["registration_id"] == registration["id"]
+        and score["task_id"] == evidence.get("score_task_id")
         and attempt_sealed(score, datetime.combine(registration["entry_date"], time(9, 15), tzinfo=SHANGHAI))
         and score["evidence_sha256"] == evidence["score_evidence_sha256"]
-        and score["evidence"]["score_snapshot"] == registration["score_snapshot"]
+        and isinstance(score["evidence"], dict)
+        and score["evidence"].get("score_snapshot") == binding
+        and score_task_matches(connection, score, binding, lock=True)
     )
 
 

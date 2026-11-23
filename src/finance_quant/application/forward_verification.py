@@ -24,11 +24,12 @@ from finance_quant.persistence.forward import (
     fail_forward_task,
     find_attempt_replay,
     registration_row_confirmed,
+    score_task_matches,
     start_forward_attempt,
 )
-from finance_quant.persistence.schema import forward_attempt, forward_registration, research_task
+from finance_quant.persistence.schema import forward_attempt, forward_registration
 from finance_quant.persistence.tasks import PgTaskStore, lock_submissions
-from finance_quant.task_contracts import FORWARD_SCORE_MODE, FORWARD_VERIFY_MODE, TaskConflict, submission_fingerprint
+from finance_quant.task_contracts import FORWARD_VERIFY_MODE, TaskConflict, submission_fingerprint
 
 LOGGER = logging.getLogger(__name__)
 
@@ -116,11 +117,6 @@ def _read_verification_inputs(connection: Connection, registration_id: str, *, l
     if score is None or not attempt_sealed(dict(score), score_deadline) or not isinstance(score["evidence"], dict):
         raise VerificationInputError("invalid-sealed-score")
     evidence = score["evidence"]
-    queue = connection.execute(
-        select(research_task.c.status, research_task.c.result, research_task.c.execution).where(
-            research_task.c.id == score["task_id"]
-        )
-    ).one_or_none()
     binding = row["score_snapshot"]
     if (
         not isinstance(binding, dict)
@@ -128,11 +124,7 @@ def _read_verification_inputs(connection: Connection, registration_id: str, *, l
         or evidence.get("registration_id") != registration_id
         or evidence.get("registration_sha256") != row["confirmed_evidence_sha256"]
         or evidence.get("signal_date") != row["signal_date"].isoformat()
-        or queue is None
-        or queue.status != "succeeded"
-        or queue.result != {"registration_id": registration_id, "score_attempt_id": score["id"]}
-        or queue.execution.get("mode") != FORWARD_SCORE_MODE
-        or queue.execution.get("binding_sha256") != canonical_sha256(binding)
+        or not score_task_matches(connection, score, binding)
     ):
         raise VerificationInputError("invalid-sealed-score")
     try:
@@ -306,7 +298,7 @@ def _adjusted_open(quote, phase: str, reasons: list[str]) -> float | None:
     if quote is None:
         reasons.append(f"{phase}-missing-quote")
         return None
-    suspended = quote.get("is_suspended", False)
+    suspended = quote.get("is_suspended")
     if not isinstance(suspended, (bool, np.bool_)):
         reasons.append(f"{phase}-missing-trading-state")
         return None
@@ -396,6 +388,7 @@ def run_forward_verification(store: PgTaskStore, task: dict, data_root: Path) ->
         evidence = {
             "registration_sha256": row["confirmed_evidence_sha256"],
             "score_attempt_id": score["id"],
+            "score_task_id": score["task_id"],
             "score_evidence_sha256": score["evidence_sha256"],
             "label_snapshot": binding,
             "result": _returns(row, candidates, market),
