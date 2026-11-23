@@ -27,7 +27,7 @@ from finance_quant.checksums import sha256_text
 from finance_quant.task_contracts import TaskConflict
 
 from .schema import forward_attempt
-from .tasks import lock_submissions
+from .tasks import PgTaskStore, lock_submissions
 
 
 def canonical_json(payload: object) -> str:
@@ -50,87 +50,123 @@ class Confirmation:
     detail: str
 
 
-def _lock_row(connection: Connection, table, row_id: str) -> dict | None:
+def _lock_attempt(connection: Connection, attempt_id: str) -> dict:
     row = (
-        connection.execute(text(f"select * from {table.name} where id = :id for update"), {"id": row_id})
+        connection.execute(text("select * from forward_attempt where id = :id for update"), {"id": attempt_id})
         .mappings()
         .first()
     )
-    return dict(row) if row else None
+    return dict(row) if row else {}
 
 
-def stage_evidence(  # phase A
-    connection: Connection,
+def confirm_attempt(
+    store: PgTaskStore,
     *,
     attempt_id: str,
-    deadline: datetime,
     evidence: dict,
+    task_result: dict | None = None,
 ) -> Confirmation:
-    """Lock, read the evidence, sample once, and record the staging proof if it is early.
+    """Publish, stage, and seal evidence in separate transactions on one primary connection.
 
-    Evidence is embedded in the attempt row itself, so `evidence_row_id` names that row (the
-    attempt id) and `evidence_sha256` pins the canonical payload digest — the pair identifies
-    exactly which bytes were read when the sample was taken.
-
-    When the single sample is not strictly before the deadline the attempt is marked
-    `missed` **but the evidence stays**: a missed attempt keeps its payload for audit, while
-    `status=missed` makes it unusable for success. Callers must not clear it.
+    On retry after an uncertain commit, the first row lock waits for the prior transaction
+    and observes the persisted status before the deadline can be evaluated again.
+    A sealed result is replayed only for the same bound evidence.
     """
-    row = _lock_row(connection, forward_attempt, attempt_id)
-    if row is None:
+    digest = canonical_sha256(evidence)
+    with store.engine.connect().execution_options(isolation_level="READ COMMITTED") as connection:
+        with connection.begin():
+            stopped = _record_evidence(connection, attempt_id, evidence, digest)
+        if stopped is not None:
+            return stopped
+        with connection.begin():
+            staged = _stage_evidence(connection, attempt_id, digest)
+        if staged.detail != "staged":
+            return staged
+        with connection.begin():
+            return _seal_success(store, connection, attempt_id, digest, task_result)
+
+
+def _stopped_attempt(row: dict, digest: str) -> Confirmation | None:
+    if not row:
         return Confirmation(False, None, "attempt-missing")
+    if row["status"] == "succeeded":
+        if not _matches_evidence(row, digest):
+            return Confirmation(False, None, "evidence-mismatch")
+        return Confirmation(True, row["sealed_at"], "already-sealed")
     if row["status"] not in ("queued", "running"):
         return Confirmation(False, None, f"attempt-status-{row['status']}")
+    return None
 
-    digest = canonical_sha256(evidence)
+
+def _matches_evidence(row: dict, digest: str) -> bool:
+    return (
+        row["evidence_row_id"] == row["id"]
+        and row["evidence"] is not None
+        and row["evidence_sha256"] == digest
+        and canonical_sha256(row["evidence"]) == digest
+    )
+
+
+def _record_evidence(connection: Connection, attempt_id: str, evidence: dict, digest: str) -> Confirmation | None:
+    row = _lock_attempt(connection, attempt_id)
+    if (stopped := _stopped_attempt(row, digest)) is not None:
+        return stopped
+    if any(row[key] is not None for key in ("evidence", "evidence_sha256", "evidence_row_id", "staging_at")):
+        return None if _matches_evidence(row, digest) else Confirmation(False, None, "evidence-mismatch")
     connection.execute(
         forward_attempt.update()
         .where(forward_attempt.c.id == attempt_id)
-        .values(evidence=evidence, evidence_sha256=digest)
+        .values(evidence=evidence, evidence_sha256=digest, evidence_row_id=attempt_id)
     )
+    return None
+
+
+def _stage_evidence(connection: Connection, attempt_id: str, digest: str) -> Confirmation:
+    row = _lock_attempt(connection, attempt_id)
+    if (stopped := _stopped_attempt(row, digest)) is not None:
+        return stopped
+    if not _matches_evidence(row, digest):
+        return Confirmation(False, None, "evidence-mismatch")
+    if row["staging_at"] is not None:
+        if row["staging_at"] >= row["deadline_at"]:
+            return Confirmation(False, None, "invalid-staging-proof")
+        return Confirmation(False, row["staging_at"], "staged")
 
     sampled = connection.execute(text("select clock_timestamp()")).scalar_one()
-    if not sampled < deadline:
+    if sampled >= row["deadline_at"]:
         connection.execute(forward_attempt.update().where(forward_attempt.c.id == attempt_id).values(status="missed"))
         return Confirmation(False, sampled, "deadline-passed")
-
-    connection.execute(
-        forward_attempt.update()
-        .where(forward_attempt.c.id == attempt_id)
-        .values(staging_at=sampled, evidence_row_id=attempt_id)
-    )
+    connection.execute(forward_attempt.update().where(forward_attempt.c.id == attempt_id).values(staging_at=sampled))
     return Confirmation(False, sampled, "staged")
 
 
-def seal_success(  # phase B
+def _seal_success(
+    store: PgTaskStore,
     connection: Connection,
-    *,
     attempt_id: str,
-    deadline: datetime,
+    digest: str,
+    task_result: dict | None,
 ) -> Confirmation:
-    """Lock and read the committed staging proof, sample once, then seal or miss."""
-    row = _lock_row(connection, forward_attempt, attempt_id)
-    if row is None:
-        return Confirmation(False, None, "attempt-missing")
-    if row["status"] == "succeeded":
-        return Confirmation(True, row["sealed_at"], "already-sealed")
+    row = _lock_attempt(connection, attempt_id)
+    if (stopped := _stopped_attempt(row, digest)) is not None:
+        return stopped
     if row["staging_at"] is None:
         return Confirmation(False, None, "no-staging-proof")
-    if row["evidence"] is None or row["evidence_sha256"] is None:
-        return Confirmation(False, None, "no-evidence")
-    if sha256_text(canonical_json(row["evidence"])) != row["evidence_sha256"]:
-        # The stored payload no longer matches the digest bound at staging time: the proof
-        # is unusable, so this can never be sealed as success.
+    if not _matches_evidence(row, digest):
         return Confirmation(False, None, "evidence-mismatch")
+    if row["staging_at"] >= row["deadline_at"]:
+        return Confirmation(False, None, "invalid-staging-proof")
+    if row["task_id"] is None:
+        return Confirmation(False, None, "attempt-task-missing")
 
     sampled = connection.execute(text("select clock_timestamp()")).scalar_one()
-    if not sampled < deadline:
+    if sampled >= row["deadline_at"]:
         connection.execute(forward_attempt.update().where(forward_attempt.c.id == attempt_id).values(status="missed"))
         return Confirmation(False, sampled, "deadline-passed")
-
     connection.execute(
         forward_attempt.update().where(forward_attempt.c.id == attempt_id).values(status="succeeded", sealed_at=sampled)
     )
+    store.finish(row["task_id"], "succeeded", result=task_result, connection=connection)
     return Confirmation(True, sampled, "sealed")
 
 

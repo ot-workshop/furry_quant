@@ -1,10 +1,16 @@
-"""seal_success: the stored evidence must still match its digest before success is sealed."""
+"""Targeted checks on the inputs required to seal a committed proof."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 
 from finance_quant.persistence import forward
+
+NOW = datetime(2026, 11, 20, 0, 20, tzinfo=timezone.utc)
+DEADLINE = NOW + timedelta(minutes=30)
+EVIDENCE = {"top_k": 2, "codes": ["600000.SH", "000001.SZ"]}
+DIGEST = forward.canonical_sha256(EVIDENCE)
 
 
 class _Result:
@@ -45,51 +51,61 @@ class _Connection:
 
 
 def _row(**overrides):
-    evidence = {"top_k": 2, "codes": ["600000.SH", "000001.SZ"]}
     row = {
         "id": "fat-1",
         "registration_id": "fwd-1",
         "kind": "score",
         "attempt_no": 1,
         "status": "running",
+        "task_id": "task-1",
+        "deadline_at": DEADLINE,
         "staging_at": datetime(2026, 11, 20, 0, 10, tzinfo=timezone.utc),
         "sealed_at": None,
-        "evidence": evidence,
-        "evidence_sha256": forward.canonical_sha256(evidence),
+        "evidence": EVIDENCE,
+        "evidence_row_id": "fat-1",
+        "evidence_sha256": DIGEST,
     }
     row.update(overrides)
     return row
 
 
-NOW = datetime(2026, 11, 20, 0, 20, tzinfo=timezone.utc)
-DEADLINE = NOW + timedelta(minutes=30)
-
-
 def test_seal_succeeds_when_evidence_still_matches_its_digest():
     connection = _Connection(_row(), NOW)
-    result = forward.seal_success(connection, attempt_id="fat-1", deadline=DEADLINE)
+    store = Mock()
+    result = forward._seal_success(store, connection, "fat-1", DIGEST, None)
     assert result.sealed is True
     assert result.detail == "sealed"
+    store.finish.assert_called_once_with("task-1", "succeeded", result=None, connection=connection)
 
 
 def test_tampered_evidence_can_never_be_sealed():
     row = _row()
     row["evidence"] = {"top_k": 3, "codes": ["600000.SH"]}  # digest left untouched
     connection = _Connection(row, NOW)
-    result = forward.seal_success(connection, attempt_id="fat-1", deadline=DEADLINE)
+    result = forward._seal_success(Mock(), connection, "fat-1", DIGEST, None)
     assert result.sealed is False
     assert result.detail == "evidence-mismatch"
 
 
+def test_already_sealed_requires_the_original_evidence_row_binding():
+    row = _row(status="succeeded", sealed_at=NOW, evidence_row_id="other-attempt")
+    connection = _Connection(row, DEADLINE)
+    store = Mock()
+    result = forward._seal_success(store, connection, "fat-1", DIGEST, None)
+    assert result == forward.Confirmation(False, None, "evidence-mismatch")
+    assert connection.updates == []
+    store.finish.assert_not_called()
+
+
 def test_missing_staging_proof_is_not_a_success():
     connection = _Connection(_row(staging_at=None), NOW)
-    result = forward.seal_success(connection, attempt_id="fat-1", deadline=DEADLINE)
+    result = forward._seal_success(Mock(), connection, "fat-1", DIGEST, None)
     assert result.sealed is False
     assert result.detail == "no-staging-proof"
 
 
-def test_deadline_passed_marks_the_attempt_missed():
-    connection = _Connection(_row(), NOW)
-    result = forward.seal_success(connection, attempt_id="fat-1", deadline=NOW - timedelta(seconds=1))
+def test_sampling_exactly_at_the_deadline_marks_the_attempt_missed():
+    connection = _Connection(_row(), DEADLINE)
+    result = forward._seal_success(Mock(), connection, "fat-1", DIGEST, None)
     assert result.sealed is False
     assert result.detail == "deadline-passed"
