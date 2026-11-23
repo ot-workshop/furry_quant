@@ -94,6 +94,9 @@ def screen(page, name, *, full_page=True):
     if output:
         destination = Path(output)
         destination.mkdir(parents=True, exist_ok=True)
+        if full_page:
+            page.evaluate("window.scrollTo(0, 0)")
+            page.wait_for_function("window.scrollY === 0")
         page.screenshot(path=destination / f"{name}.png", full_page=full_page, animations="disabled")
 
 
