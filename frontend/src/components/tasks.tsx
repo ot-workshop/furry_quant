@@ -16,6 +16,7 @@ import {
 } from "antd";
 import {
   isExperimentTask,
+  isForwardTask,
   researchApi,
   type ResearchRequest,
   type ResearchTask,
@@ -37,6 +38,12 @@ const RESEARCH_STAGES = [
   { key: "backtest", title: "回测" },
   { key: "evaluation", title: "因子评估" },
 ];
+
+function forwardStage(task: ResearchTask) {
+  return task.forward_stage === "score" || "score_snapshot_id" in task.request
+    ? "前瞻评分"
+    : "到期验证";
+}
 
 function stageIndex(task: ResearchTask): number {
   if (task.status === "succeeded") return RESEARCH_STAGES.length;
@@ -113,6 +120,45 @@ function ResultLinks({ task }: { task: ResearchTask }) {
 }
 
 function RequestSummary({ task }: { task: ResearchTask }) {
+  if (isForwardTask(task)) {
+    const request = task.request;
+    return (
+      <Descriptions
+        size="small"
+        className="forward-task-summary"
+        column={{ xs: 1, md: 2 }}
+        items={[
+          { key: "stage", label: "阶段", children: forwardStage(task) },
+          { key: "task", label: "任务标识", children: task.id },
+          {
+            key: "registration",
+            label: "登记标识",
+            children: (
+              <AppLink to={paths.forwardRegistration(request.registration_id)}>
+                {request.registration_id}
+              </AppLink>
+            ),
+          },
+          {
+            key: "attempt",
+            label: "尝试标识",
+            children: task.forward_attempt_id ?? "无关联尝试",
+          },
+          "score_snapshot_id" in request
+            ? {
+                key: "input",
+                label: "评分快照",
+                children: request.score_snapshot_id,
+              }
+            : {
+                key: "input",
+                label: "封存评分尝试",
+                children: request.score_attempt_id,
+              },
+        ]}
+      />
+    );
+  }
   if (isExperimentTask(task)) {
     const request = task.request;
     return (
@@ -218,6 +264,7 @@ export function TaskDetail({ task }: { task: ResearchTask }) {
         </Typography.Text>
       </div>
       {!isExperimentTask(task) &&
+      !isForwardTask(task) &&
       task.status !== "queued" &&
       task.status !== "cancelled" ? (
         <div className="task-detail-steps">
@@ -278,6 +325,9 @@ export function TaskTable({
 }) {
   const { message } = App.useApp();
   const [page, setPage] = useState(1);
+  const focusedIndex = expandedId
+    ? tasks.findIndex((task) => task.id === expandedId)
+    : -1;
   const maxPage = Math.max(1, Math.ceil(tasks.length / PAGE_SIZE));
   const [expandedDetails, setExpandedDetails] = useState<
     Record<string, boolean>
@@ -293,6 +343,10 @@ export function TaskTable({
   useEffect(() => {
     if (page > maxPage) setPage(maxPage);
   }, [page, maxPage]);
+
+  useEffect(() => {
+    if (focusedIndex >= 0) setPage(Math.floor(focusedIndex / PAGE_SIZE) + 1);
+  }, [expandedId, focusedIndex]);
 
   useEffect(() => {
     if (expandedId) {
@@ -423,6 +477,9 @@ export function TaskTable({
                     <span className="task-row-badges">
                       <StatusTag status={task.status} />
                       {isExperimentTask(task) ? <Tag>方案比较</Tag> : null}
+                      {isForwardTask(task) ? (
+                        <Tag>{forwardStage(task)}</Tag>
+                      ) : null}
                     </span>
                   </div>
                   <div className="task-row-actions">
@@ -436,7 +493,9 @@ export function TaskTable({
                         </Button>
                       </Popconfirm>
                     ) : null}
-                    {!compact && !isExperimentTask(task) ? (
+                    {!compact &&
+                    !isExperimentTask(task) &&
+                    !isForwardTask(task) ? (
                       <Button
                         size="small"
                         type="link"
@@ -448,7 +507,9 @@ export function TaskTable({
                         复用配置
                       </Button>
                     ) : null}
-                    {!compact && task.kind === "research" ? (
+                    {!compact &&
+                    task.kind === "research" &&
+                    !isForwardTask(task) ? (
                       <Button
                         size="small"
                         type="link"

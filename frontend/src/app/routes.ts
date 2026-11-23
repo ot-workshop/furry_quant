@@ -1,8 +1,9 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 
 export type Section =
   | "dashboard"
   | "research"
+  | "forward-registrations"
   | "tasks"
   | "backtests"
   | "factors"
@@ -21,6 +22,7 @@ export interface Route {
 const SECTIONS: Record<string, Section> = {
   "": "dashboard",
   research: "research",
+  "forward-registrations": "forward-registrations",
   tasks: "tasks",
   backtests: "backtests",
   factors: "factors",
@@ -67,11 +69,42 @@ export function useRoute(): Route {
   return parseRoute(useSyncExternalStore(subscribe, snapshot));
 }
 
-export function navigate(path: string, { replace = false } = {}) {
+export function navigate(
+  path: string,
+  {
+    replace = false,
+    returnFocusId,
+  }: { replace?: boolean; returnFocusId?: string } = {},
+) {
   if (path === snapshot()) return;
+  if (returnFocusId && !replace) {
+    window.history.replaceState(
+      {
+        ...window.history.state,
+        returnFocus: { id: returnFocusId, scrollY: window.scrollY },
+      },
+      "",
+    );
+  }
   window.history[replace ? "replaceState" : "pushState"](null, "", path);
   window.dispatchEvent(new Event(EVENT));
   if (!replace) window.scrollTo?.({ top: 0 });
+}
+
+/** Restore the exact link on a returning entry once its on-demand data is rendered. */
+export function useReturnFocus(ready: boolean, path: string) {
+  useEffect(() => {
+    const target = window.history.state?.returnFocus;
+    if (!ready || !target) return;
+    const frame = requestAnimationFrame(() => {
+      const link = document.getElementById(target.id);
+      if (!link) return;
+      window.scrollTo({ top: target.scrollY });
+      link.focus({ preventScroll: true });
+      link.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [ready, path]);
 }
 
 /** Update query parameters of the current URL without adding history entries. */
@@ -91,6 +124,8 @@ export const paths = {
   dashboard: () => "/",
   newResearch: (fromTask?: string) =>
     `/research/new${fromTask ? `?from=${encode(fromTask)}` : ""}`,
+  forwardRegistrations: () => "/forward-registrations",
+  forwardRegistration: (id: string) => `/forward-registrations/${encode(id)}`,
   tasks: (focus?: string) => `/tasks${focus ? `?focus=${encode(focus)}` : ""}`,
   backtests: () => "/backtests",
   backtest: (id: string, tab?: string) =>

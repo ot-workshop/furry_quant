@@ -29,14 +29,17 @@ export function AppLink({
   to,
   children,
   className,
+  returnFocusId,
 }: {
   to: string;
   children: ReactNode;
   className?: string;
+  returnFocusId?: string;
 }) {
   return (
     <a
       href={to}
+      id={returnFocusId}
       className={className}
       onClick={(event: MouseEvent<HTMLAnchorElement>) => {
         if (
@@ -47,7 +50,7 @@ export function AppLink({
         )
           return;
         event.preventDefault();
-        navigate(to);
+        navigate(to, { returnFocusId });
       }}
     >
       {children}

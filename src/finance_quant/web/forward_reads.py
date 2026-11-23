@@ -27,6 +27,7 @@ from finance_quant.persistence.forward import (
     score_task_matches,
 )
 from finance_quant.persistence.schema import forward_registration, research_task
+from finance_quant.persistence.tasks import TASK_ID_PATTERN
 from finance_quant.task_contracts import FORWARD_VERIFY_MODE
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
@@ -72,6 +73,8 @@ def _public_attempt(attempt: dict, sealed: bool) -> dict:
     reason = attempt["error"]
     return {
         **{key: attempt[key] for key in ("id", "kind", "attempt_no", "status", "deadline_at", "created_at")},
+        # The nullable foreign key guarantees existence. The task GET also requires this ID format.
+        "task_id": _token(attempt["task_id"], TASK_ID_PATTERN),
         "sealed": sealed,
         "sealed_at": attempt["sealed_at"] if sealed else None,
         "evidence_sha256": _token(attempt["evidence_sha256"], _DIGEST) if sealed else None,
@@ -308,9 +311,12 @@ def registration_detail(connection: Connection, registration_id: str) -> dict | 
     except (AttributeError, KeyError, ValueError, TypeError, OverflowError):
         state = "invalid_evidence"
 
+    strategy = row["strategy_rules"]
+    holding_sessions = strategy.get("holding_sessions") if isinstance(strategy, dict) else None
     return {
         **_summary(row),
         "state": state,
+        "holding_sessions": holding_sessions if type(holding_sessions) is int and holding_sessions > 0 else None,
         "confirmed": confirmed,
         "confirmed_at": row["confirmed_at"] if confirmed else None,
         "score_deadline_at": score_deadline,

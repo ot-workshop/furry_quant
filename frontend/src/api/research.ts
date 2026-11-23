@@ -258,6 +258,11 @@ export interface ResearchResult {
   reused?: boolean;
 }
 
+export type ForwardTaskRequest = { name: string; registration_id: string } & (
+  | { score_snapshot_id: string }
+  | { score_attempt_id: string }
+);
+
 export interface TaskErrorDetails {
   kind?: "runtime";
   stage?: string | null;
@@ -279,7 +284,9 @@ export interface ResearchTask {
   started_at: string | null;
   finished_at: string | null;
   progress: { completed: number; total: number };
-  request: ResearchRequest | ExperimentRequest;
+  request: ResearchRequest | ExperimentRequest | ForwardTaskRequest;
+  forward_stage?: "score" | "verify";
+  forward_attempt_id?: string | null;
   result: ResearchResult | null;
   error: string | null;
   error_details?: TaskErrorDetails | null;
@@ -354,4 +361,10 @@ export function isExperimentTask(
   task: ResearchTask,
 ): task is ResearchTask & { request: ExperimentRequest } {
   return task.kind === "experiment";
+}
+
+export function isForwardTask(
+  task: ResearchTask,
+): task is ResearchTask & { request: ForwardTaskRequest } {
+  return task.kind !== "experiment" && "registration_id" in task.request;
 }

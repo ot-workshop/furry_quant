@@ -5,6 +5,9 @@ import { Loading } from "./components/ui";
 
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const ResearchNewPage = lazy(() => import("./pages/ResearchNewPage"));
+const ForwardRegistrationsPage = lazy(
+  () => import("./pages/ForwardRegistrationsPage"),
+);
 const TasksPage = lazy(() => import("./pages/TasksPage"));
 const BacktestListPage = lazy(() => import("./pages/BacktestListPage"));
 const BacktestDetailPage = lazy(() => import("./pages/BacktestDetailPage"));
@@ -31,6 +34,10 @@ function Page({ route }: { route: Route }) {
       );
     case "tasks":
       return <TasksPage focus={route.search.get("focus")} />;
+    case "forward-registrations":
+      return (
+        <ForwardRegistrationsPage id={first} page={route.search.get("page")} />
+      );
     case "backtests":
       return first ? (
         <BacktestDetailPage id={first} tab={second ?? "overview"} />

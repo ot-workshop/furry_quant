@@ -1,0 +1,240 @@
+.forward-page {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.forward-page .page-heading h2 {
+  overflow-wrap: anywhere;
+}
+
+.forward-page .ant-tag {
+  margin-inline-end: 0;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.forward-page :is(.ant-tag-success, .ant-tag-processing, .ant-tag-warning) {
+  color: var(--ant-color-text);
+}
+
+.forward-page .ant-tag-error {
+  color: var(--ant-color-error-text);
+}
+
+.forward-link {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  width: fit-content;
+  color: var(--ant-color-info-text);
+  scroll-margin-top: 68px;
+  scroll-margin-bottom: 12px;
+}
+
+.forward-link:focus-visible,
+.forward-page summary:focus-visible {
+  outline: 2px solid var(--ant-color-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.forward-name {
+  font-weight: 600;
+}
+
+.forward-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.forward-table :is(th, td) {
+  padding: 12px 10px;
+  text-align: start;
+  vertical-align: top;
+  border-bottom: 1px solid var(--ant-color-border-secondary);
+}
+
+.forward-table thead th {
+  background: var(--ant-color-fill-quaternary);
+  color: var(--ant-color-text-secondary);
+  font-weight: 600;
+}
+
+.forward-registration-table th:first-child {
+  width: 30%;
+}
+
+.forward-list-dates,
+.forward-fields {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.forward-list-dates > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+}
+
+.forward-list-dates dt,
+.forward-fields dt,
+.forward-list-parameters > :last-child,
+.forward-pagination > span,
+.forward-outcome p {
+  color: var(--ant-color-text-secondary);
+}
+
+.forward-page dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.forward-list-parameters {
+  display: grid;
+  gap: 4px;
+}
+
+.forward-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block-start: 16px;
+}
+
+.forward-detail-grid,
+.forward-outcome {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.forward-detail-grid {
+  align-items: start;
+}
+
+.forward-outcome h2,
+.forward-attempt-group h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.forward-outcome p,
+.forward-attempt-group p {
+  margin: 6px 0 0;
+}
+
+.forward-metric {
+  border-inline-start: 1px solid var(--ant-color-border-secondary);
+  padding-inline-start: 20px;
+}
+
+.forward-metric-value {
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.forward-metric-value span {
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.forward-fields > div {
+  display: grid;
+  grid-template-columns: minmax(5.5em, 28%) minmax(0, 1fr);
+  gap: 8px;
+  padding-block: 6px;
+}
+
+.forward-fields > div + div {
+  border-top: 1px solid var(--ant-color-border-secondary);
+}
+
+.forward-audit {
+  border-top: 1px solid var(--ant-color-border-secondary);
+  margin-top: 8px;
+}
+
+.forward-audit summary {
+  width: fit-content;
+  padding-block: 10px;
+  color: var(--ant-color-info-text);
+  cursor: pointer;
+}
+
+.forward-missing {
+  margin: 8px 0 0;
+  padding-inline-start: 20px;
+}
+
+.forward-attempt-group + .forward-attempt-group {
+  margin-block-start: 24px;
+}
+
+.forward-attempt-table th:first-child {
+  width: 11%;
+}
+
+.forward-mobile-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.forward-mobile-list > li {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: var(--ant-border-radius);
+}
+
+@media (max-width: 767px) {
+  .forward-detail-grid,
+  .forward-outcome {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .forward-metric {
+    padding: 14px 0 0;
+    border: 0;
+    border-top: 1px solid var(--ant-color-border-secondary);
+  }
+
+  .forward-page .ant-card-body {
+    padding: 14px;
+  }
+
+  .forward-link,
+  .forward-page .page-back,
+  .forward-page .ant-btn,
+  .forward-audit summary {
+    min-height: 44px;
+  }
+
+  .forward-page .page-back {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .forward-pagination
+    :is(.ant-pagination-prev button, .ant-pagination-next button) {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .forward-fields > div {
+    grid-template-columns: minmax(5em, 29%) minmax(0, 1fr);
+  }
+}

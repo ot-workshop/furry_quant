@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { describeError, isAbortError } from "../api/http";
+import { ApiError, describeError, isAbortError } from "../api/http";
 
 export interface ApiState<T> {
   data: T | null;
@@ -8,6 +8,7 @@ export interface ApiState<T> {
   /** True during any request, including background refreshes. */
   refreshing: boolean;
   error: string | null;
+  errorStatus: number | null;
   reload: () => void;
 }
 
@@ -35,10 +36,12 @@ export function useApiResource<T>(
     key: string;
     data: T | null;
     error: string | null;
+    errorStatus: number | null;
   }>({
     key,
     data: null,
     error: null,
+    errorStatus: null,
   });
   const [pending, setPending] = useState(Boolean(load));
   const loadRef = useRef(load);
@@ -49,7 +52,7 @@ export function useApiResource<T>(
   useEffect(() => {
     const current = loadRef.current;
     if (!current) {
-      setState({ key, data: null, error: null });
+      setState({ key, data: null, error: null, errorStatus: null });
       setPending(false);
       return;
     }
@@ -57,11 +60,13 @@ export function useApiResource<T>(
     let active = true;
     setPending(true);
     setState((previous) =>
-      previous.key === key ? previous : { key, data: null, error: null },
+      previous.key === key
+        ? previous
+        : { key, data: null, error: null, errorStatus: null },
     );
     current(controller.signal)
       .then((data) => {
-        if (active) setState({ key, data, error: null });
+        if (active) setState({ key, data, error: null, errorStatus: null });
       })
       .catch((error: unknown) => {
         if (!active || isAbortError(error)) return;
@@ -69,6 +74,7 @@ export function useApiResource<T>(
           key,
           data: previous.key === key ? previous.data : null,
           error: describeError(error),
+          errorStatus: error instanceof ApiError ? error.status : null,
         }));
       })
       .finally(() => {
@@ -103,6 +109,7 @@ export function useApiResource<T>(
       !(current && state.error),
     refreshing: pending,
     error: current ? state.error : null,
+    errorStatus: current ? state.errorStatus : null,
     reload,
   };
 }
