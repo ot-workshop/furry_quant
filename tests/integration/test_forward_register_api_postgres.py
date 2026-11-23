@@ -6,6 +6,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
+from threading import Event
 
 import pandas as pd
 import pytest
@@ -24,6 +25,7 @@ from finance_quant.persistence.market import MarketRepository
 from finance_quant.persistence.results import PgResultStore
 from finance_quant.persistence.schema import dataset, forward_attempt, forward_registration, research_task
 from finance_quant.persistence.tasks import PgTaskStore
+from finance_quant.web import forward_writes
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("FINANCE_QUANT_TEST_POSTGRES") != "1", reason="requires isolated PostgreSQL"
@@ -113,25 +115,86 @@ def test_post_freezes_managed_dates_and_replays_when_source_is_gone(engine, setu
     assert _rows(engine, forward_attempt) == _rows(engine, research_task) == []
 
 
-def test_concurrent_same_key_completes_with_only_two_pool_connections(engine, tmp_path, setup_registration):
-    _, document, _, _, _, _, _ = setup_registration
+@pytest.fixture
+def two_connection_engine(engine):
     with engine.connect() as connection:
         schema = connection.scalar(text("select current_schema()"))
     bounded = create_engine(
         engine.url, pool_size=2, max_overflow=0, pool_timeout=4, connect_args={"options": f"-c search_path={schema}"}
     )
     try:
-        client = _client(bounded, tmp_path)
-        with ThreadPoolExecutor(max_workers=6) as workers:
-            requests = [workers.submit(client.post, URL, json=document, headers=KEY) for _ in range(6)]
-            replies = [result.result(timeout=20) for result in requests]
-        assert all(response.status_code == 200 for response in replies), [response.text for response in replies]
-        assert all(response.json() == replies[0].json() for response in replies)
-        (saved,) = _rows(engine, forward_registration)
-        assert registration_row_confirmed(saved)
-        assert _rows(engine, forward_attempt) == _rows(engine, research_task) == []
+        yield bounded
     finally:
         bounded.dispose()
+
+
+def test_concurrent_same_key_completes_with_only_two_pool_connections(
+    engine, tmp_path, setup_registration, two_connection_engine
+):
+    _, document, _, _, _, _, _ = setup_registration
+    client = _client(two_connection_engine, tmp_path)
+    with ThreadPoolExecutor(max_workers=6) as workers:
+        requests = [workers.submit(client.post, URL, json=document, headers=KEY) for _ in range(6)]
+        replies = [result.result(timeout=20) for result in requests]
+    assert all(response.status_code == 200 for response in replies), [response.text for response in replies]
+    assert all(response.json() == replies[0].json() for response in replies)
+    (saved,) = _rows(engine, forward_registration)
+    assert registration_row_confirmed(saved)
+    assert _rows(engine, forward_attempt) == _rows(engine, research_task) == []
+
+
+@pytest.mark.parametrize("scenario", ["same-request", "changed-request", "no-winner"])
+def test_post_rechecks_same_key_when_source_disappears_mid_request(
+    engine, tmp_path, setup_registration, two_connection_engine, monkeypatch, scenario
+):
+    _, document, _, _, _, _, leaf = setup_registration
+    client = _client(two_connection_engine, tmp_path)
+    first_miss, remove_source = Event(), Event()
+    sessions = []
+    original = forward_writes._source_calendar
+
+    def pause_after_miss(connection, root, dataset_id):
+        sessions.append(connection.scalar(text("select pg_backend_pid()")))
+        if not first_miss.is_set():
+            # A call to the source reader proves the first lookup found no registration.
+            first_miss.set()
+            assert remove_source.wait(timeout=15)
+        return original(connection, root, dataset_id)
+
+    monkeypatch.setattr(forward_writes, "_source_calendar", pause_after_miss)
+    delayed = dict(document, top_k=2) if scenario == "changed-request" else document
+    winner = None
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        request = workers.submit(client.post, URL, json=delayed, headers=KEY)
+        try:
+            assert first_miss.wait(timeout=10)
+            if scenario != "no-winner":
+                winner = client.post(URL, json=document, headers=KEY)
+                assert winner.status_code == 200, winner.text
+                assert len(set(sessions)) == 2
+            (leaf / "manifest.json").unlink()
+        finally:
+            remove_source.set()
+        response = request.result(timeout=15)
+
+    assert two_connection_engine.pool.checkedout() == 0
+    # A separate engine cannot acquire this while either POST session retains a shared lock.
+    with write_gate(engine, exclusive=True):
+        rows = _rows(engine, forward_registration)
+        assert _rows(engine, forward_attempt) == _rows(engine, research_task) == []
+    if scenario == "no-winner":
+        assert response.status_code == 422
+        assert response.json() == {"detail": "来源数据集的受管清单或文件摘要无法验证"}
+        assert rows == []
+    else:
+        assert winner is not None
+        (saved,) = rows
+        assert registration_row_confirmed(saved)
+        assert saved["id"] == winner.json()["registration_id"]
+        if scenario == "changed-request":
+            assert response.status_code == 409 and "参数已改变" in response.json()["detail"]
+        else:
+            assert response.status_code == 200 and response.json() == winner.json()
 
 
 @pytest.mark.parametrize("phase", ["before", "at-seal", "at-stage"])

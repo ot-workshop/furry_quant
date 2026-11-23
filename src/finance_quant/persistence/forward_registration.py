@@ -63,27 +63,38 @@ def _record_registration(
     by_key = select(table.c.id, table.c.request, table.c.fingerprint).where(table.c.idempotency_key == key)
     existing = connection.execute(by_key).mappings().one_or_none()
     if existing is None:
-        row = dict(
-            freeze(),
-            id=f"fwd-{uuid.uuid4().hex}",
-            idempotency_key=key,
-            request=request,
-            fingerprint=fingerprint,
-            status="registered",
-        )
-        # Bind the initial evidence at its commit. confirmed_at controls usability.
-        row["confirmed_evidence_sha256"] = forward.registration_evidence_digest(row)
-        identifier = connection.scalar(
-            insert(table)
-            .values(**row)
-            .on_conflict_do_nothing(index_elements=[table.c.idempotency_key])
-            .returning(table.c.id)
-        )
-        if identifier is not None:
-            connection.execute(table.update().where(table.c.id == identifier).values(written_at=func.clock_timestamp()))
-            return identifier
-        # The unique key waits out a competing insert. READ COMMITTED now sees the winner.
-        existing = connection.execute(by_key).mappings().one()
+        try:
+            frozen = freeze()
+        except ValueError:
+            # Source validation ran after the first miss. A new READ COMMITTED query
+            # can see a registration another request committed in that interval.
+            existing = connection.execute(by_key).mappings().one_or_none()
+            if existing is None:
+                raise
+        else:
+            row = dict(
+                frozen,
+                id=f"fwd-{uuid.uuid4().hex}",
+                idempotency_key=key,
+                request=request,
+                fingerprint=fingerprint,
+                status="registered",
+            )
+            # Bind the initial evidence at its commit. confirmed_at controls usability.
+            row["confirmed_evidence_sha256"] = forward.registration_evidence_digest(row)
+            identifier = connection.scalar(
+                insert(table)
+                .values(**row)
+                .on_conflict_do_nothing(index_elements=[table.c.idempotency_key])
+                .returning(table.c.id)
+            )
+            if identifier is not None:
+                connection.execute(
+                    table.update().where(table.c.id == identifier).values(written_at=func.clock_timestamp())
+                )
+                return identifier
+            # The unique key waits out a competing insert. READ COMMITTED now sees the winner.
+            existing = connection.execute(by_key).mappings().one()
     if existing["fingerprint"] != fingerprint or existing["request"] != request:
         raise TaskConflict("同一登记请求标识的参数已改变")
     return existing["id"]
