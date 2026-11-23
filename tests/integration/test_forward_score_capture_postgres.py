@@ -225,7 +225,7 @@ def test_capture_rejects_both_exact_bounds_and_a_call_that_crosses_the_deadline(
 
 def test_old_managed_cache_cannot_supply_fresh_capture_evidence(setup_capture, monkeypatch):
     root, row, provider, publish = setup_capture
-    original = forward_score_capture._ScoreCapture.__init__
+    original = forward_score_capture._ForwardCapture.__init__
     old = datetime.combine(row["signal_date"], time(14), tzinfo=SHANGHAI)
 
     def seed_cache(self, source, raw, catalog, job_id, *args):
@@ -243,7 +243,7 @@ def test_old_managed_cache_cannot_supply_fresh_capture_evidence(setup_capture, m
             )
         original(self, source, raw, catalog, job_id, *args)
 
-    monkeypatch.setattr(forward_score_capture._ScoreCapture, "__init__", seed_cache)
+    monkeypatch.setattr(forward_score_capture._ForwardCapture, "__init__", seed_cache)
     with pytest.raises(ScoreInputError, match="score-capture-reused-cache"):
         publish()
     assert provider.calls == ["trade_cal"]

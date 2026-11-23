@@ -17,6 +17,12 @@ from finance_quant.application import forward_verification
 from finance_quant.application.forward_score import enqueue_forward_score
 from finance_quant.application.forward_verification import VerificationInputError, enqueue_forward_verification
 from finance_quant.checksums import file_sha256
+from finance_quant.data.market import (
+    LABEL_SNAPSHOT_LOCATION,
+    LABEL_SNAPSHOT_TYPE,
+    label_snapshot_leaf_name,
+    managed_label_snapshot_id,
+)
 from finance_quant.data.symbols import to_qlib
 from finance_quant.persistence.forward import canonical_sha256
 from finance_quant.persistence.schema import forward_attempt, forward_registration, research_task
@@ -29,8 +35,8 @@ pytestmark = pytest.mark.skipif(
 VERIFY_KEY = "synthetic-maturity-key"
 
 
-def _registered(engine, root, *, mature=True):
-    reg, score_leaf, _ = _fixture(engine, root, late=mature)
+def _registered(engine, root, *, mature=True, source=SOURCE):
+    reg, score_leaf, _ = _fixture(engine, root, late=mature, dataset_id=source, capture_source=source)
     store = PgTaskStore(engine=engine)
     score = enqueue_forward_score(store, root, reg, score_leaf.name, key="historically-sealed-score")
     assert store.claim() == score["task_id"]
@@ -85,8 +91,9 @@ def _publish_labels(
     wrong_calendar=False,
     zero=False,
     trading_state=True,
+    legacy=False,
 ):
-    leaf = root / "research" / "subsets" / identifier
+    leaf = root / "research" / "subsets" / identifier if legacy else root.joinpath(*LABEL_SNAPSHOT_LOCATION, ".stage")
     leaf.mkdir(parents=True)
     entry, exit_ = row["entry_date"], row["exit_date"]
     maturity = datetime.fromisoformat(row["data_rules"]["label_capture_after"])
@@ -116,6 +123,11 @@ def _publish_labels(
                 }
             )
     market = pd.DataFrame(records).assign(date=lambda frame: pd.to_datetime(frame.date))
+    if not legacy:
+        exit_price = market.loc[market.date.eq(pd.Timestamp(exit_)), "close"]
+        exit_factor = market.loc[exit_price.index, "adj_factor"]
+        market["change"] = 0.0
+        market.loc[exit_price.index, "change"] = exit_price / (10.0 / exit_factor) - 1
     if not trading_state:
         market = market.drop(columns="is_suspended")
     frames = {
@@ -138,7 +150,34 @@ def _publish_labels(
             "source_dataset_id": source,
         },
     }
+    if not legacy:
+        provider_id = "a" * 64
+        manifest.update(publication_type=LABEL_SNAPSHOT_TYPE, provider_id=provider_id, codes=CODES)
+        capture = manifest["label_capture"]
+        captured = capture["captured_at"]
+        capture.update(
+            registration_id=row["id"],
+            registration_sha256=row["confirmed_evidence_sha256"],
+            calendar_sha256=row["calendar_fingerprint"],
+            publication_id="flc-" + canonical_sha256(identifier)[:24],
+            requests=[
+                {
+                    "api": api,
+                    "params": params,
+                    "provider_id": provider_id,
+                    "normalizer": "managed-v1",
+                    "raw_sha256": "b" * 64,
+                    "rows": 2,
+                    "request_started_at": captured,
+                    "response_received_at": captured,
+                }
+                for api, params in forward_verification._label_requests(row)
+            ],
+        )
+        manifest["id"] = managed_label_snapshot_id(manifest)
     (leaf / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    if not legacy:
+        leaf = leaf.rename(leaf.with_name(label_snapshot_leaf_name(manifest)))
     return leaf
 
 
@@ -147,12 +186,36 @@ def _stored_registration(engine):
         return connection.execute(select(forward_registration)).mappings().one()
 
 
+def test_existing_legacy_binding_remains_readable(engine, tmp_path):
+    store, row, _ = _registered(engine, tmp_path)
+    leaf = _publish_labels(tmp_path, row, "legacy-bound", legacy=True)
+    manifest_path = leaf / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    binding = {
+        "snapshot_dir": leaf.relative_to(tmp_path).as_posix(),
+        "data_version": manifest["id"],
+        "manifest_sha256": file_sha256(manifest_path),
+        "files": manifest["files"],
+        "captured_at": manifest["label_capture"]["captured_at"],
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            forward_registration.update().where(forward_registration.c.id == row["id"]).values(label_snapshot=binding)
+        )
+    _publish_labels(tmp_path, row, "managed-later", zero=True)
+    queued = enqueue_forward_verification(store, tmp_path, row["id"], key=VERIFY_KEY)
+    attempt, task = _execute(store, tmp_path, queued)
+    assert task["status"] == attempt["status"] == "succeeded"
+    assert attempt["evidence"]["label_snapshot"] == binding
+
+
 def test_waits_for_a_valid_first_capture_then_seals_hand_calculated_result(engine, tmp_path):
     store, row, score = _registered(engine, tmp_path)
     reg = row["id"]
     _publish_labels(tmp_path, row, "before-maturity", seconds=-0.000001)
     _publish_labels(tmp_path, row, "wrong-source", source="other")
     _publish_labels(tmp_path, row, "wrong-calendar", wrong_calendar=True)
+    _publish_labels(tmp_path, row, "unmanaged-label", legacy=True)
     corrupted = _publish_labels(tmp_path, row, "corrupt-label")
     with (corrupted / "market.parquet").open("ab") as stream:
         stream.write(b"invalid")
@@ -163,7 +226,7 @@ def test_waits_for_a_valid_first_capture_then_seals_hand_calculated_result(engin
     _publish_labels(tmp_path, row, "later-visible", seconds=60, zero=True)
     first = _publish_labels(tmp_path, row, "first-qualified")
     queued = enqueue_forward_verification(store, tmp_path, reg, key=VERIFY_KEY)
-    assert _stored_registration(engine)["label_snapshot"]["data_version"] == first.name
+    assert _stored_registration(engine)["label_snapshot"]["snapshot_dir"] == first.relative_to(tmp_path).as_posix()
     _publish_labels(tmp_path, row, "new-version", seconds=120, zero=True)
     assert enqueue_forward_verification(store, tmp_path, reg, key=VERIFY_KEY) == queued
 
@@ -331,7 +394,8 @@ def test_retry_keeps_the_first_binding_after_a_new_version(engine, tmp_path, int
     retry = enqueue_forward_verification(store, tmp_path, row["id"], key=VERIFY_KEY + "-retry")
     attempt, task = _execute(store, tmp_path, retry)
     assert task["status"] == attempt["status"] == "succeeded"
-    assert attempt["attempt_no"] == 2 and attempt["evidence"]["label_snapshot"]["data_version"] == first.name
+    assert attempt["attempt_no"] == 2
+    assert attempt["evidence"]["label_snapshot"]["snapshot_dir"] == first.relative_to(tmp_path).as_posix()
     assert _stored_registration(engine)["result"]["excess_return_pp"] == pytest.approx(13.333333333)
 
 
@@ -405,7 +469,7 @@ def test_concurrent_first_submission_replays_one_attempt_and_binding(engine, tmp
         left, right = workers.submit(submit), workers.submit(submit)
         assert left.result(timeout=15) == right.result(timeout=15)
     assert store.list()["total"] == 2
-    assert _stored_registration(engine)["label_snapshot"]["data_version"] == label.name
+    assert _stored_registration(engine)["label_snapshot"]["snapshot_dir"] == label.relative_to(tmp_path).as_posix()
 
 
 def test_queue_limit_rolls_back_the_first_label_binding(engine, tmp_path):

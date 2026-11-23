@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from datetime import datetime, time
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from sqlalchemy import Connection, select, text
 
 from finance_quant.application.forward_score import ScoreInputError, _frozen_schedule, _market_dates
 from finance_quant.application.research_requests import lookup_label_snapshot_metas
-from finance_quant.data.market import load_frozen_snapshot
+from finance_quant.data.market import LABEL_SNAPSHOT_TYPE, load_frozen_snapshot
 from finance_quant.data.symbols import to_qlib
 from finance_quant.persistence.forward import (
     SHANGHAI,
@@ -157,12 +158,67 @@ def _capture_at(row: dict, manifest: dict, mature_at: datetime, now: datetime) -
         or (row["dataset_id"] is not None and capture.get("source_dataset_id") != row["dataset_id"])
     ):
         raise VerificationInputError("label-capture-binding-mismatch")
+    if manifest.get("publication_type") == LABEL_SNAPSHOT_TYPE:
+        _check_managed_receipts(row, manifest, capture, mature_at, captured)
     return captured
+
+
+def _label_requests(row: dict) -> list[tuple[str, dict]]:
+    end = row["exit_date"].strftime("%Y%m%d")
+    calendar = {"exchange": "SSE", "start_date": row["signal_date"].strftime("%Y%m%d"), "end_date": end}
+    dates = {"start_date": row["entry_date"].strftime("%Y%m%d"), "end_date": end}
+    return [
+        ("trade_cal", calendar),
+        ("index_daily", {"ts_code": "000300.SH", **dates}),
+        *((api, {"ts_code": code, **dates}) for code in row["pool_codes"] for api in ("daily", "adj_factor")),
+    ]
+
+
+def _check_managed_receipts(row: dict, manifest: dict, capture: dict, mature_at: datetime, captured: datetime) -> None:
+    provider_id = manifest.get("provider_id")
+    if (
+        capture.get("registration_id") != row["id"]
+        or capture.get("registration_sha256") != row["confirmed_evidence_sha256"]
+        or capture.get("calendar_sha256") != row["calendar_fingerprint"]
+        or capture.get("source_dataset_id") != row["dataset_id"]
+        or manifest.get("codes") != row["pool_codes"]
+        or not isinstance(provider_id, str)
+        or re.fullmatch(r"[0-9a-f]{64}", provider_id) is None
+    ):
+        raise VerificationInputError("label-capture-binding-mismatch")
+    expected, receipts = _label_requests(row), capture.get("requests")
+    if not isinstance(receipts, list) or len(receipts) != len(expected):
+        raise VerificationInputError("invalid-label-capture-receipts")
+    latest = mature_at
+    for receipt, (api, params) in zip(receipts, expected, strict=True):
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("api") != api
+            or receipt.get("params") != params
+            or receipt.get("provider_id") != provider_id
+            or receipt.get("normalizer") != "managed-v1"
+            or type(receipt.get("rows")) is not int
+            or receipt["rows"] < 0
+            or not isinstance(receipt.get("raw_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", receipt["raw_sha256"]) is None
+        ):
+            raise VerificationInputError("invalid-label-capture-receipts")
+        try:
+            start = datetime.fromisoformat(receipt["request_started_at"])
+            end = datetime.fromisoformat(receipt["response_received_at"])
+            valid = mature_at <= start <= end <= captured
+        except (KeyError, TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise VerificationInputError("invalid-label-capture-receipts")
+        latest = max(latest, end)
+    if latest != captured:
+        raise VerificationInputError("invalid-label-capture-receipts")
 
 
 def _load_labels(data_root: Path, binding: dict, row: dict, sessions: tuple, mature_at: datetime, now: datetime):
     try:
-        market, _, calendar, manifest = load_frozen_snapshot(data_root, binding).inputs
+        market, _, calendar, manifest = load_frozen_snapshot(data_root, binding, allow_label=True).inputs
         if _capture_at(row, manifest, mature_at, now).isoformat() != binding["captured_at"]:
             raise VerificationInputError("label-capture-binding-mismatch")
         dates = _market_dates(calendar)
