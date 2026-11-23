@@ -88,7 +88,7 @@ def test_list_paginates_on_timestamp_and_id_and_unknown_registration_is_404(engi
     assert client.get(URL, params={"offset": -1}).status_code == 422
     assert client.get(f"{URL}/no-such-registration").json() == {"detail": "前瞻登记不存在"}
     assert client.get(f"{URL}/no-such-registration").status_code == 404
-    assert client.post(URL, json={}).status_code == 405
+    assert client.put(URL, json={}).status_code == 405
 
 
 @pytest.mark.parametrize("scenario", ["complete", "zero", "missing"])

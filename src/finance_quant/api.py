@@ -61,7 +61,11 @@ def create_app(
     app.include_router(comparison_router(store))
     app.include_router(evaluation_router(store, data_root=service.data_root, runs_root=service.runs_root))
     app.include_router(experiment_router(store))
-    app.include_router(forward_registration_router(getattr(service.store, "engine", None)))
+    app.include_router(
+        forward_registration_router(
+            getattr(service.store, "engine", None), storage_root=getattr(store, "storage_root", None)
+        )
+    )
 
     @app.exception_handler(ResultTableError)
     async def invalid_table(_request, error):
