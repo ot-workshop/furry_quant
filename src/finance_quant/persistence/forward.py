@@ -119,6 +119,7 @@ def confirm_attempt(
     attempt_id: str,
     evidence: dict,
     task_result: dict | None = None,
+    finish_on_miss: bool = False,
 ) -> Confirmation:
     """Publish, stage, and seal evidence in separate transactions on one primary connection.
 
@@ -133,11 +134,11 @@ def confirm_attempt(
         if stopped is not None:
             return stopped
         with connection.begin():
-            staged = _stage_evidence(connection, attempt_id, digest)
+            staged = _stage_evidence(connection, attempt_id, digest, store if finish_on_miss else None)
         if staged.detail != "staged":
             return staged
         with connection.begin():
-            return _seal_success(store, connection, attempt_id, digest, task_result)
+            return _seal_success(store, connection, attempt_id, digest, task_result, finish_on_miss=finish_on_miss)
 
 
 def _stopped_attempt(row: dict, digest: str) -> Confirmation | None:
@@ -175,7 +176,19 @@ def _record_evidence(connection: Connection, attempt_id: str, evidence: dict, di
     return None
 
 
-def _stage_evidence(connection: Connection, attempt_id: str, digest: str) -> Confirmation:
+def _mark_missed(connection: Connection, row: dict, sampled: datetime, store: PgTaskStore | None) -> Confirmation:
+    reason = "deadline-passed"
+    connection.execute(
+        forward_attempt.update().where(forward_attempt.c.id == row["id"]).values(status="missed", error=reason)
+    )
+    if store is not None:
+        store.finish(row["task_id"], "failed", error=reason, connection=connection)
+    return Confirmation(False, sampled, reason)
+
+
+def _stage_evidence(
+    connection: Connection, attempt_id: str, digest: str, store: PgTaskStore | None = None
+) -> Confirmation:
     row = _lock_attempt(connection, attempt_id)
     if (stopped := _stopped_attempt(row, digest)) is not None:
         return stopped
@@ -188,8 +201,7 @@ def _stage_evidence(connection: Connection, attempt_id: str, digest: str) -> Con
 
     sampled = connection.execute(text("select clock_timestamp()")).scalar_one()
     if sampled >= row["deadline_at"]:
-        connection.execute(forward_attempt.update().where(forward_attempt.c.id == attempt_id).values(status="missed"))
-        return Confirmation(False, sampled, "deadline-passed")
+        return _mark_missed(connection, row, sampled, store)
     connection.execute(forward_attempt.update().where(forward_attempt.c.id == attempt_id).values(staging_at=sampled))
     return Confirmation(False, sampled, "staged")
 
@@ -200,6 +212,8 @@ def _seal_success(
     attempt_id: str,
     digest: str,
     task_result: dict | None,
+    *,
+    finish_on_miss: bool = False,
 ) -> Confirmation:
     row = _lock_attempt(connection, attempt_id)
     if (stopped := _stopped_attempt(row, digest)) is not None:
@@ -215,13 +229,54 @@ def _seal_success(
 
     sampled = connection.execute(text("select clock_timestamp()")).scalar_one()
     if sampled >= row["deadline_at"]:
-        connection.execute(forward_attempt.update().where(forward_attempt.c.id == attempt_id).values(status="missed"))
-        return Confirmation(False, sampled, "deadline-passed")
+        return _mark_missed(connection, row, sampled, store if finish_on_miss else None)
+    if sampled < row["staging_at"]:
+        return Confirmation(False, None, "invalid-staging-proof")
     connection.execute(
         forward_attempt.update().where(forward_attempt.c.id == attempt_id).values(status="succeeded", sealed_at=sampled)
     )
     store.finish(row["task_id"], "succeeded", result=task_result, connection=connection)
     return Confirmation(True, sampled, "sealed")
+
+
+def _lock_score_task_attempt(connection: Connection, task_id: str) -> dict | None:
+    row = (
+        connection.execute(
+            select(forward_attempt)
+            .where(forward_attempt.c.task_id == task_id, forward_attempt.c.kind == "score")
+            .with_for_update()
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return dict(row) if row is not None else None
+
+
+def start_score_attempt(connection: Connection, task_id: str, registration_id: str) -> dict:
+    row = _lock_score_task_attempt(connection, task_id)
+    if row is None or row["registration_id"] != registration_id or row["status"] not in {"queued", "running"}:
+        raise TaskConflict("score-attempt-unavailable")
+    connection.execute(forward_attempt.update().where(forward_attempt.c.id == row["id"]).values(status="running"))
+    return row
+
+
+def fail_score_task(store: PgTaskStore, task_id: str, reason: str, *, evidence: dict | None = None) -> bool:
+    """Retain diagnostics and finish the queue task together, including after an uncertain COMMIT."""
+    try:
+        with store.engine.connect().execution_options(isolation_level="READ COMMITTED") as connection:
+            with connection.begin():
+                row = _lock_score_task_attempt(connection, task_id)
+                if row is not None and row["status"] == "succeeded":
+                    return False
+                if row is not None and evidence is not None and row["status"] == "running" and row["evidence"] is None:
+                    _record_evidence(connection, row["id"], evidence, canonical_sha256(evidence))
+                store.finish(task_id, "failed", error=reason, connection=connection)
+        return True
+    except TaskConflict:
+        # The failed update rolled back. A concurrent seal or a prior terminal write won.
+        if store.get(task_id)["status"] == "running":
+            raise
+        return False
 
 
 def registration_confirmed(connection: Connection, registration_id: str) -> bool:
@@ -231,9 +286,12 @@ def registration_confirmed(connection: Connection, registration_id: str) -> bool
         .mappings()
         .first()
     )
+    return row is not None and registration_row_confirmed(row)
+
+
+def registration_row_confirmed(row: Mapping[str, Any]) -> bool:
     return (
-        row is not None
-        and row["status"] != "expired"
+        row["status"] != "expired"
         and registration_proof_times_valid(row, registration_deadline(row["signal_date"]))
         and registration_evidence_matches(row)
     )

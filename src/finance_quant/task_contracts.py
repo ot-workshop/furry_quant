@@ -6,6 +6,8 @@ from typing import Any, Protocol
 
 from finance_quant.checksums import sha256_text
 
+FORWARD_SCORE_MODE = "forward_score"
+
 
 def submission_fingerprint(kind: str, request: dict, key: str) -> str:
     """Validate a submission key and fingerprint the original request, not its execution pins."""
