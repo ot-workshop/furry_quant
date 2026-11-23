@@ -19,6 +19,7 @@ from finance_quant.web.comparisons import comparison_router
 from finance_quant.web.evaluations import evaluation_router
 from finance_quant.web.experiments import experiment_router
 from finance_quant.web.factors import factor_router
+from finance_quant.web.forward_registrations import forward_registration_router
 from finance_quant.web.frontend import mount_frontend
 from finance_quant.web.system import system_router
 
@@ -60,6 +61,7 @@ def create_app(
     app.include_router(comparison_router(store))
     app.include_router(evaluation_router(store, data_root=service.data_root, runs_root=service.runs_root))
     app.include_router(experiment_router(store))
+    app.include_router(forward_registration_router(getattr(service.store, "engine", None)))
 
     @app.exception_handler(ResultTableError)
     async def invalid_table(_request, error):
