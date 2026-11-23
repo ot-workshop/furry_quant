@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -35,17 +36,19 @@ def register_and_confirm(
     key: str,
     request: dict,
     freeze: Callable[[], dict],
+    connection: Connection | None = None,
 ) -> RegistrationReceipt:
     """Commit frozen evidence, then stage and seal it in new transactions on one connection."""
     fingerprint = submission_fingerprint("forward-registration", request, key)
-    with engine.connect().execution_options(isolation_level="READ COMMITTED") as connection:
-        with connection.begin():
-            identifier = _record_registration(connection, key, request, fingerprint, freeze)
-        with connection.begin():
-            proof = _advance_proof(connection, identifier, stage=True)
+    with engine.connect() if connection is None else nullcontext(connection) as active:
+        active.execution_options(isolation_level="READ COMMITTED")
+        with active.begin():
+            identifier = _record_registration(active, key, request, fingerprint, freeze)
+        with active.begin():
+            proof = _advance_proof(active, identifier, stage=True)
         if proof.detail == "staged":
-            with connection.begin():
-                proof = _advance_proof(connection, identifier, stage=False)
+            with active.begin():
+                proof = _advance_proof(active, identifier, stage=False)
     if proof.detail == "expired":
         # The terminal audit row has committed before the caller receives the rejection.
         raise RegistrationExpired(identifier)

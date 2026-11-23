@@ -1,11 +1,7 @@
 """Research submission, data download control and task status endpoints."""
 
-import json
-import os
 import uuid
-from contextlib import nullcontext
 from functools import partial
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from filelock import Timeout
@@ -18,67 +14,19 @@ from finance_quant.application.market_download import shared_root, status
 from finance_quant.application.research_requests import research_options
 from finance_quant.data.financials import financial_root
 from finance_quant.data.industries import industry_root
-from finance_quant.persistence.maintenance import write_gate
 from finance_quant.task_contracts import TaskConflict
+from finance_quant.web.write_requests import research_json, research_write_gate
 
 RESULT_TASK_KINDS = {"research", "experiment"}
 
 
 def research_router(service, *, result_store=None):
     def write_guard(request: Request):
-
-        engine = getattr(service.store, "engine", None)
-        try:
-            with write_gate(engine) if engine is not None and request.method == "POST" else nullcontext():
-                yield
-        except RuntimeError as error:
-            raise HTTPException(409, "数据维护期间暂停写入，请稍后重试") from error
+        engine = getattr(service.store, "engine", None) if request.method == "POST" else None
+        with research_write_gate(engine):
+            yield
 
     router = APIRouter(prefix="/api/v1/research", dependencies=[Depends(write_guard)])
-
-    async def body(request: Request):
-        host = request.headers.get("host", "")
-        configured = {item.strip() for item in os.environ.get("ALLOWED_ORIGINS", "").split(",") if item.strip()}
-        try:
-            local_host = urlsplit("http://" + host).hostname in {"localhost", "127.0.0.1", "::1"}
-            configured_host = f"{request.url.scheme}://{host}" in configured
-        except ValueError:
-            local_host = False
-            configured_host = False
-        if not (local_host or configured_host):
-            raise HTTPException(403, "当前访问地址未配置，请设置 ALLOWED_ORIGINS")
-        origin = request.headers.get("origin")
-        if origin:
-            try:
-                parsed = urlsplit(origin)
-                same_origin = origin == f"{request.url.scheme}://{host}"
-                development = (
-                    parsed.hostname in {"localhost", "127.0.0.1"} and parsed.scheme == "http" and parsed.port == 5173
-                )
-            except ValueError:
-                raise HTTPException(403, "请求来源无效") from None
-            if not (origin in configured if configured else same_origin or development):
-                raise HTTPException(403, "请从已配置的研究工作台提交任务")
-        if request.headers.get("sec-fetch-site") == "cross-site":
-            raise HTTPException(403, "请从已配置的研究工作台提交任务")
-        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
-            raise HTTPException(415, "请使用 JSON 提交研究配置")
-        encoded = await request.body()
-        if len(encoded) > 65536:
-            raise HTTPException(413, "研究配置过大")
-
-        def unique(pairs):
-            result = {}
-            for key, value in pairs:
-                if key in result:
-                    raise ValueError("duplicate")
-                result[key] = value
-            return result
-
-        try:
-            return json.loads(encoded, object_pairs_hook=unique)
-        except (ValueError, UnicodeError):
-            raise HTTPException(422, "研究配置必须是有效 JSON，且不能包含重复字段") from None
 
     @router.get("/options")
     def options():
@@ -86,7 +34,7 @@ def research_router(service, *, result_store=None):
 
     @router.post("/factor-coverage")
     async def preview_factor_coverage(request: Request):
-        document = await body(request)
+        document = await research_json(request)
         try:
             return await run_in_threadpool(factor_coverage, document, service.data_root)
         except (ValueError, TypeError) as error:
@@ -123,7 +71,7 @@ def research_router(service, *, result_store=None):
 
     @router.post("/backups")
     async def backup_operation(request: Request):
-        document = await body(request)
+        document = await research_json(request)
 
         try:
             return await run_in_threadpool(backup_jobs.start, service.store, document)
@@ -132,7 +80,7 @@ def research_router(service, *, result_store=None):
 
     @router.post("/data-updates/{action}")
     async def data_updates_action(action: str, request: Request):
-        document = await body(request)
+        document = await research_json(request)
 
         try:
             if action == "preview":
@@ -152,7 +100,7 @@ def research_router(service, *, result_store=None):
 
     @router.post("/market-download/{action}")
     async def market_download_action(action: str, request: Request):
-        document = await body(request)
+        document = await research_json(request)
 
         root = downloads.shared_root(service.data_root)
         try:
@@ -192,7 +140,7 @@ def research_router(service, *, result_store=None):
 
     @router.post("/financial-download/{action}")
     async def financial_download_action(action: str, request: Request):
-        document = await body(request)
+        document = await research_json(request)
 
         try:
             if action == "preview":
@@ -227,7 +175,7 @@ def research_router(service, *, result_store=None):
 
     @router.post("/industry-download/{action}")
     async def industry_download_action(action: str, request: Request):
-        document = await body(request)
+        document = await research_json(request)
 
         try:
             if action == "preview":
@@ -258,7 +206,7 @@ def research_router(service, *, result_store=None):
             raise HTTPException(404, "研究任务不存在") from None
 
     async def queue(request: Request, submit):
-        document = await body(request)
+        document = await research_json(request)
         key = request.headers.get("idempotency-key", "")
         try:
             return await run_in_threadpool(submit, document, key)
@@ -281,7 +229,7 @@ def research_router(service, *, result_store=None):
 
     @router.post("/tasks/{identifier}/cancel")
     async def cancel(identifier: str, request: Request):
-        document = await body(request)
+        document = await research_json(request)
         if document != {}:
             raise HTTPException(422, "取消任务不接受额外参数")
         try:

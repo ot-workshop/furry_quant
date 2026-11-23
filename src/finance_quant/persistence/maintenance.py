@@ -19,7 +19,7 @@ def write_gate(engine, *, exclusive=False):
         if not acquired:
             raise RuntimeError("数据维护正在进行，或仍有写入请求；请稍后重试")
         try:
-            yield
+            yield connection
         finally:
             if not connection.invalidated:
                 connection.execute(text(f"SELECT {unlock}(:key)"), {"key": MAINTENANCE_LOCK})
