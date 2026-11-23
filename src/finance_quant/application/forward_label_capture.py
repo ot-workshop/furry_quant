@@ -64,13 +64,13 @@ def _capture_labels(fetch: _ForwardCapture, row: dict, sessions: tuple, requests
         adjusted = fetch.capture("adj_factor", **adjustment_params)
         if not daily.date.isin(label_dates).all() or not adjusted.date.isin(label_dates).all():
             raise VerificationInputError("label-capture-quote-calendar-mismatch")
-        active = daily.loc[daily.volume.gt(0) & daily.amount.gt(0), ["instrument", "date", "open", "close"]]
+        active = daily.loc[daily.volume.gt(0) & daily.amount.gt(0), ["instrument", "date", "open", "close", "change"]]
         # A genuinely empty response or a missing adjustment leaves that stock/date absent.
         # Positive turnover is required before recording an active trading state.
         frames.append(active.merge(adjusted, on=["instrument", "date"], validate="one_to_one"))
     nonempty = [frame for frame in frames if not frame.empty]
     market = pd.concat(nonempty, ignore_index=True) if nonempty else frames[0]
-    return market.assign(is_suspended=False), benchmark, calendar
+    return market.assign(change=market["change"].astype(float), is_suspended=False), benchmark, calendar
 
 
 def _published_labels(leaf: Path, name: str, row: dict, provider_id: str, mature_at: datetime, now: datetime) -> dict:

@@ -123,6 +123,11 @@ def _publish_labels(
                 }
             )
     market = pd.DataFrame(records).assign(date=lambda frame: pd.to_datetime(frame.date))
+    if not legacy:
+        exit_price = market.loc[market.date.eq(pd.Timestamp(exit_)), "close"]
+        exit_factor = market.loc[exit_price.index, "adj_factor"]
+        market["change"] = 0.0
+        market.loc[exit_price.index, "change"] = exit_price / (10.0 / exit_factor) - 1
     if not trading_state:
         market = market.drop(columns="is_suspended")
     frames = {

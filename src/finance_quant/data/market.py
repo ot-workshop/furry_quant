@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from stat import S_ISREG
 
+import numpy as np
 import pandas as pd
 
 from finance_quant.checksums import canonical_json_sha256, file_sha256, sha256_bytes, sha256_text
@@ -275,6 +276,15 @@ def _load_leaf(root, manifest):
         raise ValueError("This snapshot was quarantined after a failed quality audit")
     manifest["snapshot_dir"] = str(root.resolve())
     market = pd.read_parquet(root / "market.parquet")
+    if manifest.get("publication_type") == LABEL_SNAPSHOT_TYPE:
+        change = market.get("change")
+        if (
+            change is None
+            or not pd.api.types.is_numeric_dtype(change)
+            or pd.api.types.is_bool_dtype(change)
+            or not np.isfinite(change.to_numpy(dtype=float, na_value=np.nan)).all()
+        ):
+            raise ValueError("Managed label snapshot requires finite daily change evidence")
     if market.get("is_suspended", pd.Series(False, index=market.index)).any() and manifest.get(
         "schema_version"
     ) not in {"market-v3", "market-v4-shared"}:

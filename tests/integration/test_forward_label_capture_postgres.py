@@ -15,7 +15,7 @@ from test_forward_score_postgres import CODES, _execute
 from test_forward_verification_postgres import _registered, _stored_registration
 from test_postgres_runtime import engine as engine
 
-from finance_quant.application import forward_label_capture, forward_score_capture
+from finance_quant.application import forward_label_capture, forward_score_capture, forward_verification
 from finance_quant.application.forward_verification import enqueue_forward_verification
 from finance_quant.application.research_requests import (
     lookup_label_snapshot_metas,
@@ -41,6 +41,7 @@ KEY = "label-publish-fixture"
 class OfflineLabels(OfflineQuotes):
     missing: tuple[str, ...] = ()
     zero = False
+    wrong_factor = False
 
     def query(self, api, **params):
         result = super().query(api, **params)
@@ -49,12 +50,16 @@ class OfflineLabels(OfflineQuotes):
         code = params["ts_code"]
         if code in self.missing:
             return result.iloc[:0]
+        factor = 2.0 if code == CODES[0] and not self.zero else 1.0
         if api == "adj_factor":
-            result.loc[1, "adj_factor"] = 2.0 if code == CODES[0] else 1.0
+            result.loc[1, "adj_factor"] = 1.2 if self.wrong_factor and code == CODES[0] else factor
             return result
         target = dict(zip(CODES, (12.0, 11.0, 9.0), strict=True))[code]
-        opening = (10.0 if self.zero else target) / (2.0 if code == CODES[0] else 1.0)
+        opening = (10.0 if self.zero else target) / factor
         result.loc[:, ["open", "close"]] = [[10.0, 10.0], [opening, opening]]
+        result["high"], result["low"] = result["close"] + 0.15, result["close"] - 0.15
+        result["pre_close"] = [10.0, 10.0 / factor]
+        result["pct_chg"] = (result["close"] / result["pre_close"] - 1) * 100
         return result
 
 
@@ -118,6 +123,12 @@ def test_capture_seals_through_the_real_verification_worker(engine, label_setup,
     )
     assert datetime.fromisoformat(capture["captured_at"]) == max(responses)
     assert all(file_sha256(root / path / name) == expected for name, expected in receipt["files"].items())
+    labels = pd.read_parquet(root / path / "market.parquet")
+    if case == "complete":
+        split = labels.loc[labels.adj_factor.eq(2.0)].iloc[0]
+        assert (split["open"], split["close"], split["change"]) == pytest.approx((6.0, 6.0, 0.2))
+    elif case == "zero":
+        assert labels["change"].eq(0.0).all()
     assert publish() == receipt
     assert len(provider.calls) == 8
     with pytest.raises(ValueError):
@@ -147,6 +158,56 @@ def test_capture_seals_through_the_real_verification_worker(engine, label_setup,
         assert receipt["rows"] == 6
         assert result["excess_return_pp"] == pytest.approx(0.0 if case == "zero" else 13.333333333)
     print(f"capture={capture['captured_at']}, rows={receipt['rows']}, excess_pp={result['excess_return_pp']}")
+
+
+def test_wrong_factor_with_flat_quotes_cannot_publish(label_setup):
+    root, store, row, provider, publish = label_setup
+    provider.zero = True
+    provider.wrong_factor = True
+    with pytest.raises(ValueError, match="adjustment continuity failed"):
+        publish()
+    assert not lookup_label_snapshot_metas(root)
+    assert enqueue_forward_verification(store, root, row["id"], key="no-label-with-wrong-factor") is None
+    assert _stored_registration(store.engine)["result"] is None
+
+
+@pytest.mark.parametrize("damage", ["bad-factor", "missing-change", "nonfinite-change"])
+def test_worker_rechecks_daily_change_in_a_pinned_managed_label(label_setup, monkeypatch, damage):
+    root, store, row, provider, publish = label_setup
+    provider.zero = True
+    publish()
+    ((path, manifest, _),) = lookup_label_snapshot_metas(root)
+    leaf = root / path
+    market_path = leaf / "market.parquet"
+    market = pd.read_parquet(market_path).assign(change=0.0)
+    if damage == "bad-factor":
+        market.loc[1, "adj_factor"] = 1.2
+    elif damage == "missing-change":
+        market = market.drop(columns="change")
+    else:
+        market.loc[1, "change"] = float("nan")
+    market.to_parquet(market_path, index=False)
+    manifest["files"]["market.parquet"] = file_sha256(market_path)
+    manifest["id"] = managed_label_snapshot_id(manifest)
+    (leaf / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    leaf.rename(leaf.with_name(label_snapshot_leaf_name(manifest)))
+    ((path, manifest, digest),) = lookup_label_snapshot_metas(root)
+    assert enqueue_forward_verification(store, root, row["id"], key="invalid-label-discovery") is None
+
+    # Bypass discovery to exercise the actual worker against a previously pinned bad version.
+    binding = {
+        "snapshot_dir": path.as_posix(),
+        "manifest_sha256": digest,
+        "data_version": manifest["id"],
+        "files": manifest["files"],
+        "captured_at": manifest["label_capture"]["captured_at"],
+    }
+    monkeypatch.setattr(forward_verification, "_first_labels", lambda *_: binding)
+    queued = enqueue_forward_verification(store, root, row["id"], key="invalid-pinned-label")
+    attempt, task = _execute(store, root, queued)
+    assert task["status"] == attempt["status"] == "failed"
+    assert task["error"] == "invalid-label-snapshot"
+    assert _stored_registration(store.engine)["result"] is None
 
 
 @pytest.mark.parametrize("mode", ["early", "exact", "backward-response"])
