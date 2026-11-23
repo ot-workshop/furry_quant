@@ -33,11 +33,13 @@ from finance_quant.data.historical_warehouse import warehouse_header, warehouse_
 from finance_quant.data.industries import optional_industries
 from finance_quant.data.managed import atomic_json, coverage_report
 from finance_quant.data.market import (
+    LABEL_SNAPSHOT_LOCATION,
+    LABEL_SNAPSHOT_PREFIX,
     SCORE_SNAPSHOT_LOCATION,
     SCORE_SNAPSHOT_PREFIX,
     FrozenMarketSnapshot,
-    is_score_snapshot_manifest,
     load_market,
+    validate_label_snapshot_identity,
     validate_score_snapshot_identity,
 )
 from finance_quant.data.market_universe import market_option, market_roots
@@ -83,7 +85,9 @@ def _backtest_dict(config):
 
 def lookup_snapshot_meta(data_root: Path, snapshot_id: str, *, allow_score: bool = False) -> tuple[Path, dict, str]:
     """Bind one published leaf without opening market data or following filesystem aliases."""
-    if not allow_score and snapshot_id.startswith(SCORE_SNAPSHOT_PREFIX):
+    if snapshot_id.startswith(LABEL_SNAPSHOT_PREFIX) or (
+        not allow_score and snapshot_id.startswith(SCORE_SNAPSHOT_PREFIX)
+    ):
         raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
     matches = _find_snapshot_metas(data_root, snapshot_id, allow_score=allow_score)
     if snapshot_id not in matches:
@@ -142,6 +146,9 @@ def _find_snapshot_metas(
                     yield path
 
     def candidates(research):
+        if snapshot_id is None:
+            yield from directories(research / LABEL_SNAPSHOT_LOCATION[1])
+            return
         yield from directories(research / "subsets")
         for batch in directories(research / "downloads"):
             yield from directories(batch / "snapshots")
@@ -188,16 +195,18 @@ def _find_snapshot_metas(
             if snapshot_id is not None and identifier != snapshot_id:
                 continue
             relative = leaf.relative_to(root)
-            if snapshot_id is None and is_score_snapshot_manifest(manifest):
-                continue
-            validate_score_snapshot_identity(relative, manifest)
             if snapshot_id is None:
+                try:
+                    validate_label_snapshot_identity(relative, manifest)
+                except ValueError:
+                    continue
                 if identifier in seen:
                     matches.pop(identifier, None)
                     continue
                 seen.add(identifier)
-                if "label_capture" not in manifest:
-                    continue
+            else:
+                validate_score_snapshot_identity(relative, manifest)
+                validate_label_snapshot_identity(relative, manifest)
             if mode(leaf / "rejected.json") is not None:
                 if snapshot_id is None:
                     continue

@@ -44,19 +44,36 @@ def _database_now(engine: Engine) -> datetime:
         return connection.execute(text("select clock_timestamp()")).scalar_one()
 
 
-def _check_window(sample: datetime, close: datetime, deadline: datetime) -> None:
-    if not close < sample < deadline:
+def _check_window(sample: datetime, close: datetime, deadline: datetime | None) -> None:
+    if deadline is None:
+        if sample < close:
+            raise ScoreInputError("before-label-capture-maturity")
+    elif not close < sample < deadline:
         raise ScoreInputError("outside-score-capture-window")
 
 
-class _ScoreCapture(ManagedFetcher):
+class _ForwardCapture(ManagedFetcher):
     """Add database-clock observations around actual provider calls to the managed raw ledger."""
 
-    def __init__(self, provider, root: Path, catalog: Catalog, job_id: str, engine: Engine, close, deadline):
+    def __init__(
+        self,
+        provider,
+        root: Path,
+        catalog: Catalog,
+        job_id: str,
+        engine: Engine,
+        close: datetime,
+        deadline: datetime | None,
+    ):
         super().__init__(provider, root, catalog, job_id, refresh=False, scope={})
         self.engine, self.close, self.deadline = engine, close, deadline
+        self.allow_empty_stock = deadline is None
         self.observed: dict[str, tuple[datetime, datetime]] = {}
         self.receipts: list[dict] = []
+
+    @property
+    def phase(self) -> str:
+        return "label" if self.deadline is None else "score"
 
     def request(self, api: str, params: dict) -> pd.DataFrame:
         started = _database_now(self.engine)
@@ -72,15 +89,15 @@ class _ScoreCapture(ManagedFetcher):
         _check_window(_database_now(self.engine), self.close, self.deadline)
         previous, _ = self.cached_partition(key)
         if previous is not None and previous["status"] == "succeeded":
-            raise ScoreInputError("score-capture-reused-cache")
+            raise ScoreInputError(f"{self.phase}-capture-reused-cache")
         frame = self.get(api, **params)
         interval = self.observed.pop(key, None)
         if interval is None or frame is None:
-            raise ScoreInputError("score-capture-request-failed")
+            raise ScoreInputError(f"{self.phase}-capture-request-failed")
         started, received = interval
         _check_window(received, self.close, self.deadline)
         if received < started:
-            raise ScoreInputError("invalid-score-capture-clock")
+            raise ScoreInputError(f"invalid-{self.phase}-capture-clock")
         ledger = self.catalog.partition(key)
         request = self.requests[-1]
         if (
@@ -92,7 +109,7 @@ class _ScoreCapture(ManagedFetcher):
             or any(request.get(field) != ledger[field] for field in ("sha256", "raw_path", "rows", "fetched_at"))
             or not all(request.get(field) == value for field, value in specification.items())
         ):
-            raise ScoreInputError("score-capture-ledger-mismatch")
+            raise ScoreInputError(f"{self.phase}-capture-ledger-mismatch")
         raw = self.root / ledger["raw_path"]
         receipt = raw.with_suffix(".json")
         try:
@@ -104,9 +121,9 @@ class _ScoreCapture(ManagedFetcher):
                 or file_sha256(raw) != ledger["sha256"]
                 or json.loads(receipt.read_text(encoding="utf-8")) != request
             ):
-                raise ScoreInputError("score-capture-receipt-mismatch")
+                raise ScoreInputError(f"{self.phase}-capture-receipt-mismatch")
         except (OSError, ValueError) as error:
-            raise ScoreInputError("score-capture-receipt-mismatch") from error
+            raise ScoreInputError(f"{self.phase}-capture-receipt-mismatch") from error
         self.receipts.append(
             {
                 **specification,
@@ -119,7 +136,9 @@ class _ScoreCapture(ManagedFetcher):
         return frame
 
 
-def _registered_source(engine: Engine, storage_root: Path, registration: dict, provider_id: str) -> bool:
+def _registered_source(
+    engine: Engine, storage_root: Path, registration: dict, provider_id: str, *, phase: str = "score"
+) -> bool:
     """Resolve the frozen dataset through the ready dataset record, never a provider-supplied label."""
     identifier = registration["dataset_id"]
     if identifier is None:
@@ -127,7 +146,7 @@ def _registered_source(engine: Engine, storage_root: Path, registration: dict, p
     with engine.connect() as connection:
         saved = connection.execute(select(dataset).where(dataset.c.id == identifier)).mappings().one_or_none()
     if saved is None or saved["status"] != "ready" or saved["manifest"].get("kind") != "market_snapshot":
-        raise ScoreInputError("score-capture-source-unavailable")
+        raise ScoreInputError(f"{phase}-capture-source-unavailable")
     source = storage_root / saved["relative_path"]
     manifest_path = source / "manifest.json"
     try:
@@ -136,24 +155,24 @@ def _registered_source(engine: Engine, storage_root: Path, registration: dict, p
             or source.resolve(strict=True) != source
             or manifest_path.resolve(strict=True) != manifest_path
         ):
-            raise ScoreInputError("score-capture-source-unavailable")
+            raise ScoreInputError(f"{phase}-capture-source-unavailable")
         record = snapshot_dataset_record(source, storage_root, request={})
         payload = manifest_path.read_bytes()
         if sha256_bytes(payload) != record["manifest"]["source_manifest_sha256"]:
-            raise ScoreInputError("score-capture-source-mismatch")
+            raise ScoreInputError(f"{phase}-capture-source-mismatch")
         manifest = json.loads(payload)
     except (OSError, ValueError) as error:
-        raise ScoreInputError("score-capture-source-unavailable") from error
+        raise ScoreInputError(f"{phase}-capture-source-unavailable") from error
     if (
         record["id"] != identifier
         or record["manifest"] != saved["manifest"]
         or manifest.get("provider_id") != provider_id
     ):
-        raise ScoreInputError("score-capture-source-mismatch")
+        raise ScoreInputError(f"{phase}-capture-source-mismatch")
     return manifest.get("is_synthetic") is True
 
 
-def _capture_frames(fetch: _ScoreCapture, row: dict, sessions: pd.DatetimeIndex):
+def _capture_frames(fetch: _ForwardCapture, row: dict, sessions: pd.DatetimeIndex):
     start, end = sessions[0].strftime("%Y%m%d"), sessions[-1].strftime("%Y%m%d")
     dates = {"start_date": start, "end_date": end}
     calendar = fetch.capture("trade_cal", exchange="SSE", **dates).sort_values("date").reset_index(drop=True)
@@ -190,22 +209,38 @@ def _capture_frames(fetch: _ScoreCapture, row: dict, sessions: pd.DatetimeIndex)
     return market, benchmark, calendar, coverage
 
 
-def _published(
-    target: Path, row: dict, provider_id: str, deadline: datetime, now: datetime, *, leaf_name: str | None = None
-) -> dict:
+def _read_published(target: Path, phase: str) -> tuple[dict, bytes]:
     if target.resolve(strict=True) != target:
-        raise ScoreInputError("score-publication-path-mismatch")
+        raise ScoreInputError(f"{phase}-publication-path-mismatch")
     for name in ("manifest.json", "market.parquet", "benchmark.parquet", "calendar.parquet"):
         path = target / name
         if path.resolve(strict=True) != path or not S_ISREG(path.lstat().st_mode):
-            raise ScoreInputError("score-publication-path-mismatch")
+            raise ScoreInputError(f"{phase}-publication-path-mismatch")
     with (target / "manifest.json").open("rb") as stream:
         payload = stream.read(1024 * 1024 + 1)
     if len(payload) > 1024 * 1024:
-        raise ScoreInputError("score-publication-manifest-too-large")
+        raise ScoreInputError(f"{phase}-publication-manifest-too-large")
     manifest = json.loads(payload)
     if not isinstance(manifest, dict):
-        raise ScoreInputError("score-publication-conflict")
+        raise ScoreInputError(f"{phase}-publication-conflict")
+    return manifest, payload
+
+
+def _publication_root(data_root: Path, location: tuple[str, ...], phase: str) -> Path:
+    root = data_root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    for name in location:
+        root = root / name
+        root.mkdir(exist_ok=True)
+        if root.resolve(strict=True) != root:
+            raise ScoreInputError(f"{phase}-publication-path-mismatch")
+    return root
+
+
+def _published(
+    target: Path, row: dict, provider_id: str, deadline: datetime, now: datetime, *, leaf_name: str | None = None
+) -> dict:
+    manifest, payload = _read_published(target, "score")
     try:
         validate_score_snapshot_identity(Path(*SCORE_SNAPSHOT_LOCATION, leaf_name or target.name), manifest)
     except ValueError:
@@ -257,13 +292,7 @@ def publish_forward_score_snapshot(
         raise ScoreInputError("score-capture-missing-warmup")
 
     provider_id = provider_identifier(provider)
-    root = data_root.resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    for name in SCORE_SNAPSHOT_LOCATION:
-        root = root / name
-        root.mkdir(exist_ok=True)
-        if root.resolve(strict=True) != root:
-            raise ScoreInputError("score-publication-path-mismatch")
+    root = _publication_root(data_root, SCORE_SNAPSHOT_LOCATION, "score")
     with FileLock(root / f".{publication_id}.lock"):
         completed = list(root.glob(f"{publication_id}-*"))
         if len(completed) > 1:
@@ -278,7 +307,7 @@ def publish_forward_score_snapshot(
             catalog = Catalog(raw)
             try:
                 catalog.begin_job(publication_id, {"registration_id": registration_id}, 2 + 5 * len(row["pool_codes"]))
-                fetch = _ScoreCapture(provider, raw, catalog, publication_id, engine, close, deadline)
+                fetch = _ForwardCapture(provider, raw, catalog, publication_id, engine, close, deadline)
                 market, benchmark, calendar, coverage = _capture_frames(fetch, row, sessions)
                 captured = max(datetime.fromisoformat(item["response_received_at"]) for item in fetch.receipts)
                 catalog.finish(publication_id, "complete", {"captured_at": captured.isoformat()})
