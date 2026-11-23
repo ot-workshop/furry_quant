@@ -70,6 +70,7 @@ def confirm_attempt(
 
     On retry after an uncertain commit, the first row lock waits for the prior transaction
     and observes the persisted status before the deadline can be evaluated again.
+    A sealed result is replayed only for the same bound evidence.
     """
     digest = canonical_sha256(evidence)
     with store.engine.connect().execution_options(isolation_level="READ COMMITTED") as connection:
@@ -85,10 +86,12 @@ def confirm_attempt(
             return _seal_success(store, connection, attempt_id, digest, task_result)
 
 
-def _stopped_attempt(row: dict) -> Confirmation | None:
+def _stopped_attempt(row: dict, digest: str) -> Confirmation | None:
     if not row:
         return Confirmation(False, None, "attempt-missing")
     if row["status"] == "succeeded":
+        if not _matches_evidence(row, digest):
+            return Confirmation(False, None, "evidence-mismatch")
         return Confirmation(True, row["sealed_at"], "already-sealed")
     if row["status"] not in ("queued", "running"):
         return Confirmation(False, None, f"attempt-status-{row['status']}")
@@ -106,7 +109,7 @@ def _matches_evidence(row: dict, digest: str) -> bool:
 
 def _record_evidence(connection: Connection, attempt_id: str, evidence: dict, digest: str) -> Confirmation | None:
     row = _lock_attempt(connection, attempt_id)
-    if (stopped := _stopped_attempt(row)) is not None:
+    if (stopped := _stopped_attempt(row, digest)) is not None:
         return stopped
     if any(row[key] is not None for key in ("evidence", "evidence_sha256", "evidence_row_id", "staging_at")):
         return None if _matches_evidence(row, digest) else Confirmation(False, None, "evidence-mismatch")
@@ -120,7 +123,7 @@ def _record_evidence(connection: Connection, attempt_id: str, evidence: dict, di
 
 def _stage_evidence(connection: Connection, attempt_id: str, digest: str) -> Confirmation:
     row = _lock_attempt(connection, attempt_id)
-    if (stopped := _stopped_attempt(row)) is not None:
+    if (stopped := _stopped_attempt(row, digest)) is not None:
         return stopped
     if not _matches_evidence(row, digest):
         return Confirmation(False, None, "evidence-mismatch")
@@ -145,7 +148,7 @@ def _seal_success(
     task_result: dict | None,
 ) -> Confirmation:
     row = _lock_attempt(connection, attempt_id)
-    if (stopped := _stopped_attempt(row)) is not None:
+    if (stopped := _stopped_attempt(row, digest)) is not None:
         return stopped
     if row["staging_at"] is None:
         return Confirmation(False, None, "no-staging-proof")

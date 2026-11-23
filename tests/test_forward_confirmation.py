@@ -87,6 +87,16 @@ def test_tampered_evidence_can_never_be_sealed():
     assert result.detail == "evidence-mismatch"
 
 
+def test_already_sealed_requires_the_original_evidence_row_binding():
+    row = _row(status="succeeded", sealed_at=NOW, evidence_row_id="other-attempt")
+    connection = _Connection(row, DEADLINE)
+    store = Mock()
+    result = forward._seal_success(store, connection, "fat-1", DIGEST, None)
+    assert result == forward.Confirmation(False, None, "evidence-mismatch")
+    assert connection.updates == []
+    store.finish.assert_not_called()
+
+
 def test_missing_staging_proof_is_not_a_success():
     connection = _Connection(_row(staging_at=None), NOW)
     result = forward._seal_success(Mock(), connection, "fat-1", DIGEST, None)

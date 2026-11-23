@@ -179,8 +179,18 @@ def test_confirmation_uses_committed_proofs_and_the_post_lock_clock(store, zone,
         assert row["sealed_at"] == result.sampled_at < deadline
         assert row["status"] == task["status"] == "succeeded"
         assert task["result"] == {"proof": "sealed"}
-        replay = confirm_attempt(store, attempt_id=attempt_id, evidence=EVIDENCE)
+        replay = confirm_attempt(store, attempt_id=attempt_id, evidence=EVIDENCE, task_result={"proof": "replacement"})
         assert replay.sealed and replay.detail == "already-sealed" and replay.sampled_at == row["sealed_at"]
+        mismatch = confirm_attempt(
+            store, attempt_id=attempt_id, evidence={**EVIDENCE, "ranked": ["B"]}, task_result={"proof": "replacement"}
+        )
+        assert not mismatch.sealed and mismatch.detail == "evidence-mismatch" and mismatch.sampled_at is None
+        with engine.connect() as connection:
+            reread = (
+                connection.execute(select(forward_attempt).where(forward_attempt.c.id == attempt_id)).mappings().one()
+            )
+        assert dict(reread) == dict(row)
+        assert store.get(binding["task_id"]) == task
     else:
         assert not result.sealed and result.detail == "deadline-passed"
         assert result.sampled_at >= deadline
