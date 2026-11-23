@@ -124,6 +124,12 @@ def normalize_response(api: str, raw: pd.DataFrame, params: dict, *, allow_empty
     return frame.sort_values("date").reset_index(drop=True)
 
 
+def provider_identifier(provider) -> str:
+    settings = getattr(provider, "settings", None)
+    origin = settings.http_url if settings else f"offline:{type(provider).__module__}.{type(provider).__qualname__}"
+    return sha256_text(origin)
+
+
 class ManagedFetcher:
     def __init__(
         self,
@@ -135,9 +141,7 @@ class ManagedFetcher:
         scope: dict,
     ):
         self.provider, self.root, self.catalog, self.job_id, self.refresh = provider, root, catalog, job_id, refresh
-        settings = getattr(provider, "settings", None)
-        origin = settings.http_url if settings else f"offline:{type(provider).__module__}.{type(provider).__qualname__}"
-        self.provider_id = sha256_text(origin)
+        self.provider_id = provider_identifier(provider)
         self.generation = "base"
         manifest_path = root / "manifest.json"
         if manifest_path.exists():

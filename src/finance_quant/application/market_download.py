@@ -24,7 +24,7 @@ from finance_quant.data.catalog import Catalog, utc_now
 from finance_quant.data.execution_universe import validate_execution_universe
 from finance_quant.data.index_universe import historical_codes, members_on, normalize_memberships
 from finance_quant.data.managed import ManagedFetcher, atomic_json, coverage_report, month_ranges, year_ranges
-from finance_quant.data.market import SnapshotFetcher, load_market
+from finance_quant.data.market import SnapshotFetcher, load_market, write_market_snapshot_files
 from finance_quant.data.network_budget import DownloadPaused, NetworkBudget
 from finance_quant.data.providers import TushareProvider, TushareSettings, normalize_calendar, normalize_index_daily
 from finance_quant.data.providers.baostock import BaoStockProvider
@@ -901,8 +901,7 @@ def export_snapshot(root, identifier, version_id):
     manifest_path = snapshot / "manifest.json"
     if manifest_path.exists():
         return load_market(snapshot)[3]["id"]
-    for name, frame in [("market", market), ("benchmark", benchmark), ("calendar", calendar)]:
-        _save(snapshot / f"{name}.parquet", frame)
+    files = write_market_snapshot_files(snapshot, market, benchmark, calendar)
     manifest = {
         "schema_version": "market-v4-shared",
         "source": "official_tushare_shared",
@@ -930,10 +929,7 @@ def export_snapshot(root, identifier, version_id):
         "rows": len(market),
         "is_synthetic": False,
         "coverage": coverage,
-        "files": {
-            f"{name}.parquet": shared.digest(snapshot / f"{name}.parquet")
-            for name in ["market", "benchmark", "calendar"]
-        },
+        "files": files,
         "shared_version": version_id,
         "universe_type": "fixed_user_selection",
         "point_in_time_certified": False,

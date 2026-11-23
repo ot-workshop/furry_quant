@@ -19,6 +19,8 @@ from finance_quant.data.quality import adjustment_discontinuities, published_adj
 from finance_quant.data.reconciliation import validate_published_sources
 from finance_quant.data.shared_market import validate_snapshot
 
+SCORE_SNAPSHOT_PREFIX = "forward-score-"
+
 
 class SnapshotFetcher:
     def __init__(self, provider: TushareProvider, root: Path):
@@ -61,6 +63,20 @@ class SnapshotFetcher:
         self.requests.append(metadata)
         print(f"{api}: {len(frame)} rows", flush=True)
         return frame
+
+
+def write_market_snapshot_files(
+    root: Path, market: pd.DataFrame, benchmark: pd.DataFrame, calendar: pd.DataFrame
+) -> dict:
+    """Write the three managed payloads and return their physical digests before publishing a manifest."""
+    files = {}
+    for name, frame in (("market", market), ("benchmark", benchmark), ("calendar", calendar)):
+        path = root / f"{name}.parquet"
+        temporary = path.with_suffix(".pending.parquet")
+        frame.to_parquet(temporary, index=False)
+        temporary.replace(path)
+        files[path.name] = file_sha256(path)
+    return files
 
 
 def load_market(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:

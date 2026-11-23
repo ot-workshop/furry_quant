@@ -32,7 +32,7 @@ from finance_quant.data.financials import FinancialBinding, FinancialStore, cove
 from finance_quant.data.historical_warehouse import warehouse_header, warehouse_option
 from finance_quant.data.industries import optional_industries
 from finance_quant.data.managed import atomic_json, coverage_report
-from finance_quant.data.market import FrozenMarketSnapshot, load_market
+from finance_quant.data.market import SCORE_SNAPSHOT_PREFIX, FrozenMarketSnapshot, load_market
 from finance_quant.data.market_universe import market_option, market_roots
 from finance_quant.data.pool_inputs import security_coverage
 from finance_quant.data.shared_market import validation_counts
@@ -74,8 +74,10 @@ def _backtest_dict(config):
     return result
 
 
-def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict, str]:
+def lookup_snapshot_meta(data_root: Path, snapshot_id: str, *, allow_score: bool = False) -> tuple[Path, dict, str]:
     """Bind one published leaf without opening market data or following filesystem aliases."""
+    if not allow_score and snapshot_id.startswith(SCORE_SNAPSHOT_PREFIX):
+        raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
     matches = _find_snapshot_metas(data_root, snapshot_id)
     if snapshot_id not in matches:
         raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
@@ -226,6 +228,8 @@ def snapshot_registry(data_root: Path) -> dict:
                 continue
             market, benchmark, calendar, manifest = load_market(path)
             identifier = manifest["id"]
+            if identifier.startswith(SCORE_SNAPSHOT_PREFIX):
+                continue
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", identifier):
                 continue
             found.setdefault(identifier, (market, benchmark, calendar, manifest))
