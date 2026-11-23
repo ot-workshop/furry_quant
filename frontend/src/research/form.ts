@@ -244,13 +244,37 @@ export function financialCoverage(
   );
 }
 
-/** A fundamental factor is selectable only when the dataset carries statements. */
+export const FINANCIAL_VERSION_REQUIRED =
+  "暂无可用财务版本，请先在「数据管理 → 财务数据」下载。";
+
+const FILLABLE_FINANCIAL_FACTORS = new Set(["value", "gross_margin_ttm"]);
+
+export function requiresFinancialVersion(
+  definition: FactorDefinition,
+): boolean {
+  return (
+    Boolean(definition.requires_financials) ||
+    FILLABLE_FINANCIAL_FACTORS.has(definition.name)
+  );
+}
+
 export function factorAvailable(
+  definition: FactorDefinition,
+  coverage: { covered: number; total: number } | null,
+  hasFinancialVersion: boolean,
+): boolean {
+  return (
+    !requiresFinancialVersion(definition) ||
+    (hasFinancialVersion && factorFitsCoverage(definition, coverage))
+  );
+}
+
+function factorFitsCoverage(
   definition: FactorDefinition,
   coverage: { covered: number; total: number } | null,
 ): boolean {
   return (
-    ["value", "gross_margin_ttm"].includes(definition.name) ||
+    FILLABLE_FINANCIAL_FACTORS.has(definition.name) ||
     !definition.requires_financials ||
     Boolean(coverage && coverage.covered >= 2)
   );
@@ -261,10 +285,12 @@ export function pruneFactors(
   form: FormState,
   options: ResearchOptions,
 ): FormState {
+  // A missing version blocks submission, but the existing draft must remain editable.
+  if (!options.financial_data?.version) return form;
   const coverage = financialCoverage(form, options);
   const unavailable = new Set(
     options.factor_definitions
-      .filter((definition) => !factorAvailable(definition, coverage))
+      .filter((definition) => !factorFitsCoverage(definition, coverage))
       .map((definition) => definition.name),
   );
   if (!unavailable.size) return form;
@@ -304,7 +330,15 @@ export function defaultForm(options: ResearchOptions): FormState {
       : options.snapshots[0];
   const historical = historicalOption(options);
   const market = marketOption(options);
-  return {
+  const defaultFactors = options.financial_data?.version
+    ? defaults.factors
+    : defaults.factors.filter((factor) => {
+        const definition = options.factor_definitions.find(
+          (item) => item.name === factor.name,
+        );
+        return !definition || !requiresFinancialVersion(definition);
+      });
+  const form: FormState = {
     name: defaults.name ?? "我的研究",
     sourceMode: snapshot
       ? "snapshot"
@@ -323,7 +357,7 @@ export function defaultForm(options: ResearchOptions): FormState {
     filtersEnabled:
       Boolean(defaults.data.filters) ||
       (!snapshot && !historical && Boolean(market)),
-    factors: factorRows(defaults.factors, options.factor_definitions),
+    factors: factorRows(defaultFactors, options.factor_definitions),
     neutralization: defaults.neutralization?.mode ?? "off",
     industryVersion:
       defaults.neutralization?.industry_version ??
@@ -338,6 +372,9 @@ export function defaultForm(options: ResearchOptions): FormState {
     groups: defaults.evaluation.groups,
     minCrossSection: defaults.evaluation.min_cross_section,
   };
+  return defaultFactors.length === defaults.factors.length
+    ? form
+    : equalWeights(form);
 }
 
 /** Restore a submitted request into the form, reporting anything that no longer applies. */
@@ -847,7 +884,9 @@ export function buildRequest(
   const data = buildData(form, options, errors);
   const factors = buildFactors(form, options.factor_definitions, errors);
   const coverage = financialCoverage(form, options);
+  const hasFinancialVersion = Boolean(options.financial_data?.version);
   if (
+    hasFinancialVersion &&
     factors.some(
       (factor) =>
         factor.name === "value" && factor.missing_policy === "exclude",
@@ -862,15 +901,17 @@ export function buildRequest(
     .map((row) => options.factor_definitions.find((d) => d.name === row.name))
     .filter(
       (definition): definition is FactorDefinition =>
-        Boolean(definition?.requires_financials) &&
-        !factorAvailable(definition as FactorDefinition, coverage),
+        definition !== undefined &&
+        !factorAvailable(definition, coverage, hasFinancialVersion),
     );
-  if (blocked.length)
+  if (blocked.length) {
+    const names = blocked.map((definition) => definition.label).join("、");
     errors.push(
-      `当前数据集没有财务数据，不能使用基本面因子：${blocked
-        .map((definition) => definition.label)
-        .join("、")}。请先在“数据管理 → 财务数据”下载。`,
+      hasFinancialVersion
+        ? `当前数据集没有财务数据，不能使用基本面因子：${names}。请先在“数据管理 → 财务数据”下载。`
+        : `${names}暂不能使用。${FINANCIAL_VERSION_REQUIRED}`,
     );
+  }
   const backtest = buildBacktest(form, errors);
   const evaluation = buildEvaluation(form, errors);
   checkDates(

@@ -91,9 +91,14 @@ test("earnings yield missing policy survives request and draft round trips witho
     const restored = f.formFromRequest(built.request, opts).form;
     assert.equal(restored.factors.find((row) => row.name === "value").missingPolicy, missingPolicy);
     assert.equal(f.mergeDraft(base, restored, opts).factors.find((row) => row.name === "value").missingPolicy, missingPolicy);
+    const noReports = { ...opts, financial_data: null };
+    const blocked = f.buildRequest(form, noReports);
+    assert.equal(blocked.request, null);
+    assert.match(blocked.errors.join(), /暂无可用财务版本/);
+    assert.doesNotMatch(blocked.errors.join(), /切换缺失处理/);
   }
-  const noReports = { ...opts, financial_data: null, snapshots: opts.snapshots.map((row) => ({ ...row, financial_coverage: null })) };
+  const insufficientCoverage = { ...opts, snapshots: opts.snapshots.map((row) => ({ ...row, financial_coverage: { covered: 1, total: 3 } })) };
   const strict = { ...base, factors: base.factors.map((row) => row.name === "value" ? { ...row, missingPolicy: "exclude" } : row) };
-  assert.match(f.buildRequest(strict, noReports).errors.join(), /切换缺失处理/);
-  assert.deepEqual(f.buildRequest(base, noReports).errors, []);
+  assert.match(f.buildRequest(strict, insufficientCoverage).errors.join(), /切换缺失处理/);
+  assert.deepEqual(f.buildRequest(base, insufficientCoverage).errors, []);
 });
