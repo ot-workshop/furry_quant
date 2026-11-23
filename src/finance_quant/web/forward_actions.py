@@ -11,7 +11,7 @@ from sqlalchemy import Connection, Engine, select
 
 from finance_quant.application.forward_score import ScoreInputError, enqueue_forward_score
 from finance_quant.application.forward_verification import enqueue_forward_verification
-from finance_quant.persistence.forward import attempt_for_submission_key
+from finance_quant.persistence.forward import attempt_for_submission_key, find_attempt_replay
 from finance_quant.persistence.schema import forward_registration
 from finance_quant.persistence.tasks import PgTaskStore
 from finance_quant.task_contracts import TaskConflict, submission_fingerprint
@@ -43,7 +43,7 @@ class _SubmissionConnection:
 def _registration(connection: Connection, identifier: str) -> dict:
     table = forward_registration.c
     row = (
-        connection.execute(select(table.id, table.score_snapshot).where(table.id == identifier))
+        connection.execute(select(table.id, table.name, table.score_snapshot).where(table.id == identifier))
         .mappings()
         .one_or_none()
     )
@@ -62,14 +62,33 @@ def submit_forward_score(engine: Engine, data_root: Path, identifier: str, paylo
     with research_write_gate(engine) as connection:
         scoped = _SubmissionConnection(connection)
         with scoped.connect() as read:
-            bound = _registration(read, identifier)["score_snapshot"]
+            registration = _registration(read, identifier)
             attempt_for_submission_key(read, identifier, "score", key)
+        bound = registration["score_snapshot"]
         if isinstance(bound, dict):
             if bound.get("data_version") != snapshot_id:
                 raise TaskConflict("score-snapshot-already-bound")
         elif not _PUBLISHED_SCORE_ID.fullmatch(snapshot_id):
             raise ScoreInputError("首次评分须使用已发布的受管评分快照")
-        return enqueue_forward_score(PgTaskStore(engine=scoped), data_root, identifier, snapshot_id, key=key)
+        store = PgTaskStore(engine=scoped)
+        try:
+            return enqueue_forward_score(store, data_root, identifier, snapshot_id, key=key)
+        except (ScoreInputError, TaskConflict):
+            raise
+        except ValueError:
+            if bound is None:
+                # A concurrent submission can commit while the first snapshot lookup is failing.
+                # The original transaction is closed. Only replay a committed pair in a fresh read.
+                request = {
+                    "name": registration["name"],
+                    "registration_id": identifier,
+                    "score_snapshot_id": snapshot_id,
+                }
+                with scoped.connect() as read:
+                    replay = find_attempt_replay(store, read, identifier, "score", key, request)
+                if replay is not None:
+                    return replay
+            raise
 
 
 def submit_forward_verification(

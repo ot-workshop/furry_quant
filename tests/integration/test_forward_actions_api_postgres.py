@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from threading import Event
 
 import pandas as pd
 import pytest
@@ -18,12 +19,13 @@ from test_forward_verification_postgres import _stored_registration
 from test_postgres_runtime import engine as engine
 
 from finance_quant.api import create_app
+from finance_quant.application import forward_score
 from finance_quant.application.forward_label_capture import publish_forward_label_snapshot
 from finance_quant.application.research_requests import lookup_snapshot_meta
 from finance_quant.application.tasks import TaskService
 from finance_quant.persistence.maintenance import write_gate
 from finance_quant.persistence.results import PgResultStore
-from finance_quant.persistence.schema import forward_attempt, research_task
+from finance_quant.persistence.schema import forward_attempt, forward_registration, research_task
 from finance_quant.persistence.tasks import PgTaskStore
 
 pytestmark = pytest.mark.skipif(
@@ -158,6 +160,78 @@ def test_manual_score_and_verification_run_in_worker_and_read_back(
     assert two_connection_engine.pool.checkedout() == 0
     with write_gate(engine, exclusive=True):
         assert _stored_registration(engine)["label_snapshot"]["data_version"] == first["id"]
+
+
+@pytest.mark.parametrize("winner", ["same-version", "different-version", "different-stage", "different-key", "none"])
+def test_score_rechecks_committed_key_after_snapshot_lookup_fails(
+    engine, tmp_path, two_connection_engine, monkeypatch, request, winner
+):
+    if winner == "different-stage":
+        label_root, _, verify_row, _, publish_label = request.getfixturevalue("label_setup")
+        publish_label()
+        verify_client = _client(two_connection_engine, label_root, tmp_path, monkeypatch)
+
+    root, row, _, publish = request.getfixturevalue("setup_capture")
+    client = _client(two_connection_engine, root, tmp_path, monkeypatch)
+    identifier = row["id"]
+    published_id = publish()["id"]
+    relative, _, _ = lookup_snapshot_meta(root, published_id, allow_score=True)
+    requested_id = "forward-score-" + "f" * 64 if winner == "different-version" else published_id
+    entered_lookup, finish_lookup = Event(), Event()
+
+    def pause_first_lookup(data_root, snapshot_id, *, allow_score=False):
+        if not entered_lookup.is_set():
+            entered_lookup.set()
+            assert finish_lookup.wait(timeout=15)
+        return lookup_snapshot_meta(data_root, snapshot_id, allow_score=allow_score)
+
+    monkeypatch.setattr(forward_score, "lookup_snapshot_meta", pause_first_lookup)
+
+    def score_binding():
+        with engine.connect() as connection:
+            table = forward_registration.c
+            return connection.scalar(select(table.score_snapshot).where(table.id == identifier))
+
+    before_posts = _queue_rows(engine)
+    body = {"score_snapshot_id": requested_id}
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        pending = workers.submit(_post, client, identifier, "score", body, SCORE_KEY)
+        try:
+            assert entered_lookup.wait(timeout=10)
+            assert two_connection_engine.pool.checkedout() == 1
+            assert score_binding() is None
+            if winner == "different-stage":
+                original = _accepted(_post(verify_client, verify_row["id"], "verify", {}, SCORE_KEY))
+            elif winner != "none":
+                key = "other-score-key" if winner == "different-key" else SCORE_KEY
+                original = _accepted(_post(client, identifier, "score", {"score_snapshot_id": published_id}, key))
+            before = _queue_rows(engine)
+            binding = score_binding()
+            (root / relative / "manifest.json").unlink()
+        finally:
+            finish_lookup.set()
+        response = pending.result(timeout=15)
+
+    assert two_connection_engine.pool.checkedout() == 0
+    with write_gate(engine, exclusive=True):
+        assert _queue_rows(engine) == before
+        assert score_binding() == binding
+    added = 0 if winner == "none" else 1
+    assert [len(after) - len(initial) for initial, after in zip(before_posts, before, strict=True)] == [added, added]
+    if winner == "same-version":
+        assert _accepted(response) == original
+    elif winner == "different-version":
+        assert response.status_code == 409 and "参数已改变" in response.json()["detail"]
+    elif winner == "different-stage":
+        assert response.status_code == 409
+        assert response.json()["detail"] == "该请求标识已用于其他登记或阶段"
+        assert binding is None
+    else:
+        with pytest.raises(ValueError) as error:
+            lookup_snapshot_meta(root, requested_id, allow_score=True)
+        assert response.status_code == 422 and response.json()["detail"] == str(error.value)
+        if winner == "none":
+            assert binding is None
 
 
 @pytest.mark.parametrize("stage", ["score", "verify"])
