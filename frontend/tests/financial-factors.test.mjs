@@ -88,6 +88,33 @@ test("switching to a dataset without statements turns fundamental factors off", 
   assert.equal(pruned.factors.find((row) => row.name === "roe_ttm").weight, 0);
 });
 
+test("a missing financial version preserves the saved factor selection and weights", () => {
+  const opts = { ...withCoverage(0), financial_data: null };
+  const defaults = f.defaultForm(opts);
+  const weights = new Map([["momentum", 60], ["roe_ttm", 40]]);
+  const draft = {
+    factors: defaults.factors.map((row) => ({
+      ...row,
+      enabled: weights.has(row.name),
+      weight: weights.get(row.name) ?? 0,
+    })),
+  };
+  const reopened = f.pruneFactors(f.mergeDraft(defaults, draft, opts), opts);
+  assert.deepEqual(
+    reopened.factors.filter((row) => row.enabled).map(({ name, weight }) => [name, weight]),
+    [["momentum", 60], ["roe_ttm", 40]],
+  );
+  const blocked = f.buildRequest(reopened, opts);
+  assert.equal(blocked.request, null);
+  assert.deepEqual(blocked.errors, [`净资产收益率暂不能使用。${f.FINANCIAL_VERSION_REQUIRED}`]);
+  const restoredOptions = withCoverage(2);
+  const restored = f.pruneFactors(reopened, restoredOptions);
+  assert.deepEqual(
+    f.buildRequest(restored, restoredOptions).request.factors.map(({ name, weight }) => [name, weight]),
+    [["momentum", 0.6], ["roe_ttm", 0.4]],
+  );
+});
+
 test("price-only datasets keep every price factor selectable", () => {
   const opts = withCoverage(0);
   const form = f.defaultForm(opts);

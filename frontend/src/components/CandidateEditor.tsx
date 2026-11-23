@@ -1,4 +1,4 @@
-import { useId, useMemo } from "react";
+import { useId, useMemo, useState } from "react";
 import {
   Button,
   Card,
@@ -51,6 +51,12 @@ export function CandidateEditor({
   const enabled = value.factors.filter((row) => row.enabled);
   const financialVersionHintId = useId();
   const hasFinancialVersion = Boolean(options.financial_data?.version);
+  const [factorMenuOpen, setFactorMenuOpen] = useState(false);
+  const financialVersionHint = hasFinancialVersion ? null : (
+    <Typography.Paragraph id={financialVersionHintId} style={{ margin: 0 }}>
+      {FINANCIAL_VERSION_REQUIRED}
+    </Typography.Paragraph>
+  );
   const setRow = (rowKey: string, patch: Partial<FactorRow>) =>
     onChange({
       ...value,
@@ -144,6 +150,21 @@ export function CandidateEditor({
         aria-describedby={
           hasFinancialVersion ? undefined : financialVersionHintId
         }
+        onOpenChange={setFactorMenuOpen}
+        popupRender={
+          financialVersionHint
+            ? (menu) => (
+                <>
+                  {factorMenuOpen ? (
+                    <div style={{ padding: "6px 8px" }}>
+                      {financialVersionHint}
+                    </div>
+                  ) : null}
+                  {menu}
+                </>
+              )
+            : undefined
+        }
         value={enabled.map((row) => row.key)}
         onChange={(keys: string[]) =>
           onChange({
@@ -179,13 +200,8 @@ export function CandidateEditor({
         style={{ width: "100%" }}
         placeholder="选择因子"
       />
-      {!hasFinancialVersion ? (
-        <Typography.Paragraph
-          id={financialVersionHintId}
-          style={{ margin: "6px 0 0" }}
-        >
-          {FINANCIAL_VERSION_REQUIRED}
-        </Typography.Paragraph>
+      {!factorMenuOpen && financialVersionHint ? (
+        <div style={{ marginTop: 6 }}>{financialVersionHint}</div>
       ) : null}
       {enabled.map((row) => {
         const definition = definitions.find((d) => d.name === row.name);

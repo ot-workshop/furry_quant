@@ -285,6 +285,8 @@ export function pruneFactors(
   form: FormState,
   options: ResearchOptions,
 ): FormState {
+  // A missing version blocks submission, but the existing draft must remain editable.
+  if (!options.financial_data?.version) return form;
   const coverage = financialCoverage(form, options);
   const unavailable = new Set(
     options.factor_definitions
