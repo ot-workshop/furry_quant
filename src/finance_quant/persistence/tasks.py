@@ -27,6 +27,11 @@ def conflict(message):
     return TaskConflict(message)
 
 
+def lock_submissions(connection):
+    """Serialize queue submissions until the caller's transaction ends."""
+    connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SUBMISSION_LOCK})
+
+
 @contextmanager
 def worker_lock(engine=None):
     """Session lock: hold this connection until all children are stopped.
@@ -104,6 +109,11 @@ class PgTaskStore:
     def create(self, request, execution, key, *, connection=None):
         return self._create("research", request, execution, key, 4, connection=connection)
 
+    def find_research_replay(self, request, key, *, connection):
+        """Resolve a research key within a caller's submission transaction."""
+        fingerprint = submission_fingerprint("research", request, key)
+        return self._find_replay(connection, key, fingerprint)
+
     def find_experiment_replay(self, request, key):
         fingerprint = submission_fingerprint("experiment", request, key)
         with self.engine.connect() as connection:
@@ -142,7 +152,7 @@ class PgTaskStore:
         so the caller must not do slow I/O before committing. The queue-limit count sees
         uncommitted rows of the same transaction on purpose; do not add caching here.
         """
-        connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SUBMISSION_LOCK})
+        lock_submissions(connection)
         existing = self._find_replay(connection, key, fingerprint)
         if existing is not None:
             return existing

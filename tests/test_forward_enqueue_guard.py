@@ -22,6 +22,9 @@ class _Result:
     def scalar_one(self):
         return self._rows[0]
 
+    def one_or_none(self):
+        return self.first()
+
 
 class _Connection:
     """Reports one active attempt and records whether anything was written."""
@@ -31,6 +34,8 @@ class _Connection:
 
     def execute(self, statement, params=None):
         sql = str(statement).lower()
+        if sql.startswith(("select pg_advisory_xact_lock", "select forward_attempt.id")):
+            return _Result([])
         if sql.strip().startswith("select 1 from forward_attempt"):
             return _Result([(1,)])
         self.writes.append(sql)
@@ -44,6 +49,9 @@ class _Store:
     def create(self, request, execution, key, *, connection=None):
         self.create_calls += 1
         raise AssertionError("create must not be called when an attempt is active")
+
+    def find_research_replay(self, request, key, *, connection):
+        raise AssertionError("task lookup must not precede the active-attempt check for an unused key")
 
 
 def test_active_attempt_raises_before_creating_a_task():
