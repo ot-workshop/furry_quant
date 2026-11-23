@@ -11,7 +11,7 @@ import pandas as pd
 from sqlalchemy import select, text
 
 from finance_quant.application.research_requests import lookup_snapshot_meta
-from finance_quant.data.market import load_frozen_snapshot
+from finance_quant.data.market import SCORE_SNAPSHOT_PREFIX, load_frozen_snapshot
 from finance_quant.data.symbols import to_qlib
 from finance_quant.persistence.forward import (
     SHANGHAI,
@@ -64,6 +64,12 @@ def _capture_time(row: dict, manifest: dict, deadline: datetime, now: datetime) 
     capture = manifest.get("score_capture")
     if not isinstance(capture, dict) or not isinstance(capture.get("captured_at"), str):
         raise ScoreInputError("missing-score-capture-proof")
+    identifier = manifest.get("id", "")
+    if identifier.startswith(SCORE_SNAPSHOT_PREFIX) and (
+        capture.get("registration_id") != row["id"]
+        or capture.get("registration_sha256") != row["confirmed_evidence_sha256"]
+    ):
+        raise ScoreInputError("score-capture-registration-mismatch")
     try:
         captured_at = datetime.fromisoformat(capture["captured_at"])
     except ValueError:
@@ -102,7 +108,9 @@ def enqueue_forward_score(
     data_root = data_root.resolve()
     # Resolve a first binding outside the shared queue lock. A retry uses the original
     # binding even if its leaf disappeared, so the worker can record that failure.
-    metadata = lookup_snapshot_meta(data_root, snapshot_id) if existing["score_snapshot"] is None else None
+    metadata = (
+        lookup_snapshot_meta(data_root, snapshot_id, allow_score=True) if existing["score_snapshot"] is None else None
+    )
 
     with store.engine.begin() as connection:
         lock_submissions(connection)
@@ -286,7 +294,7 @@ def run_forward_score(store: PgTaskStore, task: dict, data_root: Path) -> None:
         if provenance["dependency_lock_sha256"] != row["data_rules"]["dependency_lock_sha256"]:
             raise ScoreInputError("score-dependency-lock-mismatch")
         try:
-            market, benchmark, calendar, manifest = load_frozen_snapshot(data_root, binding).inputs
+            market, benchmark, calendar, manifest = load_frozen_snapshot(data_root, binding, allow_score=True).inputs
         except (OSError, ValueError):
             raise ScoreInputError("invalid-score-snapshot") from None
         captured_at = _capture_time(row, manifest, deadline, now)

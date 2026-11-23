@@ -32,7 +32,14 @@ from finance_quant.data.financials import FinancialBinding, FinancialStore, cove
 from finance_quant.data.historical_warehouse import warehouse_header, warehouse_option
 from finance_quant.data.industries import optional_industries
 from finance_quant.data.managed import atomic_json, coverage_report
-from finance_quant.data.market import FrozenMarketSnapshot, load_market
+from finance_quant.data.market import (
+    SCORE_SNAPSHOT_LOCATION,
+    SCORE_SNAPSHOT_PREFIX,
+    FrozenMarketSnapshot,
+    is_score_snapshot_manifest,
+    load_market,
+    validate_score_snapshot_identity,
+)
 from finance_quant.data.market_universe import market_option, market_roots
 from finance_quant.data.pool_inputs import security_coverage
 from finance_quant.data.shared_market import validation_counts
@@ -74,9 +81,11 @@ def _backtest_dict(config):
     return result
 
 
-def lookup_snapshot_meta(data_root: Path, snapshot_id: str) -> tuple[Path, dict, str]:
+def lookup_snapshot_meta(data_root: Path, snapshot_id: str, *, allow_score: bool = False) -> tuple[Path, dict, str]:
     """Bind one published leaf without opening market data or following filesystem aliases."""
-    matches = _find_snapshot_metas(data_root, snapshot_id)
+    if not allow_score and snapshot_id.startswith(SCORE_SNAPSHOT_PREFIX):
+        raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
+    matches = _find_snapshot_metas(data_root, snapshot_id, allow_score=allow_score)
     if snapshot_id not in matches:
         raise ValueError(f"未找到可用的数据快照：{snapshot_id}")
     return matches[snapshot_id]
@@ -87,7 +96,12 @@ def lookup_label_snapshot_metas(data_root: Path) -> list[tuple[Path, dict, str]]
     return list(_find_snapshot_metas(data_root, None).values())
 
 
-def _find_snapshot_metas(data_root: Path, snapshot_id: str | None) -> dict[str, tuple[Path, dict, str]]:
+def _find_snapshot_metas(
+    data_root: Path,
+    snapshot_id: str | None,
+    *,
+    allow_score: bool = False,
+) -> dict[str, tuple[Path, dict, str]]:
 
     # Manifest metadata includes security history, not the actual market rows.
     max_manifest_bytes = 1024 * 1024
@@ -131,6 +145,8 @@ def _find_snapshot_metas(data_root: Path, snapshot_id: str | None) -> dict[str, 
         yield from directories(research / "subsets")
         for batch in directories(research / "downloads"):
             yield from directories(batch / "snapshots")
+        if allow_score:
+            yield from directories(research / SCORE_SNAPSHOT_LOCATION[1])
 
     def unique_fields(pairs):
         fields = {}
@@ -171,6 +187,10 @@ def _find_snapshot_metas(data_root: Path, snapshot_id: str | None) -> dict[str, 
             identifier = manifest["id"]
             if snapshot_id is not None and identifier != snapshot_id:
                 continue
+            relative = leaf.relative_to(root)
+            if snapshot_id is None and is_score_snapshot_manifest(manifest):
+                continue
+            validate_score_snapshot_identity(relative, manifest)
             if snapshot_id is None:
                 if identifier in seen:
                     matches.pop(identifier, None)
@@ -200,7 +220,7 @@ def _find_snapshot_metas(data_root: Path, snapshot_id: str | None) -> dict[str, 
                 if snapshot_id is None:
                     continue
                 raise ValueError("数据快照文件摘要无效")
-            matches[identifier] = leaf.relative_to(root), manifest, sha256_bytes(payload)
+            matches[identifier] = relative, manifest, sha256_bytes(payload)
     except (OSError, RuntimeError) as error:
         # Missing published manifests are handled explicitly; any other I/O failure
         # means the scan cannot prove uniqueness, even if it already saw a match.
