@@ -14,18 +14,21 @@ import pandas as pd
 from filelock import FileLock
 from sqlalchemy import Engine, select, text
 
-from finance_quant.application.forward_score import (
-    ScoreInputError,
-    _capture_time,
-    _frozen_schedule,
-    managed_score_snapshot_id,
-)
+from finance_quant.application.forward_score import ScoreInputError, _capture_time, _frozen_schedule
 from finance_quant.application.quote_capture import _assemble_primary_frame
 from finance_quant.application.quote_quality import primary_valid
 from finance_quant.checksums import file_sha256, sha256_bytes
 from finance_quant.data.catalog import Catalog
 from finance_quant.data.managed import ManagedFetcher, atomic_json, coverage_report, provider_identifier
-from finance_quant.data.market import _load_leaf, write_market_snapshot_files
+from finance_quant.data.market import (
+    SCORE_SNAPSHOT_LOCATION,
+    SCORE_SNAPSHOT_TYPE,
+    _load_leaf,
+    managed_score_snapshot_id,
+    score_snapshot_leaf_name,
+    validate_score_snapshot_identity,
+    write_market_snapshot_files,
+)
 from finance_quant.data.symbols import to_qlib
 from finance_quant.persistence.forward import SHANGHAI, canonical_sha256, registration_row_confirmed
 from finance_quant.persistence.market import snapshot_dataset_record
@@ -187,7 +190,9 @@ def _capture_frames(fetch: _ScoreCapture, row: dict, sessions: pd.DatetimeIndex)
     return market, benchmark, calendar, coverage
 
 
-def _published(target: Path, row: dict, provider_id: str, deadline: datetime, now: datetime) -> dict:
+def _published(
+    target: Path, row: dict, provider_id: str, deadline: datetime, now: datetime, *, leaf_name: str | None = None
+) -> dict:
     if target.resolve(strict=True) != target:
         raise ScoreInputError("score-publication-path-mismatch")
     for name in ("manifest.json", "market.parquet", "benchmark.parquet", "calendar.parquet"):
@@ -199,12 +204,15 @@ def _published(target: Path, row: dict, provider_id: str, deadline: datetime, no
     if len(payload) > 1024 * 1024:
         raise ScoreInputError("score-publication-manifest-too-large")
     manifest = json.loads(payload)
+    if not isinstance(manifest, dict):
+        raise ScoreInputError("score-publication-conflict")
+    try:
+        validate_score_snapshot_identity(Path(*SCORE_SNAPSHOT_LOCATION, leaf_name or target.name), manifest)
+    except ValueError:
+        raise ScoreInputError("score-publication-conflict") from None
     if (
-        manifest["id"] != managed_score_snapshot_id(manifest)
-        or manifest.get("provider_id") != provider_id
-        or "snapshot_path" in manifest
+        manifest.get("provider_id") != provider_id
         or manifest.get("score_capture", {}).get("registration_sha256") != row["confirmed_evidence_sha256"]
-        or manifest.get("score_capture", {}).get("publication_id") != target.name
     ):
         raise ScoreInputError("score-publication-conflict")
     captured = _capture_time(row, manifest, deadline, now)
@@ -251,15 +259,17 @@ def publish_forward_score_snapshot(
     provider_id = provider_identifier(provider)
     root = data_root.resolve()
     root.mkdir(parents=True, exist_ok=True)
-    for name in ("research", "subsets"):
+    for name in SCORE_SNAPSHOT_LOCATION:
         root = root / name
         root.mkdir(exist_ok=True)
         if root.resolve(strict=True) != root:
             raise ScoreInputError("score-publication-path-mismatch")
-    target = root / publication_id
     with FileLock(root / f".{publication_id}.lock"):
-        if target.exists() or target.is_symlink():
-            return _published(target, row, provider_id, deadline, _database_now(engine))
+        completed = list(root.glob(f"{publication_id}-*"))
+        if len(completed) > 1:
+            raise ScoreInputError("score-publication-conflict")
+        if completed:
+            return _published(completed[0], row, provider_id, deadline, _database_now(engine))
         _check_window(_database_now(engine), close, deadline)
         synthetic = _registered_source(engine, storage_root.resolve(), row, provider_id)
         with TemporaryDirectory(prefix=".score-", dir=root) as temporary:
@@ -275,11 +285,12 @@ def publish_forward_score_snapshot(
             finally:
                 catalog.close()
 
-            leaf = stage / publication_id
+            leaf = stage / "payload"
             leaf.mkdir()
             files = write_market_snapshot_files(leaf, market, benchmark, calendar)
             manifest = {
                 "schema_version": "market-v2",
+                "publication_type": SCORE_SNAPSHOT_TYPE,
                 "provider_id": provider_id,
                 "codes": row["pool_codes"],
                 "start": sessions[0].strftime("%Y%m%d"),
@@ -302,8 +313,9 @@ def publish_forward_score_snapshot(
                 },
             }
             manifest["id"] = managed_score_snapshot_id(manifest)
+            target = root / score_snapshot_leaf_name(manifest)
             manifest_path = leaf / "manifest.json"
             atomic_json(manifest_path, manifest)
-            proof = _published(leaf, row, provider_id, deadline, _database_now(engine))
+            proof = _published(leaf, row, provider_id, deadline, _database_now(engine), leaf_name=target.name)
             leaf.rename(target)
     return proof

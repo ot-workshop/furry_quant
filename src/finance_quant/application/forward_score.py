@@ -36,13 +36,6 @@ class ScoreInputError(ValueError):
     """An input cannot produce a usable score. Messages are stable audit reasons."""
 
 
-def managed_score_snapshot_id(manifest: dict) -> str:
-    """Bind a newly published score version to its manifest content."""
-    return SCORE_SNAPSHOT_PREFIX + canonical_sha256(
-        {key: value for key, value in manifest.items() if key not in {"id", "snapshot_dir"}}
-    )
-
-
 def _frozen_schedule(row: dict) -> tuple[tuple[date, ...], datetime]:
     rules = row["data_rules"]
     signal = row["signal_date"]
@@ -73,8 +66,7 @@ def _capture_time(row: dict, manifest: dict, deadline: datetime, now: datetime) 
         raise ScoreInputError("missing-score-capture-proof")
     identifier = manifest.get("id", "")
     if identifier.startswith(SCORE_SNAPSHOT_PREFIX) and (
-        identifier != managed_score_snapshot_id(manifest)
-        or capture.get("registration_id") != row["id"]
+        capture.get("registration_id") != row["id"]
         or capture.get("registration_sha256") != row["confirmed_evidence_sha256"]
     ):
         raise ScoreInputError("score-capture-registration-mismatch")
@@ -302,7 +294,7 @@ def run_forward_score(store: PgTaskStore, task: dict, data_root: Path) -> None:
         if provenance["dependency_lock_sha256"] != row["data_rules"]["dependency_lock_sha256"]:
             raise ScoreInputError("score-dependency-lock-mismatch")
         try:
-            market, benchmark, calendar, manifest = load_frozen_snapshot(data_root, binding).inputs
+            market, benchmark, calendar, manifest = load_frozen_snapshot(data_root, binding, allow_score=True).inputs
         except (OSError, ValueError):
             raise ScoreInputError("invalid-score-snapshot") from None
         captured_at = _capture_time(row, manifest, deadline, now)

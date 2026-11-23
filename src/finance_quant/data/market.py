@@ -11,7 +11,7 @@ from stat import S_ISREG
 
 import pandas as pd
 
-from finance_quant.checksums import file_sha256, sha256_bytes, sha256_text
+from finance_quant.checksums import canonical_json_sha256, file_sha256, sha256_bytes, sha256_text
 from finance_quant.data.providers import (
     TushareProvider,
 )
@@ -20,6 +20,48 @@ from finance_quant.data.reconciliation import validate_published_sources
 from finance_quant.data.shared_market import validate_snapshot
 
 SCORE_SNAPSHOT_PREFIX = "forward-score-"
+SCORE_SNAPSHOT_LOCATION = ("research", "scores")
+SCORE_SNAPSHOT_TYPE = "forward-score-capture-v1"
+
+
+def managed_score_snapshot_id(manifest: dict) -> str:
+    """Bind a published score version to its manifest and physical file digests."""
+    return SCORE_SNAPSHOT_PREFIX + canonical_json_sha256(
+        {key: value for key, value in manifest.items() if key not in {"id", "snapshot_dir"}}
+    )
+
+
+def score_snapshot_leaf_name(manifest: dict) -> str:
+    """Include both the publication operation and the content version in the leaf name."""
+    version = manifest["id"].removeprefix(SCORE_SNAPSHOT_PREFIX)
+    return f"{manifest['score_capture']['publication_id']}-{version[:24]}"
+
+
+def is_score_snapshot_manifest(manifest: dict) -> bool:
+    identifier = manifest.get("id")
+    return manifest.get("publication_type") == SCORE_SNAPSHOT_TYPE or (
+        isinstance(identifier, str) and identifier.startswith(SCORE_SNAPSHOT_PREFIX)
+    )
+
+
+def validate_score_snapshot_identity(relative_path: Path, manifest: dict) -> None:
+    """Cross-check the publication type, canonical location and content for internal snapshots."""
+    parts = relative_path.parts
+    in_score_store = len(parts) == 3 and parts[:2] == SCORE_SNAPSHOT_LOCATION
+    if not in_score_store and not is_score_snapshot_manifest(manifest):
+        return
+    capture = manifest.get("score_capture")
+    if (
+        not in_score_store
+        or manifest.get("publication_type") != SCORE_SNAPSHOT_TYPE
+        or "snapshot_path" in manifest
+        or not isinstance(capture, dict)
+        or not isinstance(capture.get("publication_id"), str)
+        or re.fullmatch(r"fsc-[0-9a-f]{24}", capture["publication_id"]) is None
+        or manifest.get("id") != managed_score_snapshot_id(manifest)
+        or parts[-1] != score_snapshot_leaf_name(manifest)
+    ):
+        raise ValueError("score-snapshot-identity-mismatch")
 
 
 class SnapshotFetcher:
@@ -81,11 +123,15 @@ def write_market_snapshot_files(
 
 def load_market(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    if root.parts[-3:-1] == SCORE_SNAPSHOT_LOCATION or is_score_snapshot_manifest(manifest):
+        raise ValueError("Internal score snapshot is unavailable for ordinary research")
     if "snapshot_path" in manifest and root.name != Path(manifest["snapshot_path"]).name:
         snapshot = (root / manifest["snapshot_path"]).resolve()
         if not snapshot.is_relative_to(root.resolve()):
             raise ValueError("Snapshot path escapes batch directory")
         manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
+        if snapshot.parts[-3:-1] == SCORE_SNAPSHOT_LOCATION or is_score_snapshot_manifest(manifest):
+            raise ValueError("Internal score snapshot is unavailable for ordinary research")
         root = snapshot
     return _load_leaf(root, manifest)
 
@@ -97,7 +143,7 @@ class FrozenMarketSnapshot:
     inputs: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]
 
 
-def load_frozen_snapshot(data_root: Path, execution: dict) -> FrozenMarketSnapshot:
+def load_frozen_snapshot(data_root: Path, execution: dict, *, allow_score: bool = False) -> FrozenMarketSnapshot:
     """Verify and load exactly the queued snapshot leaf, never a latest pointer."""
     raw = execution.get("snapshot_dir")
     if not isinstance(raw, str) or not raw:
@@ -108,8 +154,10 @@ def load_frozen_snapshot(data_root: Path, execution: dict) -> FrozenMarketSnapsh
     if not directory.is_relative_to(root):
         raise ValueError("冻结的数据快照路径不在受控目录内")
     parts = directory.relative_to(root).parts
-    managed = (len(parts) == 3 and parts[:2] == ("research", "subsets")) or (
-        len(parts) == 5 and parts[:2] == ("research", "downloads") and parts[3] == "snapshots"
+    managed = (
+        (len(parts) == 3 and parts[:2] == ("research", "subsets"))
+        or (len(parts) == 5 and parts[:2] == ("research", "downloads") and parts[3] == "snapshots")
+        or (allow_score and len(parts) == 3 and parts[:2] == SCORE_SNAPSHOT_LOCATION)
     )
     if not managed or any(part.startswith(".") for part in parts):
         raise ValueError("冻结的数据快照路径不在受控目录内")
@@ -150,6 +198,7 @@ def load_frozen_snapshot(data_root: Path, execution: dict) -> FrozenMarketSnapsh
         or manifest["files"] != execution.get("files")
     ):
         raise ValueError("排队期间数据版本发生变化，请重新提交")
+    validate_score_snapshot_identity(directory.relative_to(root), manifest)
     if "snapshot_path" in manifest and manifest["snapshot_path"] != f"snapshots/{directory.name}":
         raise ValueError("冻结的数据快照清单指向其他路径")
     # Check physical paths before the normal leaf loader hashes and decodes the three files.

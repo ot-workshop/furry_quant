@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time, timedelta
 
 import pandas as pd
@@ -19,10 +21,15 @@ from finance_quant.application.research_requests import lookup_snapshot_meta, sn
 from finance_quant.checksums import file_sha256
 from finance_quant.data import managed
 from finance_quant.data.managed import ManagedFetcher, provider_identifier
-from finance_quant.data.market import write_market_snapshot_files
-from finance_quant.persistence.forward import SHANGHAI, registration_evidence_digest
+from finance_quant.data.market import (
+    SCORE_SNAPSHOT_LOCATION,
+    SCORE_SNAPSHOT_TYPE,
+    managed_score_snapshot_id,
+    write_market_snapshot_files,
+)
+from finance_quant.persistence.forward import SHANGHAI, canonical_sha256, registration_evidence_digest
 from finance_quant.persistence.market import MarketRepository
-from finance_quant.persistence.schema import forward_registration
+from finance_quant.persistence.schema import forward_registration, research_task
 from finance_quant.persistence.tasks import PgTaskStore
 from finance_quant.task_contracts import submission_fingerprint
 
@@ -138,13 +145,18 @@ def setup_capture(engine, tmp_path):
 
 
 def _unpublished(root):
-    assert not list((root / "research" / "subsets").glob("fsc-*"))
+    assert not list(root.joinpath(*SCORE_SNAPSHOT_LOCATION).glob("fsc-*"))
 
 
 def test_publication_uses_live_receipts_and_is_readable_by_the_real_scoring_worker(engine, setup_capture, monkeypatch):
     root, row, provider, publish = setup_capture
-    receipt = publish()
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first, second = workers.submit(publish), workers.submit(publish)
+        receipt = first.result(timeout=15)
+        assert second.result(timeout=15) == receipt
     path, manifest, digest = lookup_snapshot_meta(root, receipt["id"], allow_score=True)
+    assert path.parts[:2] == SCORE_SNAPSHOT_LOCATION
+    assert manifest["publication_type"] == SCORE_SNAPSHOT_TYPE
     with pytest.raises(ValueError):
         lookup_snapshot_meta(root, receipt["id"])
     assert receipt["id"] not in snapshot_registry(root)
@@ -303,7 +315,7 @@ def test_manifest_edit_cannot_rebind_the_published_content_version(engine, setup
     manifest["score_capture"]["requests"][0]["rows"] += 1
     changed = root / path / "manifest.json"
     changed.write_text(json.dumps(manifest), encoding="utf-8")
-    with pytest.raises(ScoreInputError, match="score-capture-registration-mismatch"):
+    with pytest.raises(ValueError, match="score-snapshot-identity-mismatch"):
         enqueue_forward_score(PgTaskStore(engine=engine), root, row["id"], receipt["id"], key="score-after-edit")
     corrupted_digest = file_sha256(changed)
     with pytest.raises(ScoreInputError, match="score-publication-conflict"):
@@ -311,3 +323,90 @@ def test_manifest_edit_cannot_rebind_the_published_content_version(engine, setup
     assert file_sha256(changed) == corrupted_digest
     with engine.connect() as connection:
         assert connection.scalar(select(forward_registration.c.score_snapshot)) is None
+
+
+def _rename_and_retime(root, path, manifest, row, *, rehash=False):
+    alias = "ordinary-renamed"
+    captured_at = datetime.combine(row["signal_date"], time(15, 1), tzinfo=SHANGHAI).isoformat()
+    manifest["score_capture"]["captured_at"] = captured_at
+    if rehash:
+        alias = managed_score_snapshot_id(manifest)
+    manifest["id"] = alias
+    target = root / path / "manifest.json"
+    target.write_text(json.dumps(manifest), encoding="utf-8")
+    return alias, captured_at, file_sha256(target)
+
+
+@pytest.mark.parametrize("rehash", [False, True], ids=["ordinary-id", "rehashed-id"])
+def test_renamed_and_retimed_internal_directory_cannot_be_bound(engine, setup_capture, rehash):
+    root, row, _, publish = setup_capture
+    path, manifest, _ = lookup_snapshot_meta(root, publish()["id"], allow_score=True)
+    alias, _, _ = _rename_and_retime(root, path, manifest, row, rehash=rehash)
+    store = PgTaskStore(engine=engine)
+    with pytest.raises(ValueError, match="score-snapshot-identity-mismatch"):
+        enqueue_forward_score(store, root, row["id"], alias, key="score-renamed-capture")
+    assert store.list()["total"] == 0
+
+
+def test_worker_rejects_a_renamed_internal_directory_even_with_consistent_queued_pins(engine, setup_capture):
+    root, row, _, publish = setup_capture
+    store = PgTaskStore(engine=engine)
+    identifier = publish()["id"]
+    path, manifest, _ = lookup_snapshot_meta(root, identifier, allow_score=True)
+    pair = enqueue_forward_score(store, root, row["id"], identifier, key="score-renamed-capture")
+    alias, captured_at, digest = _rename_and_retime(root, path, manifest, row)
+    with engine.begin() as connection:
+        pin = connection.scalar(select(forward_registration.c.score_snapshot))
+        pin.update(data_version=alias, manifest_sha256=digest, captured_at=captured_at)
+        connection.execute(forward_registration.update().values(score_snapshot=pin))
+        query = research_task.c.id == pair["task_id"]
+        request, execution = connection.execute(
+            select(research_task.c.request, research_task.c.execution).where(query)
+        ).one()
+        request["score_snapshot_id"] = alias
+        execution["binding_sha256"] = canonical_sha256(pin)
+        connection.execute(research_task.update().where(query).values(request=request, execution=execution))
+    attempt, task = _execute(store, root, pair)
+    assert task["status"] == attempt["status"] == "failed"
+    assert attempt["error"] == "invalid-score-snapshot"
+    assert task["result"] is None and attempt["sealed_at"] is None
+
+
+@pytest.mark.parametrize("rename_internal", [False, True], ids=["original-id", "ordinary-id"])
+def test_ordinary_registry_never_reads_published_score_parquet(setup_capture, monkeypatch, rename_internal):
+    root, row, _, publish = setup_capture
+    identifier = publish()["id"]
+    path, manifest, _ = lookup_snapshot_meta(root, identifier, allow_score=True)
+    internal = root / path
+    ordinary = root / "research" / "subsets" / "ordinary-history"
+    ordinary.mkdir()
+    for name in manifest["files"]:
+        shutil.copyfile(internal / name, ordinary / name)
+    (ordinary / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "ordinary-history",
+                "schema_version": "market-v2",
+                "files": manifest["files"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    if rename_internal:
+        identifier, _, _ = _rename_and_retime(root, path, manifest, row)
+    moved = root / "research" / "subsets" / "relocated-internal"
+    shutil.copytree(internal, moved)
+
+    calls = []
+    read = pd.read_parquet
+
+    def track(path, *args, **kwargs):
+        calls.append(path)
+        return read(path, *args, **kwargs)
+
+    monkeypatch.setattr(pd, "read_parquet", track)
+    assert "ordinary-history" in snapshot_registry(root)
+    assert lookup_snapshot_meta(root, "ordinary-history")[0] == ordinary.relative_to(root)
+    assert not any(path.parent in (internal, moved) for path in calls)
+    with pytest.raises(ValueError):
+        lookup_snapshot_meta(root, identifier)
