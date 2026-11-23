@@ -21,11 +21,13 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection, select, text
 
 from finance_quant.checksums import sha256_text
+from finance_quant.task_contracts import TaskConflict
 
 from .schema import forward_attempt
+from .tasks import lock_submissions
 
 
 def canonical_json(payload: object) -> str:
@@ -210,16 +212,35 @@ def enqueue_attempt(
     execution: dict,
     attempt_id: str | None = None,
 ) -> dict:
-    """Create the task and its attempt inside the caller's transaction.
+    """Replay or create a task/attempt pair inside the caller's transaction.
 
-    Either both rows land or neither does: the queue limit is checked by the store on this
-    same connection, so a full queue raises before anything is written and the caller's
-    rollback leaves no orphan active attempt behind.
+    The queue's submission lock serializes the first lookup and write of each pair.
+    Existing bindings bypass active-attempt and queue-limit checks. For a new pair,
+    both writes use the caller's connection and commit or roll back together.
     """
     if kind not in ("score", "verify"):
         raise ValueError("unknown attempt kind")
+    lock_submissions(connection)
+    attempt = connection.execute(
+        select(
+            forward_attempt.c.id,
+            forward_attempt.c.registration_id,
+            forward_attempt.c.kind,
+            forward_attempt.c.task_id,
+        ).where(forward_attempt.c.idempotency_key == task_key)
+    ).one_or_none()
+    if attempt is not None:
+        if (attempt.registration_id, attempt.kind) != (registration_id, kind):
+            raise TaskConflict("该请求标识已用于其他登记或阶段")
+        task = store.find_research_replay(request, task_key, connection=connection)
+        if task is None or task["id"] != attempt.task_id:
+            raise TaskConflict("该请求标识的前瞻尝试与任务绑定不一致")
+        return {"attempt_id": attempt.id, "task_id": attempt.task_id}
+
     if attempt_active(connection, registration_id, kind):
         raise AttemptActive("该阶段已有排队/运行中的尝试")
+    if store.find_research_replay(request, task_key, connection=connection) is not None:
+        raise TaskConflict("该请求标识已用于其他任务")
     task = store.create(request, execution, task_key, connection=connection)
     identifier = attempt_id or "fat-" + canonical_sha256({"reg": registration_id, "kind": kind, "no": attempt_no})[:32]
     connection.execute(
