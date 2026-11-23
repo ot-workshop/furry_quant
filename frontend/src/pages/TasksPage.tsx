@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Alert, Button, Segmented } from "antd";
 import { PlusCircleOutlined, ReloadOutlined } from "@ant-design/icons";
+import { ApiError } from "../api/http";
 import { researchApi, type ResearchTask } from "../api/research";
 import { navigate, paths } from "../app/routes";
 import { TaskDetail, TaskTable } from "../components/tasks";
@@ -33,10 +34,26 @@ export default function TasksPage({ focus }: { focus: string | null }) {
   const listed = tasks.data?.items.some((task) => task.id === focus);
   const lookup = focus && !listed && (tasks.data || tasks.error) ? focus : null;
   const focused = useApiResource(
-    lookup ? (signal) => researchApi.task(lookup, signal) : null,
+    lookup
+      ? async (signal) => {
+          try {
+            return { task: await researchApi.task(lookup, signal) };
+          } catch (error) {
+            if (
+              error instanceof ApiError &&
+              (error.status === 403 || error.status === 404)
+            ) {
+              // Replace the cached task so a later transient failure cannot reveal it again.
+              return { task: null };
+            }
+            throw error;
+          }
+        }
+      : null,
     [lookup],
     { pollMs: TASK_POLL_MS },
   );
+  const focusedTask = focused.data?.task;
   function refresh() {
     tasks.reload();
     if (lookup) focused.reload();
@@ -81,15 +98,15 @@ export default function TasksPage({ focus }: { focus: string | null }) {
       />
       {lookup ? (
         <Section title="指定任务">
-          {focused.data &&
-          (focused.data.kind === "research" ||
-            focused.data.kind === "experiment" ||
-            !focused.data.kind) ? (
+          {focusedTask &&
+          (focusedTask.kind === "research" ||
+            focusedTask.kind === "experiment" ||
+            !focusedTask.kind) ? (
             <>
-              <StatusTag status={focused.data.status} />
-              <TaskDetail task={focused.data} />
+              <StatusTag status={focusedTask.status} />
+              <TaskDetail task={focusedTask} />
             </>
-          ) : focused.data || [403, 404].includes(focused.errorStatus ?? 0) ? (
+          ) : focused.data ? (
             <EmptyState title="任务不可用" />
           ) : focused.error ? (
             <Alert

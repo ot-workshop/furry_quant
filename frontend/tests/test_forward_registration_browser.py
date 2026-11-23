@@ -397,36 +397,90 @@ def ordinary_task(index):
     }
 
 
-@pytest.mark.parametrize("refresh", ["button", "poll"])
-def test_historical_task_refreshes_by_id(engine, tmp_path, browser, refresh):
+def historical_task():
     task = ordinary_task(101)
     task.update(
         forward_stage="score",
         forward_attempt_id="fat-historical",
         request={"registration_id": "fwd-history", "score_snapshot_id": "synthetic-score"},
     )
+    return task
 
+
+def task_refresh_page(context, refresh):
+    page = context.new_page()
+    if refresh == "button":
+        # Prove the button reaches the detail even when automatic task polling is absent.
+        page.add_init_script("""(() => {
+            const schedule = window.setInterval.bind(window);
+            window.setInterval = (callback, delay, ...args) =>
+                delay === 3000 ? 0 : schedule(callback, delay, ...args);
+        })()""")
+    else:
+        page.clock.install()
+    return page
+
+
+def refresh_task(page, refresh):
+    if refresh == "button":
+        page.get_by_role("button", name=re.compile(r"刷\s*新")).click(timeout=2000)
+    else:
+        page.clock.fast_forward(3100)
+
+
+@pytest.mark.parametrize("refresh", ["button", "poll"])
+def test_historical_task_refreshes_by_id(engine, tmp_path, browser, refresh):
+    task = historical_task()
     with serve(engine, tmp_path) as origin, browser.new_context() as context:
-        page = context.new_page()
-        if refresh == "button":
-            # Prove the button reaches the detail even when automatic task polling is absent.
-            page.add_init_script("""(() => {
-                const schedule = window.setInterval.bind(window);
-                window.setInterval = (callback, delay, ...args) =>
-                    delay === 3000 ? 0 : schedule(callback, delay, ...args);
-            })()""")
-        else:
-            page.clock.install()
+        page = task_refresh_page(context, refresh)
         page.route(f"**{TASKS}/{task['id']}", lambda route: route.fulfill(json=task))
         page.goto(f"{origin}/tasks?focus={task['id']}")
         status = page.locator(".section-card", has=page.get_by_text("指定任务", exact=True)).locator(".ant-tag")
         expect(status).to_have_text("运行中")
         task.update(status="succeeded", stage="finished", message="计算完成", finished_at="2026-11-20T12:02:00Z")
-        if refresh == "button":
-            page.get_by_role("button", name=re.compile(r"刷\s*新")).click(timeout=2000)
-        else:
-            page.clock.fast_forward(3100)
+        refresh_task(page, refresh)
         expect(status).to_have_text("已完成", timeout=2000)
+
+
+@pytest.mark.parametrize("refresh", ["button", "poll"])
+@pytest.mark.parametrize("unavailable_status", [403, 404])
+def test_historical_task_hides_stale_detail_after_access_is_lost(
+    engine, tmp_path, browser, refresh, unavailable_status
+):
+    task = historical_task()
+    task.update(status="succeeded", stage="finished", finished_at="2026-11-20T12:02:00Z")
+    endpoint = f"{TASKS}/{task['id']}"
+    response_status = 200
+
+    def reply(route):
+        route.fulfill(status=response_status, json=task if response_status == 200 else {"detail": "任务暂不可读"})
+
+    with serve(engine, tmp_path) as origin, browser.new_context() as context:
+        page = task_refresh_page(context, refresh)
+        page.route(f"**{endpoint}", reply)
+        page.goto(f"{origin}/tasks?focus={task['id']}")
+        panel = page.locator(".section-card", has=page.get_by_text("指定任务", exact=True))
+        old_detail = panel.get_by_text(task["name"], exact=True)
+        expect(old_detail).to_be_visible()
+        expect(panel.get_by_text("已完成", exact=True)).to_be_visible()
+
+        for response_status in (unavailable_status, 503):
+            with page.expect_response(
+                lambda response, status=response_status: (
+                    urlsplit(response.url).path == endpoint and response.status == status
+                )
+            ):
+                refresh_task(page, refresh)
+            expect(panel.get_by_text("任务不可用", exact=True)).to_be_visible(timeout=2000)
+            expect(old_detail).to_have_count(0)
+            expect(panel.get_by_text("已完成", exact=True)).to_have_count(0)
+            expect(panel.locator(".forward-task-summary")).to_have_count(0)
+
+        response_status = 200
+        task["name"] = "恢复可访问的评分任务"
+        refresh_task(page, refresh)
+        expect(panel.get_by_text(task["name"], exact=True)).to_be_visible()
+        expect(panel.get_by_text("任务不可用", exact=True)).to_have_count(0)
 
 
 def test_task_poll_keeps_user_page_after_initial_focus(engine, tmp_path, browser):
