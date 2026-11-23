@@ -9,6 +9,10 @@ from finance_quant.persistence.tasks import worker_lock
 MAINTENANCE_LOCK = 663420121
 
 
+class MaintenanceBusy(RuntimeError):
+    """The requested maintenance lock is already held by another session."""
+
+
 @contextmanager
 def write_gate(engine, *, exclusive=False):
     function = "pg_try_advisory_lock" if exclusive else "pg_try_advisory_lock_shared"
@@ -17,7 +21,7 @@ def write_gate(engine, *, exclusive=False):
         acquired = connection.execute(text(f"SELECT {function}(:key)"), {"key": MAINTENANCE_LOCK}).scalar_one()
         connection.commit()
         if not acquired:
-            raise RuntimeError("数据维护正在进行，或仍有写入请求；请稍后重试")
+            raise MaintenanceBusy("数据维护正在进行，或仍有写入请求；请稍后重试")
         try:
             yield connection
         finally:

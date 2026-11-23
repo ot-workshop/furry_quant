@@ -7,17 +7,23 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
+from finance_quant.application.forward_verification import VerificationInputError
+from finance_quant.persistence.forward import AttemptActive
 from finance_quant.task_contracts import TaskConflict
+from finance_quant.web.forward_actions import submit_forward_score, submit_forward_verification
 from finance_quant.web.forward_reads import registration_detail, registration_page
 from finance_quant.web.forward_writes import submit_forward_registration
 from finance_quant.web.write_requests import research_json
 
 
-def forward_registration_router(engine: Engine | None, *, storage_root: Path | None = None) -> APIRouter:
+def forward_registration_router(
+    engine: Engine | None, *, storage_root: Path | None = None, data_root: Path | None = None
+) -> APIRouter:
     router = APIRouter(prefix="/api/v1/forward-registrations")
 
     def read_connection() -> Iterator[Connection]:
@@ -60,5 +66,36 @@ def forward_registration_router(engine: Engine | None, *, storage_root: Path | N
             raise HTTPException(422, str(error)) from None
         except SQLAlchemyError:
             raise HTTPException(503, "前瞻登记服务暂不可用") from None
+
+    async def enqueue(request: Request, registration_id: str, submit):
+        document = await research_json(request)
+        if engine is None or data_root is None:
+            raise HTTPException(503, "前瞻提交服务暂不可用")
+        try:
+            binding = await run_in_threadpool(
+                submit, engine, data_root, registration_id, document, request.headers.get("idempotency-key", "")
+            )
+        except (AttemptActive, TaskConflict) as error:
+            raise HTTPException(409, str(error)) from None
+        except VerificationInputError as error:
+            reason = str(error)
+            if reason in {"before-verification-maturity", "registration-unsealed", "invalid-sealed-score"}:
+                raise HTTPException(409, reason) from None
+            raise HTTPException(422, reason) from None
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
+        except (OSError, SQLAlchemyError):
+            raise HTTPException(503, "前瞻提交服务暂不可用") from None
+        if binding is None:
+            return JSONResponse({"status": "awaiting_quote"})
+        return {"status": "accepted", **binding}
+
+    @router.post("/{registration_id}/score", status_code=202)
+    async def score(registration_id: str, request: Request):
+        return await enqueue(request, registration_id, submit_forward_score)
+
+    @router.post("/{registration_id}/verify", status_code=202)
+    async def verify(registration_id: str, request: Request):
+        return await enqueue(request, registration_id, submit_forward_verification)
 
     return router

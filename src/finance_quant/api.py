@@ -63,7 +63,9 @@ def create_app(
     app.include_router(experiment_router(store))
     app.include_router(
         forward_registration_router(
-            getattr(service.store, "engine", None), storage_root=getattr(store, "storage_root", None)
+            getattr(service.store, "engine", None),
+            storage_root=getattr(store, "storage_root", None),
+            data_root=service.data_root,
         )
     )
 
