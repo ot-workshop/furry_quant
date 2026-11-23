@@ -18,6 +18,7 @@ from .schema import research_task as task
 
 WORKER_LOCK = 663420119
 SUBMISSION_LOCK = 663420120
+TASK_ID_PATTERN = re.compile(r"task-[a-f0-9]{32}")
 
 
 def now():
@@ -83,16 +84,43 @@ class PgTaskStore:
             {key: row[key].isoformat() if row[key] else None for key in ("created_at", "started_at", "finished_at")}
         )
         result["progress"] = {"completed": row["completed"], "total": row["total"]}
+        mode = row["execution"].get("mode") if isinstance(row["execution"], dict) else None
+        if isinstance(mode, str) and mode in FORWARD_ATTEMPT_KINDS:
+            result["forward_stage"] = FORWARD_ATTEMPT_KINDS[mode]
         return result
 
+    @classmethod
+    def _public_with_attempts(cls, connection, rows):
+        items = [cls._public(row) for row in rows]
+        forward = [item for item in items if "forward_stage" in item]
+        if forward:
+            attempt = forward_attempt.c
+            bindings = {
+                (row.task_id, row.registration_id, row.kind): row.id
+                for row in connection.execute(
+                    select(attempt.task_id, attempt.registration_id, attempt.kind, attempt.id)
+                    .where(attempt.task_id.in_([item["id"] for item in forward]))
+                    .order_by(attempt.attempt_no)
+                )
+            }
+            for item in forward:
+                request = item["request"]
+                registration_id = request.get("registration_id") if isinstance(request, dict) else None
+                item["forward_attempt_id"] = (
+                    bindings.get((item["id"], registration_id, item["forward_stage"]))
+                    if isinstance(registration_id, str)
+                    else None
+                )
+        return items
+
     def get(self, identifier, *, private=False):
-        if not isinstance(identifier, str) or not re.fullmatch(r"task-[a-f0-9]{32}", identifier):
+        if not isinstance(identifier, str) or not TASK_ID_PATTERN.fullmatch(identifier):
             raise FileNotFoundError("任务不存在")
         with self.engine.connect() as connection:
             row = connection.execute(select(task).where(task.c.id == identifier)).mappings().first()
-        if row is None:
-            raise FileNotFoundError("任务不存在")
-        result = self._public(row)
+            if row is None:
+                raise FileNotFoundError("任务不存在")
+            result = self._public_with_attempts(connection, (row,))[0]
         if private:
             result["execution"] = row["execution"]
         return result
@@ -105,7 +133,7 @@ class PgTaskStore:
                 .all()
             )
             count = connection.execute(select(func.count()).select_from(task)).scalar_one()
-        return {"items": [self._public(row) for row in rows], "total": count}
+            return {"items": self._public_with_attempts(connection, rows), "total": count}
 
     def create(self, request, execution, key, *, connection=None):
         return self._create("research", request, execution, key, 4, connection=connection)

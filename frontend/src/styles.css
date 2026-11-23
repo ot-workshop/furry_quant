@@ -159,6 +159,12 @@ body {
   min-width: 0;
 }
 
+.forward-task-summary
+  :is(.ant-descriptions-view, .ant-descriptions-item-content) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .section-title {
   display: flex;
   align-items: baseline;

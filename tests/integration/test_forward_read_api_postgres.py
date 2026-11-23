@@ -26,6 +26,7 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("FINANCE_QUANT_TEST_POSTGRES") != "1", reason="requires isolated PostgreSQL"
 )
 URL = "/api/v1/forward-registrations"
+TASKS = "/api/v1/research/tasks"
 
 
 @pytest.fixture
@@ -89,6 +90,77 @@ def test_list_paginates_on_timestamp_and_id_and_unknown_registration_is_404(engi
     assert client.get(f"{URL}/no-such-registration").json() == {"detail": "前瞻登记不存在"}
     assert client.get(f"{URL}/no-such-registration").status_code == 404
     assert client.put(URL, json={}).status_code == 405
+
+
+def historical_attempts(engine, tmp_path):
+    store, row, score = _registered(engine, tmp_path)
+    _publish_labels(tmp_path, row, "verified-history", zero=True)
+    first = enqueue_forward_verification(store, tmp_path, row["id"], key="historical-cancelled-verify")
+    assert store.cancel(first["task_id"])["status"] == "cancelled"
+    verify = enqueue_forward_verification(store, tmp_path, row["id"], key="historical-verify")
+    assert _execute(store, tmp_path, verify)[1]["status"] == "succeeded"
+    with engine.begin() as connection:
+        selected = select(research_task).where(research_task.c.id == score["task_id"])
+        task = dict(connection.execute(selected).mappings().one())
+        connection.execute(
+            research_task.insert(),
+            [
+                dict(
+                    task,
+                    id=f"task-{index:032x}",
+                    idempotency_key=f"fixture-task-{index}",
+                    name=f"Fixture task {index}",
+                    request={"name": f"Fixture task {index}"},
+                    execution={},
+                    result=None,
+                    created_at=task["created_at"] + timedelta(days=1),
+                )
+                for index in range(101)
+            ],
+        )
+        selected_attempt = select(forward_attempt).where(forward_attempt.c.id == score["attempt_id"])
+        attempt = dict(connection.execute(selected_attempt).mappings().one())
+        connection.execute(
+            research_task.insert().values(**dict(task, id="legacy-hidden-id", idempotency_key="legacy-hidden-id"))
+        )
+        for number, task_id in enumerate((None, "legacy-hidden-id"), start=2):
+            connection.execute(
+                forward_attempt.insert().values(
+                    **dict(
+                        attempt,
+                        id=f"fat-legacy-{number}",
+                        attempt_no=number,
+                        status="cancelled",
+                        task_id=task_id,
+                        idempotency_key=f"legacy-attempt-{number}",
+                        sealed_at=None,
+                    )
+                )
+            )
+    return row, score, verify
+
+
+def test_historical_attempt_links_resolve_by_id_outside_recent_tasks(engine, tmp_path, client):
+    row, score, verify = historical_attempts(engine, tmp_path)
+    before = _stored(engine)
+    recent = client.get(TASKS).json()["items"]
+    assert len(recent) == 100
+    assert {score["task_id"], verify["task_id"]}.isdisjoint(item["id"] for item in recent)
+    detail, _ = _detail(client, row["id"])
+    assert detail["holding_sessions"] == 1
+    assert detail["state"] == "verified" and detail["result"]["excess_return_pp"] == 0
+    attempts = {item["id"]: item for item in detail["attempts"]}
+    for stage, receipt in (("score", score), ("verify", verify)):
+        assert attempts[receipt["attempt_id"]]["task_id"] == receipt["task_id"]
+        response = client.get(f"{TASKS}/{receipt['task_id']}")
+        assert response.status_code == 200
+        task = response.json()
+        assert task["forward_attempt_id"] == receipt["attempt_id"] and task["forward_stage"] == stage
+        assert task["request"]["registration_id"] == row["id"] and "data" not in task["request"]
+        assert "execution" not in task
+    assert attempts["fat-legacy-2"]["task_id"] is attempts["fat-legacy-3"]["task_id"] is None
+    assert client.get(f"{TASKS}/legacy-hidden-id").status_code == 404
+    assert _stored(engine) == before
 
 
 @pytest.mark.parametrize("scenario", ["complete", "zero", "missing"])

@@ -12,6 +12,7 @@ from finance_quant.paths import frontend_dist as default_dist
 FRONTEND_ROUTES = {
     "",
     "research",
+    "forward-registrations",
     "tasks",
     "factors",
     "backtests",

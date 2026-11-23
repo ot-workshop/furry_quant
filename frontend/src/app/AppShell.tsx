@@ -18,6 +18,7 @@ import {
   DashboardOutlined,
   DatabaseOutlined,
   DiffOutlined,
+  FileSearchOutlined,
   FundOutlined,
   LineChartOutlined,
   MenuOutlined,
@@ -46,6 +47,11 @@ const MENU: MenuProps["items"] = [
       { key: "research", icon: <PlusCircleOutlined />, label: "新建研究" },
       { key: "experiments", icon: <ApartmentOutlined />, label: "方案比较" },
       { key: "compare", icon: <DiffOutlined />, label: "差异对照" },
+      {
+        key: "forward-registrations",
+        icon: <FileSearchOutlined />,
+        label: "前瞻登记",
+      },
       { key: "tasks", icon: <UnorderedListOutlined />, label: "任务中心" },
     ],
   },
@@ -68,6 +74,7 @@ const MENU: MenuProps["items"] = [
 const TARGETS: Record<Section, string> = {
   dashboard: paths.dashboard(),
   research: paths.newResearch(),
+  "forward-registrations": paths.forwardRegistrations(),
   tasks: paths.tasks(),
   backtests: paths.backtests(),
   factors: paths.factors(),

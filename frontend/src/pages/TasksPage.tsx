@@ -1,13 +1,22 @@
 import { useMemo, useState } from "react";
-import { Button, Segmented } from "antd";
+import { Alert, Button, Segmented } from "antd";
 import { PlusCircleOutlined, ReloadOutlined } from "@ant-design/icons";
+import { ApiError } from "../api/http";
 import { researchApi, type ResearchTask } from "../api/research";
 import { navigate, paths } from "../app/routes";
-import { TaskTable } from "../components/tasks";
-import { EmptyState, PageHeader, Resource, Section } from "../components/ui";
+import { TaskDetail, TaskTable } from "../components/tasks";
+import {
+  EmptyState,
+  Loading,
+  PageHeader,
+  Resource,
+  Section,
+  StatusTag,
+} from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 
 type Filter = "all" | "active" | "succeeded" | "failed";
+const TASK_POLL_MS = 3000;
 
 const MATCH: Record<Filter, (task: ResearchTask) => boolean> = {
   all: () => true,
@@ -19,9 +28,36 @@ const MATCH: Record<Filter, (task: ResearchTask) => boolean> = {
 
 export default function TasksPage({ focus }: { focus: string | null }) {
   const tasks = useApiResource((signal) => researchApi.tasks(signal), [], {
-    pollMs: 3000,
+    pollMs: TASK_POLL_MS,
   });
   const [filter, setFilter] = useState<Filter>("all");
+  const listed = tasks.data?.items.some((task) => task.id === focus);
+  const lookup = focus && !listed && (tasks.data || tasks.error) ? focus : null;
+  const focused = useApiResource(
+    lookup
+      ? async (signal) => {
+          try {
+            return { task: await researchApi.task(lookup, signal) };
+          } catch (error) {
+            if (
+              error instanceof ApiError &&
+              (error.status === 403 || error.status === 404)
+            ) {
+              // Replace the cached task so a later transient failure cannot reveal it again.
+              return { task: null };
+            }
+            throw error;
+          }
+        }
+      : null,
+    [lookup],
+    { pollMs: TASK_POLL_MS },
+  );
+  const focusedTask = focused.data?.task;
+  function refresh() {
+    tasks.reload();
+    if (lookup) focused.reload();
+  }
   const items = useMemo(
     () => (tasks.data?.items ?? []).filter(MATCH[filter]),
     [tasks.data, filter],
@@ -45,8 +81,8 @@ export default function TasksPage({ focus }: { focus: string | null }) {
           <>
             <Button
               icon={<ReloadOutlined />}
-              loading={tasks.refreshing}
-              onClick={tasks.reload}
+              loading={tasks.refreshing || focused.refreshing}
+              onClick={refresh}
             >
               刷新
             </Button>
@@ -60,6 +96,34 @@ export default function TasksPage({ focus }: { focus: string | null }) {
           </>
         }
       />
+      {lookup ? (
+        <Section title="指定任务">
+          {focusedTask &&
+          (focusedTask.kind === "research" ||
+            focusedTask.kind === "experiment" ||
+            !focusedTask.kind) ? (
+            <>
+              <StatusTag status={focusedTask.status} />
+              <TaskDetail task={focusedTask} />
+            </>
+          ) : focused.data ? (
+            <EmptyState title="任务不可用" />
+          ) : focused.error ? (
+            <Alert
+              type="warning"
+              title="任务加载失败"
+              description={focused.error}
+              action={
+                <Button onClick={focused.reload} loading={focused.refreshing}>
+                  重试
+                </Button>
+              }
+            />
+          ) : (
+            <Loading rows={2} />
+          )}
+        </Section>
+      ) : null}
       <Section
         extra={
           <div className="task-filter-wrap">
