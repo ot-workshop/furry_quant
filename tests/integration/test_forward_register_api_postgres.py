@@ -51,12 +51,14 @@ def setup_registration(engine, tmp_path, monkeypatch):
     days = pd.date_range(sessions[0], sessions[-1])
     calendar = pd.DataFrame({"date": days, "is_open": days.isin(pd.DatetimeIndex(sessions))})
 
-    def source(frame, *, name="fixed-source", provider="a" * 64):
+    def source(frame, *, name="fixed-source", provider="a" * 64, manifest_name=None, coverage=None):
         leaf = tmp_path / "data" / "research" / "subsets" / name
         leaf.mkdir(parents=True)
         quotes = pd.DataFrame({"fixture": [1]})
         files = write_market_snapshot_files(leaf, quotes, quotes, frame)
-        manifest = {"id": name, "schema_version": "market-v2", "provider_id": provider, "files": files}
+        manifest = {"id": manifest_name or name, "schema_version": "market-v2", "provider_id": provider, "files": files}
+        if coverage is not None:
+            manifest.update(dict(zip(("start", "end"), coverage, strict=True)))
         (leaf / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         record = MarketRepository(engine=engine).register_snapshot(leaf, tmp_path, request={})
         return record["id"], leaf
@@ -77,6 +79,50 @@ def setup_registration(engine, tmp_path, monkeypatch):
 def _rows(engine, table):
     with engine.connect() as connection:
         return [dict(row) for row in connection.execute(select(table).order_by(table.c.id)).mappings()]
+
+
+def test_source_options_project_only_ready_managed_metadata(engine, setup_registration, monkeypatch):
+    client, document, _, sessions, calendar, source, _ = setup_registration
+    start, end = sessions[0].isoformat(), sessions[-1].isoformat()
+    continued, _ = source(calendar, name="ready", coverage=(start, end))
+    rejected, rejected_path = source(calendar, name="removed")
+    (rejected_path / "rejected.json").write_text("{}", encoding="utf-8")
+    failed, _ = source(calendar, name="not-ready")
+    mismatched, mismatched_path = source(calendar, name="wrong-digest")
+    (mismatched_path / "manifest.json").write_text("{}", encoding="utf-8")
+    source(calendar, name="not-managed", provider="external")
+    with engine.begin() as connection:
+        connection.execute(dataset.update().where(dataset.c.id == failed).values(status="failed"))
+    before = _rows(engine, dataset)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Source options must not hash parquet files or invoke the queue")
+
+    monkeypatch.setattr(forward_writes, "snapshot_dataset_record", unexpected)
+    monkeypatch.setattr(pd, "read_parquet", unexpected)
+    monkeypatch.setattr(PgTaskStore, "create", unexpected)
+    result = client.get(f"{URL}/sources")
+    assert result.status_code == 200, result.text
+    assert result.json() == {
+        "items": [
+            {"id": continued, "name": "ready", "start": start, "end": end},
+            {"id": document["dataset_id"], "name": "fixed-source", "start": None, "end": None},
+        ],
+        "has_more": False,
+    }
+    by_id = client.get(f"{URL}/sources/{continued}")
+    assert by_id.status_code == 200
+    assert by_id.json() == result.json()["items"][0]
+    for unavailable in (failed, rejected, mismatched, "snapshot-" + "f" * 64):
+        missing = client.get(f"{URL}/sources/{unavailable}")
+        assert missing.status_code == 404
+        assert missing.json() == {"detail": "所选来源已不可用"}
+    assert client.get(f"{URL}/sources?limit=26").status_code == 422
+    scanned = [client.get(f"{URL}/sources?offset={offset}&limit=1").json() for offset in range(5)]
+    assert [item for page in scanned for item in page["items"]] == result.json()["items"]
+    assert [page["has_more"] for page in scanned] == [True, True, True, True, False]
+    assert _rows(engine, dataset) == before
+    assert _rows(engine, forward_registration) == _rows(engine, forward_attempt) == _rows(engine, research_task) == []
 
 
 def test_post_freezes_managed_dates_and_replays_when_source_is_gone(engine, setup_registration, monkeypatch):
@@ -240,6 +286,7 @@ def test_maintenance_blocks_post_while_get_stays_available(engine, setup_registr
     with write_gate(engine, exclusive=True):
         response = client.post(URL, json=document, headers=KEY)
         assert response.status_code == 409 and "维护" in response.json()["detail"]
+        assert response.json()["code"] == "maintenance"
         assert client.get(URL).status_code == 200
     assert _rows(engine, forward_registration) == _rows(engine, research_task) == []
     assert client.post(URL, json=document, headers=KEY).status_code == 200

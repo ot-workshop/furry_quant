@@ -138,7 +138,7 @@ function ForwardRegistrationList({ page }: { page: number }) {
     [offset],
   );
   const list = state.data;
-  useReturnFocus(Boolean(list?.items.length), String(page));
+  useReturnFocus(Boolean(list), String(page));
   useEffect(() => {
     if (list && page > 1 && offset >= list.total) {
       const last = Math.ceil(list.total / PAGE_SIZE);
@@ -148,7 +148,18 @@ function ForwardRegistrationList({ page }: { page: number }) {
 
   return (
     <div className="forward-page">
-      <PageHeader title="前瞻登记" />
+      <PageHeader
+        title="前瞻登记"
+        extra={
+          <AppLink
+            to={paths.newForwardRegistration()}
+            returnFocusId="new-forward-registration"
+            className="forward-link forward-create-link"
+          >
+            新建登记
+          </AppLink>
+        }
+      />
       <Section>
         {state.error ? (
           <Alert

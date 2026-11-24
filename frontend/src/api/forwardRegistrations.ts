@@ -36,6 +36,7 @@ export interface MissingEvidence {
 
 export interface ForwardDetail extends ForwardRegistration {
   state: string;
+  pool_codes: string[] | null;
   holding_sessions: number | null;
   confirmed: boolean;
   confirmed_at: string | null;
@@ -73,9 +74,51 @@ interface ForwardPage {
   limit: number;
 }
 
+export interface ForwardSource {
+  id: string;
+  name: string;
+  start: string | null;
+  end: string | null;
+}
+
+export interface ForwardRegistrationRequest {
+  name: string;
+  signal_date: string;
+  pool_codes: string[];
+  top_k: number;
+  factor_window: number;
+  factor_direction: "high" | "low";
+  dataset_id: string;
+}
+
+export interface ForwardRegistrationReceipt {
+  registration_id: string;
+  confirmed_at: string;
+}
+
 const ROOT = "/forward-registrations";
 
 export const forwardRegistrationsApi = {
+  sources: (offset: number, limit: number, signal: AbortSignal) =>
+    request<{ items: ForwardSource[]; has_more: boolean }>(
+      ROOT + "/sources" + query({ offset, limit }),
+      { signal },
+    ),
+  source: (id: string, signal: AbortSignal) =>
+    request<ForwardSource>(ROOT + "/sources/" + encodeURIComponent(id), {
+      signal,
+    }),
+  create: (
+    body: ForwardRegistrationRequest,
+    key: string,
+    signal: AbortSignal,
+  ) =>
+    request<ForwardRegistrationReceipt>(ROOT, {
+      method: "POST",
+      body,
+      headers: { "Idempotency-Key": key },
+      signal,
+    }),
   list: (offset: number, limit: number, signal: AbortSignal) =>
     request<ForwardPage>(ROOT + query({ offset, limit }), { signal }),
   detail: (id: string, signal: AbortSignal) =>

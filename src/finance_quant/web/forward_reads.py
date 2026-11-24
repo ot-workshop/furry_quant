@@ -316,6 +316,7 @@ def registration_detail(connection: Connection, registration_id: str) -> dict | 
     return {
         **_summary(row),
         "state": state,
+        "pool_codes": row["pool_codes"] if confirmed else None,
         "holding_sessions": holding_sessions if type(holding_sessions) is int and holding_sessions > 0 else None,
         "confirmed": confirmed,
         "confirmed_at": row["confirmed_at"] if confirmed else None,

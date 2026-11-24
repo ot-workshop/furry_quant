@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { Alert, Button, Tag } from "antd";
 import {
@@ -376,10 +377,17 @@ export function ForwardRegistrationDetail({ id }: { id: string }) {
   );
   const detail = state.data;
   useReturnFocus(Boolean(detail), id);
+  const headingRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!detail || !window.history.state?.focusHeading) return;
+    headingRef.current?.focus();
+    window.history.replaceState(null, "");
+  }, [detail]);
   return (
     <div className="forward-page">
       <PageHeader
         title={detail?.name ?? "前瞻登记详情"}
+        headingRef={headingRef}
         back={{ to: paths.forwardRegistrations(), label: "返回登记列表" }}
       />
       {state.errorStatus === 404 ? (
@@ -423,6 +431,7 @@ export function ForwardRegistrationDetail({ id }: { id: string }) {
                       : unavailable,
                   ],
                   ["收益对照", "前 K 等权与登记全池等权"],
+                  ["固定股票池", detail.pool_codes?.join("、") || unavailable],
                 ]}
               />
             </Section>

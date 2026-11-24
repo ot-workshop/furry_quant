@@ -1,0 +1,223 @@
+.forward-create {
+  max-width: 1000px;
+}
+
+.forward-create .section-title h2 {
+  margin: 0;
+  font: inherit;
+}
+
+.forward-create form,
+.forward-create-fields,
+.forward-source-list {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.forward-create-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.forward-create-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  align-content: start;
+}
+
+.forward-create-field > label {
+  font-weight: 600;
+}
+
+.forward-create .ant-input,
+.forward-create select {
+  min-height: 44px;
+}
+
+.forward-create select {
+  width: 100%;
+  color: var(--ant-color-text);
+  background: var(--ant-color-bg-container);
+  padding: 0 10px;
+  border: 1px solid var(--ant-color-border);
+  border-radius: var(--ant-border-radius);
+  font: inherit;
+}
+
+.forward-create fieldset {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.forward-create p {
+  margin: 0;
+}
+
+.forward-create .ant-input,
+.forward-create select,
+.forward-create button,
+.forward-create summary,
+.forward-source-list input,
+.forward-create [tabindex="-1"],
+.forward-create .page-back,
+.forward-page .page-heading [tabindex="-1"] {
+  scroll-margin-block: 72px 16px;
+}
+
+.forward-create :is(button, input, select, textarea, summary):focus-visible,
+.forward-create [tabindex="-1"]:focus-visible,
+.forward-page .page-heading [tabindex="-1"]:focus-visible {
+  outline: 2px solid var(--ant-color-info-text);
+  outline-offset: 2px;
+}
+
+.forward-source-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+  padding: 3px;
+  list-style: none;
+}
+
+.forward-source-list li {
+  border: 1px solid var(--ant-color-border);
+  border-radius: var(--ant-border-radius);
+  padding-inline: 12px;
+  min-width: 0;
+}
+
+.forward-source-list li:has(input:checked) {
+  border-color: var(--ant-color-primary);
+  background: var(--ant-color-primary-bg);
+}
+
+.forward-source-list label {
+  min-height: 44px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 10px 0;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.forward-source-list label > span,
+.forward-source-list code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.forward-source-list input {
+  margin: 0;
+  flex: none;
+  accent-color: var(--ant-color-primary);
+}
+
+.forward-source-list strong,
+.forward-source-list label span span {
+  display: block;
+}
+
+.forward-source-list summary {
+  display: list-item;
+  padding: 8px 0;
+  min-height: 44px;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.forward-source-list code {
+  display: block;
+  padding-block-end: 8px;
+}
+
+.forward-source-controls {
+  display: grid;
+  gap: 8px;
+  scroll-margin-block: 72px 16px;
+}
+
+.forward-create-tools,
+.forward-stock-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.forward-stock-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.forward-stock-list li {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.forward-stock-list button {
+  display: inline-flex;
+  color: var(--ant-color-text);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--ant-color-border);
+  background: var(--ant-color-bg-container);
+  border-radius: var(--ant-border-radius);
+  padding: 6px 10px;
+  min-height: 36px;
+  max-width: 100%;
+  word-break: break-word;
+  text-align: start;
+  font: inherit;
+  cursor: pointer;
+}
+
+.forward-create-error {
+  color: var(--ant-color-error-text);
+}
+
+.forward-create [aria-invalid="true"] {
+  border-color: var(--ant-color-error);
+}
+
+.forward-create-hint {
+  color: var(--ant-color-text-secondary);
+}
+
+.forward-create-submit .ant-card-body {
+  display: grid;
+  gap: 12px;
+}
+
+@media (max-width: 767px) {
+  .forward-create-fields,
+  .forward-source-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .forward-stock-list button {
+    min-height: 44px;
+  }
+}
+
+.forward-create-pool {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.forward-create-feedback {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  border: 1px solid var(--ant-color-border);
+  border-inline-start: 4px solid var(--ant-color-info-text);
+  border-radius: var(--ant-border-radius);
+  background: var(--ant-color-bg-container);
+  padding: 12px 16px;
+}

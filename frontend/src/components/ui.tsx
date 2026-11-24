@@ -5,6 +5,7 @@ import {
   useState,
   type MouseEvent,
   type ReactNode,
+  type Ref,
 } from "react";
 import {
   Alert,
@@ -64,12 +65,14 @@ export function PageHeader({
   extra,
   back,
   tags,
+  headingRef,
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
   extra?: ReactNode;
   back?: { to: string; label: string };
   tags?: ReactNode;
+  headingRef?: Ref<HTMLElement>;
 }) {
   return (
     <div className="page-header">
@@ -81,7 +84,12 @@ export function PageHeader({
       <Flex justify="space-between" align="flex-start" gap={16} wrap>
         <div className="page-heading">
           <Flex align="center" gap={8} wrap>
-            <Typography.Title level={3} style={{ margin: 0 }}>
+            <Typography.Title
+              level={3}
+              ref={headingRef}
+              tabIndex={headingRef ? -1 : undefined}
+              style={{ margin: 0 }}
+            >
               {title}
             </Typography.Title>
             {tags}
