@@ -49,10 +49,10 @@ interface RequestOptions {
 }
 
 /** The single HTTP entry point; server error details are surfaced verbatim. */
-export async function request<T>(
+export async function requestWithStatus<T>(
   path: string,
   { method = "GET", body, headers, signal }: RequestOptions = {},
-): Promise<T> {
+): Promise<{ status: number; data: T }> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
@@ -86,10 +86,17 @@ export async function request<T>(
     throw new ApiError(detail, response.status, code);
   }
   try {
-    return (await response.json()) as T;
+    return { status: response.status, data: (await response.json()) as T };
   } catch {
     throw new ApiError("后端返回了无法解析的数据", response.status);
   }
+}
+
+export async function request<T>(
+  path: string,
+  options?: RequestOptions,
+): Promise<T> {
+  return (await requestWithStatus<T>(path, options)).data;
 }
 
 export function newIdempotencyKey(prefix = "web"): string {

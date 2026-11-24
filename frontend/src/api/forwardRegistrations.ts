@@ -1,4 +1,4 @@
-import { query, request } from "./http";
+import { query, request, requestWithStatus } from "./http";
 
 export interface ForwardRegistration {
   id: string;
@@ -42,6 +42,7 @@ export interface ForwardDetail extends ForwardRegistration {
   confirmed_at: string | null;
   score_deadline_at: string | null;
   matures_at: string | null;
+  available_actions: { score: boolean; verify: boolean };
   versions: {
     calendar: string | null;
     source_dataset: string | null;
@@ -96,6 +97,22 @@ export interface ForwardRegistrationReceipt {
   confirmed_at: string;
 }
 
+export type ForwardPhase = "score" | "verify";
+
+export interface ScoreOption {
+  id: string;
+  data_end: string;
+  captured_at: string;
+}
+
+export type ForwardActionRequest =
+  | { phase: "score"; scoreSnapshotId: string }
+  | { phase: "verify" };
+
+export type ForwardActionReceipt =
+  | { status: "awaiting_quote" }
+  | { status: "accepted"; task_id: string; attempt_id: string };
+
 const ROOT = "/forward-registrations";
 
 export const forwardRegistrationsApi = {
@@ -123,4 +140,46 @@ export const forwardRegistrationsApi = {
     request<ForwardPage>(ROOT + query({ offset, limit }), { signal }),
   detail: (id: string, signal: AbortSignal) =>
     request<ForwardDetail>(`${ROOT}/${encodeURIComponent(id)}`, { signal }),
+  scoreOptions: (id: string, signal: AbortSignal) =>
+    request<{ bound: string | null; items: ScoreOption[] }>(
+      ROOT + "/" + encodeURIComponent(id) + "/score-options",
+      { signal },
+    ),
+  submitAction: async (
+    id: string,
+    action: ForwardActionRequest,
+    key: string,
+    signal: AbortSignal,
+  ) => {
+    const { status, data } = await requestWithStatus<ForwardActionReceipt>(
+      ROOT + "/" + encodeURIComponent(id) + "/" + action.phase,
+      {
+        method: "POST",
+        body:
+          action.phase === "score"
+            ? { score_snapshot_id: action.scoreSnapshotId }
+            : {},
+        headers: { "Idempotency-Key": key },
+        signal,
+      },
+    );
+    if (
+      status === 200 &&
+      action.phase === "verify" &&
+      data?.status === "awaiting_quote"
+    ) {
+      return data;
+    }
+    if (
+      status === 202 &&
+      data?.status === "accepted" &&
+      typeof data.task_id === "string" &&
+      /^task-[0-9a-f]{32}$/.test(data.task_id) &&
+      typeof data.attempt_id === "string" &&
+      /^fat-[0-9a-f]{32}$/.test(data.attempt_id)
+    ) {
+      return data;
+    }
+    throw new Error("Invalid forward action receipt");
+  },
 };

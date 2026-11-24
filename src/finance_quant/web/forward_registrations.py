@@ -15,7 +15,11 @@ from starlette.concurrency import run_in_threadpool
 from finance_quant.application.forward_verification import VerificationInputError
 from finance_quant.persistence.forward import AttemptActive
 from finance_quant.task_contracts import TaskConflict
-from finance_quant.web.forward_actions import submit_forward_score, submit_forward_verification
+from finance_quant.web.forward_actions import (
+    registration_score_options,
+    submit_forward_score,
+    submit_forward_verification,
+)
 from finance_quant.web.forward_reads import registration_detail, registration_page
 from finance_quant.web.forward_writes import registration_source, registration_sources, submit_forward_registration
 from finance_quant.web.write_requests import ResearchMaintenanceRejected, research_json
@@ -63,6 +67,15 @@ def forward_registration_router(
         if option is None:
             raise HTTPException(404, "所选来源已不可用")
         return option
+
+    @router.get("/{registration_id}/score-options")
+    def score_options(registration_id: str, connection: Connection = Depends(read_connection)):
+        if data_root is None:
+            raise HTTPException(503, "评分快照暂不可读")
+        try:
+            return registration_score_options(connection, data_root, registration_id)
+        except (OSError, ValueError):
+            raise HTTPException(503, "评分快照暂不可读") from None
 
     @router.get("/{registration_id}")
     def registration(registration_id: str, connection: Connection = Depends(read_connection)):

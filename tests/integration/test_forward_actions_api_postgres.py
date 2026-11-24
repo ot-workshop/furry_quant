@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime, timedelta
+from shutil import copytree
 from threading import Event
 
 import pandas as pd
@@ -21,8 +24,10 @@ from test_postgres_runtime import engine as engine
 from finance_quant.api import create_app
 from finance_quant.application import forward_score
 from finance_quant.application.forward_label_capture import publish_forward_label_snapshot
+from finance_quant.application.forward_score_capture import publish_forward_score_snapshot
 from finance_quant.application.research_requests import lookup_snapshot_meta
 from finance_quant.application.tasks import TaskService
+from finance_quant.data.market import managed_score_snapshot_id, score_snapshot_leaf_name
 from finance_quant.persistence.maintenance import write_gate
 from finance_quant.persistence.results import PgResultStore
 from finance_quant.persistence.schema import forward_attempt, forward_registration, research_task
@@ -70,6 +75,55 @@ def _concurrent_post(client, identifier, stage, body, key):
         bindings = [_accepted(reply.result(timeout=15)) for reply in replies]
     assert all(binding == bindings[0] for binding in bindings)
     return bindings[0]
+
+
+def test_score_options_only_list_verified_match_and_reuse_original_binding(
+    engine, tmp_path, setup_capture, monkeypatch
+):
+    root, row, supplier, publish = setup_capture
+    client = _client(engine, root, tmp_path, monkeypatch)
+    identifier = row["id"]
+    options_url = f"{URL}/{identifier}/score-options"
+    assert client.get(options_url).json() == {"bound": None, "items": []}
+    assert client.get(f"{URL}/missing/score-options").status_code == 404
+
+    first = publish()
+    second = publish_forward_score_snapshot(
+        engine, root, identifier, storage_root=tmp_path, provider=supplier, key="second-option"
+    )
+    relative, manifest, _ = lookup_snapshot_meta(root, first["id"], allow_score=True)
+    for change in (
+        {"registration_sha256": "f" * 64},
+        {"registration_id": "some-other-registration"},
+        {"captured_at": row["confirmed_at"].isoformat()},
+        {"source_dataset_id": "snapshot-" + "f" * 64},
+        {"pool_codes": list(reversed(row["pool_codes"]))},
+        {"data_end": row["exit_date"].isoformat()},
+    ):
+        foreign = deepcopy(manifest)
+        foreign["score_capture"].update(change)
+        foreign["id"] = managed_score_snapshot_id(foreign)
+        leaf = root / relative.parent / score_snapshot_leaf_name(foreign)
+        copytree(root / relative, leaf)
+        (leaf / "manifest.json").write_text(json.dumps(foreign), encoding="utf-8")
+    calls = len(supplier.calls)
+    with write_gate(engine, exclusive=True):
+        result = client.get(options_url)
+    assert result.status_code == 200
+    assert result.json()["bound"] is None
+    assert len(supplier.calls) == calls
+    assert _queue_rows(engine) == [[], []]
+    items = result.json()["items"]
+    assert {item["id"] for item in items} == {first["id"], second["id"]}
+    assert all(set(item) == {"id", "data_end", "captured_at"} for item in items)
+    assert all(item["data_end"] == row["signal_date"].isoformat() for item in items)
+    assert client.get(f"{URL}/{identifier}").json()["available_actions"] == {"score": True, "verify": False}
+
+    accepted = _accepted(_post(client, identifier, "score", {"score_snapshot_id": first["id"]}, SCORE_KEY))
+    PgTaskStore(engine=engine).cancel(accepted["task_id"])
+    (root / relative / "manifest.json").unlink()
+    assert client.get(options_url).json() == {"bound": first["id"], "items": []}
+    assert client.get(f"{URL}/{identifier}").json()["available_actions"] == {"score": True, "verify": False}
 
 
 def test_manual_score_and_verification_run_in_worker_and_read_back(

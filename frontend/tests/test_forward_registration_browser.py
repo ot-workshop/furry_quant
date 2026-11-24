@@ -55,12 +55,14 @@ def browser():
 
 
 @contextmanager
-def serve(engine, root):
+def serve(engine, root, *, data_root=None):
     dist = ROOT / "frontend" / "dist"
     assert (dist / "index.html").is_file(), "Build the frontend first"
     app = create_app(
         result_store=PgResultStore(root / "runs", engine=engine, storage_root=root),
-        task_service=TaskService(root / "runs", root, task_store=PgTaskStore(engine=engine)),
+        task_service=TaskService(
+            root / "runs", root if data_root is None else data_root, task_store=PgTaskStore(engine=engine)
+        ),
         frontend_dist=dist,
     )
     with socket.socket() as listener:

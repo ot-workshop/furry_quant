@@ -19,6 +19,8 @@ import {
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 
+import { ForwardRegistrationActions } from "./ForwardRegistrationActions";
+
 const unavailable = "暂不可用";
 const shanghaiTime = new Intl.DateTimeFormat("sv-SE", {
   timeZone: "Asia/Shanghai",
@@ -370,13 +372,24 @@ function Attempts({ attempts }: { attempts: ForwardAttempt[] }) {
   );
 }
 
+function actionReturnFocus(id: string) {
+  if (id.startsWith("forward-receipt-")) {
+    const attempt = document.getElementById(
+      id.replace("forward-receipt-", "forward-attempt-"),
+    );
+    if (attempt) return attempt;
+  }
+  return document.getElementById("forward-actions-heading");
+}
+
 export function ForwardRegistrationDetail({ id }: { id: string }) {
   const state = useApiResource(
     (signal) => forwardRegistrationsApi.detail(id, signal),
     [id],
   );
-  const detail = state.data;
-  useReturnFocus(Boolean(detail), id);
+  const detail =
+    state.errorStatus === 403 || state.errorStatus === 404 ? null : state.data;
+  useReturnFocus(Boolean(detail), id, actionReturnFocus);
   const headingRef = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!detail || !window.history.state?.focusHeading) return;
@@ -390,11 +403,7 @@ export function ForwardRegistrationDetail({ id }: { id: string }) {
         headingRef={headingRef}
         back={{ to: paths.forwardRegistrations(), label: "返回登记列表" }}
       />
-      {state.errorStatus === 404 ? (
-        <Section>
-          <EmptyState title="登记不存在" />
-        </Section>
-      ) : state.error ? (
+      {state.error && state.errorStatus !== 404 && (
         <Alert
           type="warning"
           title="详情加载失败"
@@ -405,11 +414,26 @@ export function ForwardRegistrationDetail({ id }: { id: string }) {
             </Button>
           }
         />
+      )}
+      {state.errorStatus === 404 ? (
+        <Section>
+          <EmptyState title="登记不存在" />
+        </Section>
       ) : !detail ? (
-        <Loading rows={6} />
+        state.error ? null : (
+          <Loading rows={6} />
+        )
       ) : (
         <>
           <Outcome detail={detail} />
+          <ForwardRegistrationActions
+            key={id}
+            detail={detail}
+            earliest={moment(detail.matures_at)}
+            readFailed={Boolean(state.error)}
+            refreshing={state.refreshing}
+            refresh={state.reload}
+          />
           <div className="forward-detail-grid">
             <Section title="冻结参数">
               <Fields
