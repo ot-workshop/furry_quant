@@ -60,6 +60,7 @@
 .forward-create select,
 .forward-create button,
 .forward-create summary,
+.forward-source-list input,
 .forward-create [tabindex="-1"],
 .forward-create .page-back,
 .forward-page .page-heading [tabindex="-1"] {
@@ -131,6 +132,12 @@
 .forward-source-list code {
   display: block;
   padding-block-end: 8px;
+}
+
+.forward-source-controls {
+  display: grid;
+  gap: 8px;
+  scroll-margin-block: 72px 16px;
 }
 
 .forward-create-tools,

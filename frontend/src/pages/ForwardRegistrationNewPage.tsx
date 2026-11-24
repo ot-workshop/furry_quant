@@ -108,6 +108,9 @@ export default function ForwardRegistrationNewPage() {
   const [checked, setChecked] = useState(false);
   const heading = useRef<HTMLElement>(null);
   const message = useRef<HTMLDivElement>(null);
+  const sourceControls = useRef<HTMLDivElement>(null);
+  const sourceOptions = useRef<HTMLFieldSetElement>(null);
+  const sourceRefreshRequested = useRef(false);
   const { state, submit, retry, clearRejection } =
     useForwardRegistrationSubmission((id) =>
       navigate(paths.forwardRegistration(id), {
@@ -123,6 +126,19 @@ export default function ForwardRegistrationNewPage() {
   const sourceLost = selection.errorStatus === 404;
   const selectedVisible = items?.some((item) => item.id === chosen?.id);
   const selectedOption = selection.data ?? chosen;
+  const sourceNotice = sourceLost
+    ? locked
+      ? "原受管来源已不可用，仍保留原参数供重试。"
+      : "所选来源已不可用，请重新选择。"
+    : selection.error && !sources.error
+      ? "暂时无法复核所选来源。" + selection.error
+      : null;
+  const sourcesRefreshing = sources.refreshing || selection.refreshing;
+  const canChooseAnotherSource =
+    sourceLost &&
+    !locked &&
+    !sources.error &&
+    items?.some((item) => item.id !== chosen?.id);
   const entries = pool
     .split(/[\s,，;；、]+/)
     .filter(Boolean)
@@ -178,6 +194,21 @@ export default function ForwardRegistrationNewPage() {
     if (unconfirmed || rejection || localError) message.current?.focus();
   }, [unconfirmed, rejection, localError]);
 
+  useEffect(() => {
+    if (!sourceRefreshRequested.current || sourcesRefreshing) return;
+    sourceRefreshRequested.current = false;
+    const controls = sourceControls.current;
+    const active = document.activeElement;
+    if (
+      controls &&
+      (sources.error || sourceNotice) &&
+      (active === document.body || controls.contains(active))
+    ) {
+      // Keep the result and its actions together in view without moving focus.
+      controls.scrollIntoView({ block: "nearest" });
+    }
+  }, [sourcesRefreshing, sources.error, sourceNotice]);
+
   function formSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (locked || !canConfirm) return;
@@ -207,6 +238,7 @@ export default function ForwardRegistrationNewPage() {
   }
 
   function refreshSources() {
+    sourceRefreshRequested.current = true;
     sources.reload();
     if (chosen) selection.reload();
   }
@@ -214,6 +246,14 @@ export default function ForwardRegistrationNewPage() {
   function changeSourcePage(offset: number) {
     setSourceOffset(offset);
     if (chosen) selection.reload();
+  }
+
+  function revealSourceOptions() {
+    const firstOption = sourceOptions.current?.querySelector<HTMLInputElement>(
+      'input[type="radio"]:enabled',
+    );
+    firstOption?.focus({ preventScroll: true });
+    firstOption?.scrollIntoView({ block: "nearest" });
   }
 
   function removeStock(position: number) {
@@ -264,9 +304,7 @@ export default function ForwardRegistrationNewPage() {
           </p>
           {sources.loading ? (
             <p role="status">正在加载受管来源</p>
-          ) : sources.error ? (
-            <p role="alert">受管来源读取失败。{sources.error}</p>
-          ) : items?.length === 0 && !chosen ? (
+          ) : !sources.error && items?.length === 0 && !chosen ? (
             <p role="status">
               {sources.data?.has_more || sourceOffset > 0
                 ? "本页暂无可用受管来源"
@@ -279,16 +317,6 @@ export default function ForwardRegistrationNewPage() {
               {selectedOption.id.slice(-8)}
             </p>
           )}
-          {sourceLost && (
-            <p role={locked ? "status" : "alert"}>
-              {locked
-                ? "原受管来源已不可用，仍保留原参数供重试。"
-                : "所选来源已不可用，请重新选择。"}
-            </p>
-          )}
-          {selection.error && !sourceLost && !sources.error && (
-            <p role="alert">暂时无法复核所选来源。{selection.error}</p>
-          )}
           {problem("source") && (
             <p id="forward-source-error" className="forward-create-error">
               {problem("source")}
@@ -296,6 +324,7 @@ export default function ForwardRegistrationNewPage() {
           )}
           {items && items.length > 0 && (
             <fieldset
+              ref={sourceOptions}
               disabled={locked || Boolean(sources.error) || sources.refreshing}
               aria-labelledby="forward-source-title"
               aria-describedby={
@@ -310,6 +339,7 @@ export default function ForwardRegistrationNewPage() {
                         type="radio"
                         name="source"
                         checked={!sourceLost && chosen?.id === source.id}
+                        disabled={sourceLost && chosen?.id === source.id}
                         onChange={() => setChosen(source)}
                       />
                       <span>
@@ -331,33 +361,48 @@ export default function ForwardRegistrationNewPage() {
               </ul>
             </fieldset>
           )}
-          <div className="forward-create-tools">
-            <Button
-              onClick={refreshSources}
-              loading={sources.refreshing || selection.refreshing}
-            >
-              {sources.error || (selection.error && !sourceLost)
-                ? "重试加载来源"
-                : "刷新来源"}
-            </Button>
-            {sourceOffset > 0 && (
-              <Button
-                onClick={() =>
-                  changeSourcePage(sourceOffset - SOURCE_PAGE_SIZE)
-                }
-              >
-                上一页来源
-              </Button>
+          <div ref={sourceControls} className="forward-source-controls">
+            {sources.error && (
+              <p role="alert">受管来源读取失败。{sources.error}</p>
             )}
-            {sources.data?.has_more && (
-              <Button
-                onClick={() =>
-                  changeSourcePage(sourceOffset + SOURCE_PAGE_SIZE)
-                }
-              >
-                下一页来源
-              </Button>
+            {sourceNotice && (
+              <p role={sourceLost && locked ? "status" : "alert"}>
+                {sourceNotice}
+              </p>
             )}
+            <div className="forward-create-tools">
+              <Button onClick={refreshSources} loading={sourcesRefreshing}>
+                {sources.error || (selection.error && !sourceLost)
+                  ? "重试加载来源"
+                  : "刷新来源"}
+              </Button>
+              {canChooseAnotherSource && (
+                <Button
+                  disabled={sourcesRefreshing}
+                  onClick={revealSourceOptions}
+                >
+                  重新选择来源
+                </Button>
+              )}
+              {sourceOffset > 0 && (
+                <Button
+                  onClick={() =>
+                    changeSourcePage(sourceOffset - SOURCE_PAGE_SIZE)
+                  }
+                >
+                  上一页来源
+                </Button>
+              )}
+              {sources.data?.has_more && (
+                <Button
+                  onClick={() =>
+                    changeSourcePage(sourceOffset + SOURCE_PAGE_SIZE)
+                  }
+                >
+                  下一页来源
+                </Button>
+              )}
+            </div>
           </div>
         </Section>
 

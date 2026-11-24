@@ -232,6 +232,108 @@ def test_create_form_keeps_source_when_it_moves_to_another_page(engine, tmp_path
     assert _rows(engine, forward_attempt) == _rows(engine, research_task) == []
 
 
+@pytest.mark.parametrize(("width", "height"), ((1440, 900), (390, 740), (320, 568)))
+def test_source_refresh_feedback_visible_at_card_bottom(engine, tmp_path, browser, setup_registration, width, height):
+    _, _, signal, sessions, calendar, source, _ = setup_registration
+    start = sessions[0].isoformat()
+    chosen_id, _ = source(calendar, name="selected", manifest_name=LONG_NAME, coverage=(start, signal.isoformat()))
+    source(calendar, name="same-name", manifest_name=LONG_NAME, coverage=(start, sessions[-1].isoformat()))
+    mobile = width <= 390
+
+    with (
+        serve(engine, tmp_path) as origin,
+        browser.new_context(
+            viewport={"width": width, "height": height},
+            is_mobile=mobile,
+            has_touch=mobile,
+            reduced_motion="reduce",
+        ) as context,
+    ):
+        page = context.new_page()
+        page.goto(origin + NEW)
+        selected = page.get_by_role("radio", name=chosen_id[-8:])
+        if mobile:
+            page.locator("li").filter(has=selected).locator("label").tap()
+        else:
+            selected.focus()
+            page.keyboard.press("Space")
+        expect(selected).to_be_checked()
+        fill(page, "刷新仍保留输入", signal)
+        expect(form(page)).to_be_enabled()
+
+        def refresh(label="刷新来源"):
+            button = page.get_by_role("button", name=label)
+            if mobile:
+                button.evaluate("(button) => button.scrollIntoView({block: 'end'})")
+                button.tap()
+            else:
+                activate(page, button, mobile=False)
+
+        def assert_in_viewport(locator):
+            expect(locator).to_be_in_viewport(ratio=1)
+            assert locator.bounding_box()["y"] >= page.locator(".app-header").bounding_box()["height"]
+
+        for index in range(5):
+            source(calendar, name=f"new-{index}", manifest_name=LONG_NAME, provider=f"{index:064x}")
+        refresh()
+        expect(selected).to_have_count(0)
+        expect(page.get_by_text(f"已选来源 {LONG_NAME} · 尾号 {chosen_id[-8:]}")).to_be_visible()
+        expect(form(page)).to_be_enabled()
+
+        page.route(
+            f"**{API}/sources/{chosen_id}",
+            lambda route: route.fulfill(status=503, json={"detail": "受管来源暂不可读"}),
+            times=1,
+        )
+        refresh()
+        unavailable = page.get_by_text("暂时无法复核所选来源。受管来源暂不可读", exact=True)
+        retry = page.get_by_role("button", name="重试加载来源")
+        assert_in_viewport(unavailable)
+        assert_in_viewport(retry)
+        if not mobile:
+            expect(retry).to_be_focused()
+        screen(page, f"source-refresh-503-{width}", full_page=False)
+        refresh("重试加载来源")
+        expect(unavailable).to_have_count(0)
+        expect(form(page)).to_be_enabled()
+
+        with engine.begin() as connection:
+            connection.execute(update(dataset).where(dataset.c.id == chosen_id).values(status="failed"))
+        refresh()
+        missing = page.get_by_text("所选来源已不可用，请重新选择。", exact=True)
+        assert_in_viewport(missing)
+        assert_in_viewport(page.get_by_role("button", name="刷新来源"))
+        if not mobile:
+            expect(page.get_by_role("button", name="刷新来源")).to_be_focused()
+        reselect = page.get_by_role("button", name="重新选择来源")
+        assert_in_viewport(reselect)
+        screen(page, f"source-refresh-404-{width}", full_page=False)
+        if mobile:
+            reselect.tap()
+        else:
+            page.keyboard.press("Tab")
+            expect(reselect).to_be_focused()
+            page.keyboard.press("Enter")
+        first_option = page.get_by_role("radio").first
+        expect(first_option).to_be_focused()
+        assert_in_viewport(first_option)
+        expect(form(page)).to_be_disabled()
+
+        with engine.begin() as connection:
+            connection.execute(update(dataset).where(dataset.c.id == chosen_id).values(status="ready"))
+        refresh()
+        expect(missing).to_have_count(0)
+        expect(reselect).to_have_count(0)
+        expect(form(page)).to_be_enabled()
+        expect(page.get_by_text(f"已选来源 {LONG_NAME} · 尾号 {chosen_id[-8:]}")).to_be_visible()
+        expect(page.get_by_label("登记名称")).to_have_value("刷新仍保留输入")
+        expect(page.get_by_label("信号日", exact=True)).to_have_value(signal.isoformat())
+        expect(page.get_by_label("固定股票池", exact=True)).to_have_value("000001.sz，600000.SH\n600001.SH")
+        assert_fits(page)
+
+    assert _rows(engine, forward_registration) == _rows(engine, forward_attempt) == _rows(engine, research_task) == []
+
+
 def test_create_form_local_validation(engine, tmp_path, browser, setup_registration):
     _, _, signal, _, _, _, _ = setup_registration
     with serve(engine, tmp_path) as origin, browser.new_context(viewport={"width": 320, "height": 840}) as context:
