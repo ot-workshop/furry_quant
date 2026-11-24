@@ -12,6 +12,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
+  DOCKER_BUILD_RECORD_RETENTION_DAYS: "2"
 
 jobs:
   build:
