@@ -134,6 +134,9 @@ def test_manual_actions_worker_and_return_focus(engine, tmp_path, browser, setup
         seen = []
         score, verify = score_panel(page), verify_panel(page)
 
+        def detail_read(response):
+            return response.url == origin + api_path and response.request.method == "GET"
+
         def score_once(route):
             seen.append(route.request.post_data_json)
             # Duplicate DOM clicks while the first request has no response.
@@ -206,8 +209,12 @@ def test_manual_actions_worker_and_return_focus(engine, tmp_path, browser, setup
             refresh(page)
             expect(submit(verify, "verify")).to_be_enabled()
             before = _queue_rows(engine)
-            waiting = post_receipt(page, origin + api_path + "/verify", submit(verify, "verify"), mobile)
+            with page.expect_response(detail_read) as waiting_read:
+                waiting = post_receipt(page, origin + api_path + "/verify", submit(verify, "verify"), mobile)
             assert waiting.status == 200 and waiting.json() == {"status": "awaiting_quote"}
+            assert waiting_read.value.ok
+            waiting_detail = waiting_read.value.json()
+            assert waiting_detail["available_actions"]["verify"], waiting_detail["state"]
             assert waiting.request.post_data_json == {}
             quote = verify.locator(".forward-action-feedback")
             assert_feedback_focus(page, quote)
@@ -220,17 +227,49 @@ def test_manual_actions_worker_and_return_focus(engine, tmp_path, browser, setup
             label = publish_forward_label_snapshot(
                 engine, root, row["id"], storage_root=tmp_path, provider=supplier, key="browser-mature-label"
             )
-            posted = post_receipt(page, origin + api_path + "/verify", submit(verify, "verify"), mobile)
+            with page.expect_response(detail_read) as queued_read:
+                posted = post_receipt(page, origin + api_path + "/verify", submit(verify, "verify"), mobile)
             assert posted.status == 202
             result = posted.json()
+            assert queued_read.value.ok
+            assert result["attempt_id"] in {attempt["id"] for attempt in queued_read.value.json()["attempts"]}
             assert_feedback_focus(page, quote)
             expect(quote).to_contain_text("验证已入队")
             assert len(_queue_rows(engine)[0]) == len(_queue_rows(engine)[1]) == 2
             assert_fits(page)
             screen(page, f"actions-verify-queued-{width}")
-            visit_task(
-                page, quote.get_by_role("link", name="查看验证任务"), origin, path, row, result, "到期验证", mobile
+            deny_detail_once(page, api_path)
+            refresh_button = page.get_by_role("button", name="刷新登记", exact=True)
+            if mobile:
+                refresh_button.tap()
+            else:
+                activate(page, refresh_button, mobile=False)
+            assert_detail_hidden(page, row)
+
+            page.route(
+                "**" + api_path, lambda route: route.fulfill(status=503, json={"detail": "详情暂不可读"}), times=1
             )
+            retry_read = page.get_by_role("button", name=re.compile(r"^重\s*试$"))
+            for status in (503, 200):
+                with page.expect_response(detail_read) as fetched:
+                    if mobile:
+                        retry_read.tap()
+                    else:
+                        activate(page, retry_read, mobile=False)
+                assert fetched.value.status == status
+                if status == 503:
+                    expect(page.get_by_text("详情加载失败", exact=True)).to_be_visible()
+                    expect(quote).to_have_count(0)
+                    expect(page.locator('a[href*="/tasks?focus="]')).to_have_count(0)
+
+            verify_link = quote.get_by_role("link", name="查看验证任务")
+            expect(verify_link).to_have_attribute("href", "/tasks?focus=" + result["task_id"])
+            # Wait for any deferred history focus restoration before checking the final focus.
+            page.evaluate("() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
+            assert_feedback_focus(page, quote)
+            expect(verify_link).to_be_in_viewport(ratio=1)
+            screen(page, f"actions-verify-recovered-after-score-return-{width}", full_page=False)
+            visit_task(page, verify_link, origin, path, row, result, "到期验证", mobile)
             assert _execute(store, root, result)[1]["status"] == "succeeded"
             refresh(page)
             expect(page.get_by_text("2.33 个百分点", exact=True)).to_be_visible()

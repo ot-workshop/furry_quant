@@ -96,7 +96,7 @@ export function navigate(
   if (!replace) window.scrollTo?.({ top: 0 });
 }
 
-/** Restore the exact link on a returning entry once its on-demand data is rendered. */
+/** Restore the return link once its on-demand data is rendered, then consume the marker. */
 export function useReturnFocus(
   ready: boolean,
   path: string,
@@ -106,8 +106,13 @@ export function useReturnFocus(
     const target = window.history.state?.returnFocus;
     if (!ready || !target) return;
     const frame = requestAnimationFrame(() => {
+      const entry = window.history.state;
+      if (entry?.returnFocus !== target) return;
       const link = document.getElementById(target.id) ?? fallback?.(target.id);
       if (!link) return;
+      const remaining = { ...entry };
+      delete remaining.returnFocus;
+      window.history.replaceState(remaining, "");
       window.scrollTo({ top: target.scrollY });
       link.focus({ preventScroll: true });
       link.scrollIntoView({ block: "nearest" });
