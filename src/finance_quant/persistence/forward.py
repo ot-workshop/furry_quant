@@ -113,6 +113,11 @@ def _lock_attempt(connection: Connection, attempt_id: str) -> dict:
     return dict(row) if row else {}
 
 
+def jsonb_round_trip(connection: Connection, payload: dict) -> dict:
+    """Use the same representation as persisted JSONB, including PostgreSQL's numeric formatting."""
+    return connection.execute(text("select cast(:payload as jsonb)"), {"payload": canonical_json(payload)}).scalar_one()
+
+
 def confirm_attempt(
     store: PgTaskStore,
     *,
@@ -128,10 +133,11 @@ def confirm_attempt(
     and observes the persisted status before the deadline can be evaluated again.
     A sealed result is replayed only for the same bound evidence.
     """
-    digest = canonical_sha256(evidence)
     with store.engine.connect().execution_options(isolation_level="READ COMMITTED") as connection:
         with connection.begin():
-            stopped = _record_evidence(connection, attempt_id, evidence, digest)
+            persisted = jsonb_round_trip(connection, evidence)
+            digest = canonical_sha256(persisted)
+            stopped = _record_evidence(connection, attempt_id, persisted, digest)
         if stopped is not None:
             return stopped
         with connection.begin():
@@ -382,7 +388,8 @@ def fail_forward_task(
                 if row is not None and row["status"] == "succeeded":
                     return False
                 if row is not None and evidence is not None and row["status"] == "running" and row["evidence"] is None:
-                    _record_evidence(connection, row["id"], evidence, canonical_sha256(evidence))
+                    persisted = jsonb_round_trip(connection, evidence)
+                    _record_evidence(connection, row["id"], persisted, canonical_sha256(persisted))
                 store.finish(task_id, "failed", error=reason, connection=connection)
         return True
     except TaskConflict:
