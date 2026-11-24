@@ -74,6 +74,14 @@ def assert_feedback_focus(page, feedback):
     assert feedback.bounding_box()["y"] >= page.locator(".app-header").bounding_box()["height"]
 
 
+def assert_busy(button):
+    expect(button).to_have_attribute("aria-busy", "true")
+    icon = button.locator(".anticon-loading")
+    expect(icon).to_be_visible()
+    expect(icon).to_have_attribute("aria-hidden", "true")
+    expect(button.get_by_role("img", name="loading")).to_have_count(0)
+
+
 def post_receipt(page, url, button, mobile):
     expect(button).to_be_enabled()
     with page.expect_response(lambda response: response.url == url and response.request.method == "POST") as posted:
@@ -92,10 +100,14 @@ def visit_task(page, link, origin, detail_path, row, result, stage, mobile):
     expect_restored(page, accept)
 
 
-def deny_detail_once(page, api_path):
+def deny_detail_once(page, api_path, *, busy_button=None):
     def deny(route):
         assert route.request.method == "GET"
-        route.fulfill(status=403, json={"detail": "private access error"})
+        try:
+            if busy_button is not None:
+                assert_busy(busy_button)
+        finally:
+            route.fulfill(status=403, json={"detail": "private access error"})
 
     page.route("**" + api_path, deny, times=1)
 
@@ -139,17 +151,38 @@ def test_manual_actions_worker_and_return_focus(engine, tmp_path, browser, setup
 
         def score_once(route):
             seen.append(route.request.post_data_json)
-            # Duplicate DOM clicks while the first request has no response.
-            page.evaluate("""() => {
-              const button = document.querySelector('[aria-labelledby="forward-action-score"] button.ant-btn-primary');
-              button?.click();
-              button?.click();
-            }""")
-            route.continue_()
+            try:
+                assert_busy(submit(score, "score"))
+                # Duplicate DOM clicks while the first request has no response.
+                page.evaluate("""() => {
+                  const button = document.querySelector('[aria-labelledby="forward-action-score"] button.ant-btn-primary');
+                  button?.click();
+                  button?.click();
+                }""")
+            finally:
+                route.continue_()
+
+        def inspect_verify_submission(route):
+            try:
+                assert_busy(submit(verify, "verify"))
+            finally:
+                route.continue_()
 
         page.route("**" + api_path + "/score", score_once)
+        page.route("**" + api_path + "/verify", inspect_verify_submission)
         page.goto(origin + path)
-        selection = score.get_by_label("评分快照")
+        # With transitions suppressed, the default spinner can miss its leave event.
+        page.add_style_tag(
+            content="""
+            .ant-btn .ant-btn-loading-icon-motion-appear,
+            .ant-btn .ant-btn-loading-icon-motion-enter,
+            .ant-btn .ant-btn-loading-icon-motion-leave {
+                transition: none !important;
+                animation: none !important;
+            }
+            """
+        )
+        selection = score.get_by_role("combobox", name="评分快照", exact=True)
         expect(selection.locator("option")).to_have_count(3)
         assert set(selection.locator("option").evaluate_all("(options) => options.map(option => option.value)")) == {
             "",
@@ -219,6 +252,7 @@ def test_manual_actions_worker_and_return_focus(engine, tmp_path, browser, setup
             quote = verify.locator(".forward-action-feedback")
             assert_feedback_focus(page, quote)
             expect(quote).to_contain_text("本次未找到合格标签")
+            expect(submit(verify, "verify")).to_have_attribute("aria-busy", "false")
             expect(quote.get_by_role("link")).to_have_count(0)
             assert _queue_rows(engine) == before
             assert_fits(page)
@@ -238,8 +272,8 @@ def test_manual_actions_worker_and_return_focus(engine, tmp_path, browser, setup
             assert len(_queue_rows(engine)[0]) == len(_queue_rows(engine)[1]) == 2
             assert_fits(page)
             screen(page, f"actions-verify-queued-{width}")
-            deny_detail_once(page, api_path)
             refresh_button = page.get_by_role("button", name="刷新登记", exact=True)
+            deny_detail_once(page, api_path, busy_button=refresh_button)
             if mobile:
                 refresh_button.tap()
             else:
@@ -249,7 +283,7 @@ def test_manual_actions_worker_and_return_focus(engine, tmp_path, browser, setup
             page.route(
                 "**" + api_path, lambda route: route.fulfill(status=503, json={"detail": "详情暂不可读"}), times=1
             )
-            retry_read = page.get_by_role("button", name=re.compile(r"^重\s*试$"))
+            retry_read = page.get_by_role("button", name="重试", exact=True)
             for status in (503, 200):
                 with page.expect_response(detail_read) as fetched:
                     if mobile:
@@ -271,7 +305,10 @@ def test_manual_actions_worker_and_return_focus(engine, tmp_path, browser, setup
             screen(page, f"actions-verify-recovered-after-score-return-{width}", full_page=False)
             visit_task(page, verify_link, origin, path, row, result, "到期验证", mobile)
             assert _execute(store, root, result)[1]["status"] == "succeeded"
-            refresh(page)
+            with page.expect_response(detail_read) as completed_read:
+                refresh(page)
+            assert completed_read.value.ok
+            expect(refresh_button).to_have_attribute("aria-busy", "false")
             expect(page.get_by_text("2.33 个百分点", exact=True)).to_be_visible()
             expect(verify.get_by_text(label["id"], exact=True)).to_be_visible()
             assert_fits(page)
@@ -323,7 +360,7 @@ def test_manual_actions_unconfirmed_replay_during_maintenance(
             page.route("**" + endpoint, pending)
             page.goto(origin + path)
             if phase == "score":
-                panel.get_by_label("评分快照").select_option(score_version)
+                panel.get_by_role("combobox", name="评分快照", exact=True).select_option(score_version)
             before = _queue_rows(engine)
             submit(panel, phase).click()
             feedback = panel.locator(".forward-action-feedback")
@@ -410,7 +447,7 @@ def test_score_rejection_refresh_failure_and_bound_retry(engine, tmp_path, brows
         manifest_bytes = manifest.read_bytes()
         refresh_options = score.get_by_role("button", name="刷新评分快照")
         refresh_options.click()
-        selection = score.get_by_label("评分快照")
+        selection = score.get_by_role("combobox", name="评分快照", exact=True)
         selection.select_option(version)
         manifest.unlink()
         refresh_options.click()

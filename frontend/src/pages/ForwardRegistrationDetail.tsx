@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { Alert, Button, Tag } from "antd";
+import { Alert, Tag } from "antd";
 import {
   forwardRegistrationsApi,
   type ForwardAttempt,
@@ -9,6 +9,7 @@ import {
 } from "../api/forwardRegistrations";
 import { paths, useReturnFocus } from "../app/routes";
 import { useMediaQuery } from "../app/useMediaQuery";
+import { BusyButton } from "../components/BusyButton";
 import {
   AppLink,
   EmptyState,
@@ -443,9 +444,9 @@ export function ForwardRegistrationDetail({ id }: { id: string }) {
           title={state.errorStatus === 403 ? "详情不可用" : "详情加载失败"}
           description={state.errorStatus === 403 ? undefined : state.error}
           action={
-            <Button onClick={retryDetail} loading={state.refreshing}>
+            <BusyButton onClick={retryDetail} busy={state.refreshing}>
               重试
-            </Button>
+            </BusyButton>
           }
         />
       )}

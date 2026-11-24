@@ -6,6 +6,7 @@ import {
   type ForwardPhase,
 } from "../api/forwardRegistrations";
 import { paths } from "../app/routes";
+import { BusyButton } from "../components/BusyButton";
 import { AppLink, Section } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
 import type { ForwardActionSubmission } from "../hooks/useForwardActionSubmission";
@@ -185,9 +186,9 @@ function PhaseAction({
             </>
           )}
           <div>
-            <Button onClick={options.reload} loading={options.refreshing}>
+            <BusyButton onClick={options.reload} busy={options.refreshing}>
               {options.error ? "重试加载评分快照" : "刷新评分快照"}
-            </Button>
+            </BusyButton>
           </div>
         </div>
       )}
@@ -235,14 +236,14 @@ function PhaseAction({
 
       {(allowed || waiting) && !unconfirmed && (
         <div>
-          <Button
+          <BusyButton
             type="primary"
             onClick={submitAction}
-            loading={waiting}
+            busy={waiting}
             disabled={!canSubmit}
           >
-            {waiting ? `正在提交${label}` : `提交${label}`}
-          </Button>
+            {`提交${label}`}
+          </BusyButton>
         </div>
       )}
 
@@ -321,9 +322,9 @@ export function ForwardRegistrationActions({
         </h2>
       }
       extra={
-        <Button onClick={props.refresh} loading={props.refreshing}>
+        <BusyButton onClick={props.refresh} busy={props.refreshing}>
           刷新登记
-        </Button>
+        </BusyButton>
       }
     >
       <div className="forward-action-grid">
