@@ -163,17 +163,28 @@ def test_historical_attempt_links_resolve_by_id_outside_recent_tasks(engine, tmp
     assert _stored(engine) == before
 
 
-@pytest.mark.parametrize("scenario", ["complete", "zero", "missing"])
+@pytest.mark.parametrize("scenario", ["complete", "zero", "large-zero", "missing"])
 def test_sealed_detail_uses_read_only_sql_and_keeps_zero_and_missing_distinct(
     engine, tmp_path, client, monkeypatch, scenario
 ):
     store, row, _ = _registered(engine, tmp_path)
+    zero = scenario in {"zero", "large-zero"}
     _publish_labels(
-        tmp_path, row, "public-label", missing=CODES[-1] if scenario == "missing" else None, zero=scenario == "zero"
+        tmp_path,
+        row,
+        "public-label",
+        missing=CODES[-1] if scenario == "missing" else None,
+        zero=zero,
+        entry_open=1e20 if scenario == "large-zero" else 10.0,
+        candidate_exit_open=1e20 if scenario == "large-zero" else None,
     )
     queued = enqueue_forward_verification(store, tmp_path, row["id"], key="verify-api-fixture")
-    _, task = _execute(store, tmp_path, queued)
-    assert task["status"] == "succeeded"
+    attempt, task = _execute(store, tmp_path, queued)
+    assert attempt["status"] == task["status"] == "succeeded", task["error"]
+    if scenario == "large-zero":
+        saved = attempt["evidence"]["result"]
+        assert all(label["entry_adjusted_open"] == label["exit_adjusted_open"] == 10**20 for label in saved["labels"])
+        assert canonical_sha256(attempt["evidence"]) == attempt["evidence_sha256"]
     before = _stored(engine)
     sql = []
 
@@ -217,12 +228,50 @@ def test_sealed_detail_uses_read_only_sql_and_keeps_zero_and_missing_distinct(
     result = detail["result"]
     if scenario != "missing":
         assert detail["state"] == "verified"
-        assert result["excess_return_pp"] == pytest.approx(0.0 if scenario == "zero" else 13.333333333)
+        assert result["excess_return_pp"] == pytest.approx(0.0 if zero else 13.333333333)
         assert result["missing"] == []
     else:
         assert detail["state"] == "missing_labels"
         assert result["excess_return_pp"] is None and result["pool_valid"] == 2
         assert result["missing"] == [{"code": CODES[-1], "reasons": ["exit-missing-quote"]}]
+
+
+@pytest.mark.parametrize("exit_open", [1e20, 1e23], ids=["large-metrics", "large-label-return"])
+def test_detail_checks_large_returns_in_their_jsonb_representation(engine, tmp_path, client, exit_open):
+    store, row, _ = _registered(engine, tmp_path)
+    _publish_labels(tmp_path, row, "large-label", zero=True, entry_open=1.0, candidate_exit_open=exit_open)
+    queued = enqueue_forward_verification(store, tmp_path, row["id"], key="verify-large-label")
+    assert queued is not None
+    attempt, task = _execute(store, tmp_path, queued)
+    assert attempt["status"] == task["status"] == "succeeded", task["error"]
+
+    detail, _ = _detail(client, row["id"])
+    assert detail["state"] == "verified"
+    expected = exit_open - 1.0
+    assert detail["result"]["candidate_return"] == expected
+    assert detail["result"]["pool_return"] == expected / 3
+    assert detail["result"]["excess_return_pp"] == 100 * (expected - expected / 3)
+
+    # Keep the evidence and result mutually consistent while changing the stored
+    # integer by an amount that a float-only comparison would discard.
+    evidence = attempt["evidence"]
+    label = evidence["result"]["labels"][0]
+    assert isinstance(label["return"], int)
+    label["return"] -= 1
+    assert float(label["return"]) == expected
+    with engine.begin() as connection:
+        connection.execute(
+            forward_attempt.update()
+            .where(forward_attempt.c.id == queued["attempt_id"])
+            .values(evidence=evidence, evidence_sha256=canonical_sha256(evidence))
+        )
+        connection.execute(
+            forward_registration.update()
+            .where(forward_registration.c.id == row["id"])
+            .values(result=evidence["result"])
+        )
+    detail, _ = _detail(client, row["id"])
+    assert detail["state"] == "invalid_evidence" and detail["result"] is None
 
 
 @pytest.mark.parametrize(

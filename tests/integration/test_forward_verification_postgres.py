@@ -90,6 +90,8 @@ def _publish_labels(
     source=SOURCE,
     wrong_calendar=False,
     zero=False,
+    entry_open=10.0,
+    candidate_exit_open=None,
     trading_state=True,
     legacy=False,
 ):
@@ -104,20 +106,24 @@ def _publish_labels(
             {
                 "instrument": to_qlib(code),
                 "date": entry,
-                "open": 10.0,
-                "close": 10.0,
+                "open": entry_open,
+                "close": entry_open,
                 "adj_factor": 1.0,
                 "is_suspended": False,
             }
         )
         if code != missing:
-            price = 10.0 / factor if zero else raw_open
+            price = entry_open / factor if zero else raw_open
+            close = price
+            if code == CODES[0] and candidate_exit_open is not None:
+                # Only the open varies in this synthetic label; the closing series stays continuous.
+                price, close, factor = candidate_exit_open, entry_open, 1.0
             records.append(
                 {
                     "instrument": to_qlib(code),
                     "date": exit_,
                     "open": price,
-                    "close": price,
+                    "close": close,
                     "adj_factor": factor,
                     "is_suspended": False,
                 }
@@ -127,7 +133,7 @@ def _publish_labels(
         exit_price = market.loc[market.date.eq(pd.Timestamp(exit_)), "close"]
         exit_factor = market.loc[exit_price.index, "adj_factor"]
         market["change"] = 0.0
-        market.loc[exit_price.index, "change"] = exit_price / (10.0 / exit_factor) - 1
+        market.loc[exit_price.index, "change"] = exit_price / (entry_open / exit_factor) - 1
     if not trading_state:
         market = market.drop(columns="is_suspended")
     frames = {
