@@ -14,9 +14,15 @@ from test_forward_enqueue_postgres import enqueue
 from test_forward_enqueue_postgres import store as store
 from test_postgres_runtime import engine as engine
 
-from finance_quant.persistence.forward import canonical_sha256, confirm_attempt
+from finance_quant.persistence.forward import (
+    attempt_sealed,
+    canonical_sha256,
+    confirm_attempt,
+    fail_forward_task,
+    start_forward_attempt,
+)
 from finance_quant.persistence.schema import forward_attempt
-from finance_quant.task_contracts import TaskConflict
+from finance_quant.task_contracts import FORWARD_SCORE_MODE, TaskConflict
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("FINANCE_QUANT_TEST_POSTGRES") != "1", reason="requires isolated PostgreSQL"
@@ -220,3 +226,95 @@ def test_conflicting_task_completion_rolls_back_the_seal(store):
     assert store.claim(worker_id="retry-confirmation") == binding["task_id"]
     sealed = confirm_attempt(store, attempt_id=attempt_id, evidence=EVIDENCE)
     assert sealed.sealed and store.get(binding["task_id"])["status"] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("original", "persisted"),
+    [(1e20, 10**20), (-0.0, 0.0)],
+    ids=["large-exponent", "negative-zero"],
+)
+def test_evidence_digest_matches_jsonb_readback(store, original, persisted):
+    binding = enqueue(store)
+    attempt_id = binding["attempt_id"]
+    assert store.claim(worker_id="jsonb-proof") == binding["task_id"]
+    evidence = {"样本": {"values": [original, 0.1, 1e-7, 2**100 + 123]}}
+    expected = {"样本": {"values": [persisted, 0.1, 1e-7, 2**100 + 123]}}
+    result = confirm_attempt(store, attempt_id=attempt_id, evidence=evidence, task_result={"proof": True})
+    assert result.sealed, result.detail
+
+    table = forward_attempt
+    query = select(table).where(table.c.id == attempt_id)
+    with store.engine.connect() as connection:
+        row = dict(connection.execute(query).mappings().one())
+    task = store.get(binding["task_id"])
+    assert attempt_sealed(row, row["deadline_at"])
+    assert row["evidence_sha256"] == canonical_sha256(expected)
+    assert canonical_sha256(row["evidence"]) == row["evidence_sha256"]
+    assert row["status"] == task["status"] == "succeeded"
+
+    for accepted in (evidence, expected):
+        replay = confirm_attempt(store, attempt_id=attempt_id, evidence=accepted)
+        assert replay.sealed and replay.detail == "already-sealed" and replay.sampled_at == result.sampled_at
+    with store.engine.connect() as connection:
+        assert dict(connection.execute(query).mappings().one()) == row
+    assert store.get(binding["task_id"]) == task
+
+
+def test_legacy_seal_replays_without_rewriting_and_rejects_tampered_evidence(store):
+    binding = enqueue(store)
+    attempt_id = binding["attempt_id"]
+    assert store.claim(worker_id="legacy-jsonb-proof") == binding["task_id"]
+    table = forward_attempt
+    query = select(table).where(table.c.id == attempt_id)
+    # Store a seal with the original Python canonical digest and no new confirmation path.
+    evidence = {"samples": [0.1, 1e-7, 2**100 + 123]}
+    digest = canonical_sha256(evidence)
+    with store.engine.begin() as connection:
+        sealed_at = connection.scalar(text("select clock_timestamp()"))
+        connection.execute(
+            table.update()
+            .where(table.c.id == attempt_id)
+            .values(
+                status="succeeded",
+                evidence=evidence,
+                evidence_sha256=digest,
+                evidence_row_id=attempt_id,
+                staging_at=sealed_at - timedelta(milliseconds=1),
+                sealed_at=sealed_at,
+            )
+        )
+        store.finish(binding["task_id"], "succeeded", result={"original": True}, connection=connection)
+        row = dict(connection.execute(query).mappings().one())
+    task = store.get(binding["task_id"])
+    assert attempt_sealed(row, row["deadline_at"])
+    replay = confirm_attempt(store, attempt_id=attempt_id, evidence=evidence, task_result={"replacement": True})
+    assert replay.sealed and replay.detail == "already-sealed" and replay.sampled_at == sealed_at
+    with store.engine.begin() as connection:
+        assert dict(connection.execute(query).mappings().one()) == row
+        connection.execute(table.update().where(table.c.id == attempt_id).values(evidence={"samples": [0.2]}))
+        tampered = dict(connection.execute(query).mappings().one())
+    assert tampered["evidence_sha256"] == digest
+    assert not attempt_sealed(tampered, row["deadline_at"])
+    mismatch = confirm_attempt(store, attempt_id=attempt_id, evidence=evidence)
+    assert not mismatch.sealed and mismatch.detail == "evidence-mismatch"
+    with store.engine.connect() as connection:
+        assert dict(connection.execute(query).mappings().one()) == tampered
+    assert store.get(binding["task_id"]) == task
+
+
+def test_failed_attempt_records_jsonb_normalized_diagnostics(store):
+    binding = enqueue(store, execution={"mode": FORWARD_SCORE_MODE})
+    task_id = binding["task_id"]
+    assert store.claim(worker_id="failed-jsonb-proof") == task_id
+    with store.engine.begin() as connection:
+        start_forward_attempt(connection, task_id, "original", kind="score")
+
+    evidence = {"samples": [1e20, -0.0]}
+    assert fail_forward_task(store, task_id, "incomplete-score", kind="score", evidence=evidence)
+    table = forward_attempt
+    with store.engine.connect() as connection:
+        row = connection.execute(select(table).where(table.c.id == binding["attempt_id"])).mappings().one()
+    assert row["status"] == store.get(task_id)["status"] == "failed"
+    assert row["staging_at"] is row["sealed_at"] is None
+    assert row["evidence_row_id"] == binding["attempt_id"]
+    assert canonical_sha256(row["evidence"]) == row["evidence_sha256"] == canonical_sha256({"samples": [10**20, 0.0]})

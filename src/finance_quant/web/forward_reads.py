@@ -22,6 +22,7 @@ from finance_quant.persistence.forward import (
     attempt_sealed,
     canonical_sha256,
     get_registration,
+    jsonb_round_trip,
     list_registrations,
     registration_row_confirmed,
     score_task_matches,
@@ -130,14 +131,14 @@ def _checked_label_return(label: dict, reasons: list[str]) -> float | None:
     else:
         expected = float(closing) / float(opening) - 1
         if _is_number(expected):
-            if not reasons and _is_number(value) and value == expected:
+            if not reasons and _is_number(value):
                 return expected
         elif value is None and reasons == ["nonfinite-return"]:
             return None
     raise VerificationInputError("invalid-result-labels")
 
 
-def _public_metrics(row: dict, result: dict, candidates: list[str]) -> dict:
+def _public_metrics(connection: Connection, row: dict, result: dict, candidates: list[str]) -> dict:
     labels, codes = result.get("labels"), row["pool_codes"]
     if not isinstance(labels, list) or len(labels) != len(codes):
         raise VerificationInputError("invalid-result-labels")
@@ -179,8 +180,13 @@ def _public_metrics(row: dict, result: dict, candidates: list[str]) -> dict:
         "entry_date": row["entry_date"].isoformat(),
         "exit_date": row["exit_date"].isoformat(),
     }
+    persisted = jsonb_round_trip(
+        connection, {"label_returns": [returns.get(code) for code in codes], "summary": expected}
+    )
+    if canonical_sha256([label["return"] for label in labels]) != canonical_sha256(persisted["label_returns"]):
+        raise VerificationInputError("invalid-result-labels")
     # Canonical comparison also distinguishes a malformed false from numerical zero.
-    if canonical_sha256({key: result[key] for key in expected}) != canonical_sha256(expected):
+    if canonical_sha256({key: result[key] for key in expected}) != canonical_sha256(persisted["summary"]):
         raise VerificationInputError("invalid-result-metrics")
     return {**metrics, "candidate_codes": candidates, "missing": missing}
 
@@ -252,7 +258,7 @@ def _sealed_result(
         or saved.execution.get("score_evidence_sha256") != score["evidence_sha256"]
     ):
         raise VerificationInputError("invalid-sealed-result")
-    return _public_metrics(row, result, candidates)
+    return _public_metrics(connection, row, result, candidates)
 
 
 def _pending_state(stage: str, attempt: dict | None, idle: str) -> str:
