@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { Alert, Button, Tag } from "antd";
+import { Alert, Tag } from "antd";
 import {
   forwardRegistrationsApi,
   type ForwardAttempt,
@@ -9,6 +9,7 @@ import {
 } from "../api/forwardRegistrations";
 import { paths, useReturnFocus } from "../app/routes";
 import { useMediaQuery } from "../app/useMediaQuery";
+import { BusyButton } from "../components/BusyButton";
 import {
   AppLink,
   EmptyState,
@@ -18,6 +19,9 @@ import {
   StatusTag,
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
+import { useForwardActionSubmission } from "../hooks/useForwardActionSubmission";
+
+import { ForwardRegistrationActions } from "./ForwardRegistrationActions";
 
 const unavailable = "暂不可用";
 const shanghaiTime = new Intl.DateTimeFormat("sv-SE", {
@@ -370,19 +374,63 @@ function Attempts({ attempts }: { attempts: ForwardAttempt[] }) {
   );
 }
 
+function actionReturnFocus(id: string) {
+  if (id.startsWith("forward-receipt-")) {
+    const attempt = document.getElementById(
+      id.replace("forward-receipt-", "forward-attempt-"),
+    );
+    if (attempt) return attempt;
+  }
+  return document.getElementById("forward-actions-heading");
+}
+
 export function ForwardRegistrationDetail({ id }: { id: string }) {
   const state = useApiResource(
     (signal) => forwardRegistrationsApi.detail(id, signal),
     [id],
+    { discardUnavailableData: true },
   );
   const detail = state.data;
-  useReturnFocus(Boolean(detail), id);
+  const canRefresh = useRef(Boolean(detail));
+  const restoreOnSuccess = useRef(false);
+
+  useLayoutEffect(() => {
+    canRefresh.current = Boolean(detail);
+  }, [detail]);
+
+  const refreshAfterAction = useCallback(() => {
+    if (canRefresh.current) state.reload();
+  }, [state.reload]);
+  const score = useForwardActionSubmission(id, "score", refreshAfterAction);
+  const verify = useForwardActionSubmission(id, "verify", refreshAfterAction);
+
+  useReturnFocus(Boolean(detail), id, actionReturnFocus);
   const headingRef = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!detail || !window.history.state?.focusHeading) return;
     headingRef.current?.focus();
     window.history.replaceState(null, "");
   }, [detail]);
+  useEffect(() => {
+    if (!detail || state.error || !restoreOnSuccess.current) return;
+    restoreOnSuccess.current = false;
+    const statuses = { score: score.state.kind, verify: verify.state.kind };
+    const phases = ["verify", "score"] as const;
+    const phase =
+      phases.find((item) => statuses[item] === "unconfirmed") ??
+      phases.find((item) => statuses[item] === "received");
+    const target = phase
+      ? document.getElementById("forward-action-feedback-" + phase)
+      : headingRef.current;
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "nearest" });
+  }, [detail, state.error, score.state.kind, verify.state.kind]);
+
+  function retryDetail() {
+    if (state.errorStatus === 403) restoreOnSuccess.current = true;
+    state.reload();
+  }
+
   return (
     <div className="forward-page">
       <PageHeader
@@ -390,26 +438,37 @@ export function ForwardRegistrationDetail({ id }: { id: string }) {
         headingRef={headingRef}
         back={{ to: paths.forwardRegistrations(), label: "返回登记列表" }}
       />
+      {state.error && state.errorStatus !== 404 && (
+        <Alert
+          type="warning"
+          title={state.errorStatus === 403 ? "详情不可用" : "详情加载失败"}
+          description={state.errorStatus === 403 ? undefined : state.error}
+          action={
+            <BusyButton onClick={retryDetail} busy={state.refreshing}>
+              重试
+            </BusyButton>
+          }
+        />
+      )}
       {state.errorStatus === 404 ? (
         <Section>
           <EmptyState title="登记不存在" />
         </Section>
-      ) : state.error ? (
-        <Alert
-          type="warning"
-          title="详情加载失败"
-          description={state.error}
-          action={
-            <Button onClick={state.reload} loading={state.refreshing}>
-              重试
-            </Button>
-          }
-        />
       ) : !detail ? (
-        <Loading rows={6} />
+        state.error ? null : (
+          <Loading rows={6} />
+        )
       ) : (
         <>
           <Outcome detail={detail} />
+          <ForwardRegistrationActions
+            detail={detail}
+            submissions={{ score, verify }}
+            earliest={moment(detail.matures_at)}
+            readFailed={Boolean(state.error)}
+            refreshing={state.refreshing}
+            refresh={state.reload}
+          />
           <div className="forward-detail-grid">
             <Section title="冻结参数">
               <Fields

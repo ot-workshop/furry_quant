@@ -328,6 +328,24 @@ def registration_detail(connection: Connection, registration_id: str) -> dict | 
         "confirmed_at": row["confirmed_at"] if confirmed else None,
         "score_deadline_at": score_deadline,
         "matures_at": mature_at,
+        "available_actions": {
+            "score": (
+                confirmed
+                and score is None
+                and state in {"awaiting_score", "failed"}
+                and score_deadline is not None
+                and now < score_deadline
+            ),
+            "verify": (
+                confirmed
+                and score is not None
+                and score["id"] in sealed_ids
+                and state in {"awaiting_quote", "awaiting_verification", "failed"}
+                and mature_at is not None
+                and now >= mature_at
+                and verify is None
+            ),
+        },
         "versions": {
             "calendar": _token(row["calendar_version"]),
             "source_dataset": _token(row["dataset_id"]),

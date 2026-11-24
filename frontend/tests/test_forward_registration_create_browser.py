@@ -440,6 +440,7 @@ INVALID_RECEIPTS = {
     (
         "loss-after-seal",
         "loss-after-seal-then-maintenance",
+        "loss-after-seal-then-routing-404",
         "timeout-before-receipt",
         "unavailable",
         "offline",
@@ -456,7 +457,9 @@ def test_create_form_retries_exact_request(engine, tmp_path, browser, setup_regi
 
         def deliver(route):
             sent.append((route.request.header_value("idempotency-key"), route.request.post_data))
-            if len(sent) > 1:
+            if len(sent) == 2 and first == "loss-after-seal-then-routing-404":
+                route.fulfill(status=404, json={"detail": "Not Found"})
+            elif len(sent) > 1:
                 response = route.fetch()
                 if response.ok:
                     receipts.append(response.json())
@@ -465,6 +468,7 @@ def test_create_form_retries_exact_request(engine, tmp_path, browser, setup_regi
                 response = route.fetch()
                 assert response.ok
                 receipts.append(response.json())
+                route.abort("connectionreset")
             elif first == "unavailable":
                 route.fulfill(status=503, json={"detail": "前瞻登记服务暂不可用"})
             elif first in INVALID_RECEIPTS:
@@ -480,7 +484,7 @@ def test_create_form_retries_exact_request(engine, tmp_path, browser, setup_regi
         form(page).click()
         feedback = page.locator(".forward-create-feedback")
         retry = page.get_by_role("button", name="按原参数重试")
-        if lost or first == "timeout-before-receipt":
+        if first == "timeout-before-receipt":
             expect(feedback).to_contain_text("正在确认登记")
             assert len(sent) == 1
             page.clock.fast_forward(31_000)
@@ -509,6 +513,19 @@ def test_create_form_retries_exact_request(engine, tmp_path, browser, setup_regi
         elif lost:
             (saved,) = _rows(engine, forward_registration)
             assert registration_row_confirmed(saved)
+            if first == "loss-after-seal-then-routing-404":
+                with page.expect_response(lambda r: r.url.endswith(API) and r.request.method == "POST") as blocked:
+                    retry.click()
+                assert blocked.value.status == 404
+                expect(feedback).to_contain_text("尚未确认登记是否成功")
+                expect(feedback).to_be_focused()
+                expect(retry).to_be_enabled()
+                expect(page.get_by_label("登记名称")).to_be_disabled()
+                expect(page.get_by_label("登记名称")).to_have_value("原参数重试")
+                assert page.url == origin + NEW
+                assert sent[1] == sent[0]
+                assert _rows(engine, forward_registration) == [saved]
+                assert _rows(engine, forward_attempt) == _rows(engine, research_task) == []
             with engine.begin() as connection:
                 connection.execute(update(dataset).values(status="failed"))
             page.get_by_role("button", name="刷新来源").click()
@@ -519,7 +536,7 @@ def test_create_form_retries_exact_request(engine, tmp_path, browser, setup_regi
         retry.click()
         page.wait_for_url("**/forward-registrations/fwd-*")
         open_detail(page, origin, receipts[-1], "原参数重试", sessions, document["dataset_id"])
-        assert len(sent) == (3 if first == "loss-after-seal-then-maintenance" else 2)
+        assert len(sent) == (3 if first.startswith("loss-after-seal-then-") else 2)
         assert sent[0][0] and all(attempt == sent[0] for attempt in sent)
         assert all(receipt == receipts[0] for receipt in receipts)
     (saved,) = _rows(engine, forward_registration)

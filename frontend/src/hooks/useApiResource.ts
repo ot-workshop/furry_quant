@@ -17,6 +17,8 @@ interface Options {
   pollMs?: number | null;
   /** Retry automatically after N milliseconds when a request ends in an error. */
   retryOnErrorMs?: number | null;
+  /** Drop stale data when access to a resource is lost. */
+  discardUnavailableData?: boolean;
 }
 
 /**
@@ -28,7 +30,11 @@ interface Options {
 export function useApiResource<T>(
   load: ((signal: AbortSignal) => Promise<T>) | null,
   deps: readonly unknown[],
-  { pollMs = null, retryOnErrorMs = null }: Options = {},
+  {
+    pollMs = null,
+    retryOnErrorMs = null,
+    discardUnavailableData = false,
+  }: Options = {},
 ): ApiState<T> {
   const key = JSON.stringify(deps);
   const [version, setVersion] = useState(0);
@@ -70,11 +76,15 @@ export function useApiResource<T>(
       })
       .catch((error: unknown) => {
         if (!active || isAbortError(error)) return;
+        const errorStatus = error instanceof ApiError ? error.status : null;
+        const discard =
+          discardUnavailableData &&
+          (errorStatus === 403 || errorStatus === 404);
         setState((previous) => ({
           key,
-          data: previous.key === key ? previous.data : null,
+          data: previous.key === key && !discard ? previous.data : null,
           error: describeError(error),
-          errorStatus: error instanceof ApiError ? error.status : null,
+          errorStatus,
         }));
       })
       .finally(() => {
@@ -84,7 +94,7 @@ export function useApiResource<T>(
       active = false;
       controller.abort();
     };
-  }, [key, version]);
+  }, [key, version, discardUnavailableData]);
 
   useEffect(() => {
     if (!pollMs || !loadRef.current) return;
