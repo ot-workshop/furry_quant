@@ -65,6 +65,20 @@
   border-radius: 2px;
 }
 
+.forward-create-link {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: var(--ant-border-radius);
+  background: var(--ant-color-primary);
+  color: var(--ant-color-text-light-solid);
+  font-weight: 600;
+}
+
+.forward-create-link:hover {
+  background: var(--ant-color-primary-hover);
+  color: var(--ant-color-text-light-solid);
+}
+
 .forward-name {
   font-weight: 600;
 }

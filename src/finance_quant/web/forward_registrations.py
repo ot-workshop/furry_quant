@@ -17,7 +17,7 @@ from finance_quant.persistence.forward import AttemptActive
 from finance_quant.task_contracts import TaskConflict
 from finance_quant.web.forward_actions import submit_forward_score, submit_forward_verification
 from finance_quant.web.forward_reads import registration_detail, registration_page
-from finance_quant.web.forward_writes import submit_forward_registration
+from finance_quant.web.forward_writes import registration_sources, submit_forward_registration
 from finance_quant.web.write_requests import research_json
 
 
@@ -44,6 +44,16 @@ def forward_registration_router(
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
     ):
         return registration_page(connection, offset=offset, limit=limit)
+
+    @router.get("/sources")
+    def sources(
+        connection: Connection = Depends(read_connection),
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=25)] = 20,
+    ):
+        if storage_root is None:
+            raise HTTPException(503, "受管来源暂不可读")
+        return registration_sources(connection, storage_root, offset=offset, limit=limit)
 
     @router.get("/{registration_id}")
     def registration(registration_id: str, connection: Connection = Depends(read_connection)):

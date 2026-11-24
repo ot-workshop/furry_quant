@@ -24,6 +24,7 @@ from finance_quant.persistence.schema import dataset
 from finance_quant.web.write_requests import research_write_gate
 
 _FIELDS = {"name", "signal_date", "pool_codes", "top_k", "factor_window", "factor_direction", "dataset_id"}
+_DATASET_ID = r"snapshot-[0-9a-f]{64}"
 _FILES = {"market.parquet", "benchmark.parquet", "calendar.parquet"}
 _SOURCE_SCHEMAS = {"market-v1", "market-v2", "market-v3", "market-v4-shared"}
 
@@ -54,7 +55,7 @@ def _registration_request(payload: object) -> tuple[dict, date]:
     if type(window) is not int or not 2 <= window <= 252 or direction not in ("high", "low"):
         raise ValueError("动量窗口必须是 2 至 252 的整数，方向必须是 high 或 low")
     dataset_id = payload["dataset_id"]
-    if not isinstance(dataset_id, str) or not re.fullmatch(r"snapshot-[0-9a-f]{64}", dataset_id):
+    if not isinstance(dataset_id, str) or not re.fullmatch(_DATASET_ID, dataset_id):
         raise ValueError("来源数据集标识无效")
     return {**payload, "name": name.strip(), "pool_codes": codes, "factor": "momentum"}, signal_date
 
@@ -63,6 +64,96 @@ def _regular_file(path: Path) -> Path:
     if path.resolve(strict=True) != path or not S_ISREG(path.lstat().st_mode):
         raise ValueError("Invalid managed snapshot file")
     return path
+
+
+def _managed_manifest(
+    storage_root: Path, relative_path: str, *, max_bytes: int | None = None
+) -> tuple[Path, bytes, dict]:
+    relative = Path(relative_path)
+    source = storage_root / relative
+    if (
+        relative.anchor
+        or ".." in relative.parts
+        or source == storage_root
+        or source.resolve(strict=True) != source
+        or (source / "rejected.json").exists()
+    ):
+        raise ValueError("Invalid managed snapshot path")
+    with _regular_file(source / "manifest.json").open("rb") as stream:
+        raw = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+    if max_bytes is not None and len(raw) > max_bytes:
+        raise ValueError("Managed snapshot manifest is too large")
+    manifest = json.loads(raw)
+    if not isinstance(manifest, dict):
+        raise ValueError("Invalid managed snapshot manifest")
+    provider_id, files = manifest.get("provider_id"), manifest.get("files")
+    if (
+        manifest.get("schema_version") not in _SOURCE_SCHEMAS
+        or _is_internal_snapshot(source, manifest)
+        or not isinstance(provider_id, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", provider_id)
+        or not isinstance(files, dict)
+        or set(files) != _FILES
+        or ("snapshot_path" in manifest and manifest["snapshot_path"] != f"snapshots/{source.name}")
+    ):
+        raise ValueError("Invalid managed snapshot identity")
+    for name in files:
+        _regular_file(source / name)
+    return source, raw, manifest
+
+
+def _coverage(manifest: dict) -> tuple[str | None, str | None]:
+    try:
+        start, end = (date.fromisoformat(manifest[key]) for key in ("start", "end"))
+    except (KeyError, TypeError, ValueError):
+        return None, None
+    return (start.isoformat(), end.isoformat()) if start <= end else (None, None)
+
+
+def registration_sources(connection: Connection, storage_root: Path, *, offset: int, limit: int) -> dict:
+    """Project ready registrations, reading only bounded manifest metadata and file attributes."""
+    manifest = dataset.c.manifest
+    rows = (
+        connection.execute(
+            select(
+                dataset.c.id,
+                dataset.c.relative_path,
+                manifest["source_manifest_sha256"].astext.label("digest"),
+                manifest["source_id"].astext.label("name"),
+            )
+            .where(
+                dataset.c.status == "ready",
+                manifest["kind"].astext == "market_snapshot",
+                manifest["schema_version"].astext.in_(_SOURCE_SCHEMAS),
+                dataset.c.id.op("~")(f"^{_DATASET_ID}$"),
+            )
+            .order_by(dataset.c.created_at.desc(), dataset.c.id)
+            .offset(offset)
+            .limit(limit + 1)
+        )
+        .mappings()
+        .all()
+    )
+    items = []
+    root = storage_root.resolve()
+    for row in rows[:limit]:
+        try:
+            _, raw, source = _managed_manifest(root, row["relative_path"], max_bytes=128 * 1024)
+        except (OSError, RecursionError, TypeError, ValueError):
+            continue
+        digest = sha256_bytes(raw)
+        if digest != row["digest"] or row["id"] != "snapshot-" + digest:
+            continue
+        name = source.get("id")
+        if (
+            not isinstance(name, str)
+            or name != row["name"]
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}", name)
+        ):
+            name = "行情快照"
+        start, end = _coverage(source)
+        items.append({"id": row["id"], "name": name, "start": start, "end": end})
+    return {"items": items, "has_more": len(rows) > limit}
 
 
 def _source_calendar(connection: Connection, storage_root: Path, dataset_id: str) -> tuple[bytes, str]:
@@ -75,33 +166,7 @@ def _source_calendar(connection: Connection, storage_root: Path, dataset_id: str
     ):
         raise ValueError("来源数据集不存在或尚未就绪")
     try:
-        relative = Path(saved["relative_path"])
-        source = storage_root / relative
-        if (
-            relative.anchor
-            or ".." in relative.parts
-            or source == storage_root
-            or source.resolve(strict=True) != source
-            or (source / "rejected.json").exists()
-        ):
-            raise ValueError("Invalid managed snapshot path")
-        raw = _regular_file(source / "manifest.json").read_bytes()
-        manifest = json.loads(raw)
-        if not isinstance(manifest, dict):
-            raise ValueError("Invalid managed snapshot manifest")
-        provider_id, files = manifest.get("provider_id"), manifest.get("files")
-        if (
-            manifest.get("schema_version") not in _SOURCE_SCHEMAS
-            or _is_internal_snapshot(source, manifest)
-            or not isinstance(provider_id, str)
-            or not re.fullmatch(r"[0-9a-f]{64}", provider_id)
-            or not isinstance(files, dict)
-            or set(files) != _FILES
-            or ("snapshot_path" in manifest and manifest["snapshot_path"] != f"snapshots/{source.name}")
-        ):
-            raise ValueError("Invalid managed snapshot identity")
-        for name in files:
-            _regular_file(source / name)
+        source, raw, _ = _managed_manifest(storage_root, saved["relative_path"])
         record = snapshot_dataset_record(source, storage_root, request={})
         if (
             record["id"] != dataset_id

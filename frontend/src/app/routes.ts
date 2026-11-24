@@ -74,7 +74,8 @@ export function navigate(
   {
     replace = false,
     returnFocusId,
-  }: { replace?: boolean; returnFocusId?: string } = {},
+    focusHeading = false,
+  }: { replace?: boolean; returnFocusId?: string; focusHeading?: boolean } = {},
 ) {
   if (path === snapshot()) return;
   if (returnFocusId && !replace) {
@@ -86,7 +87,11 @@ export function navigate(
       "",
     );
   }
-  window.history[replace ? "replaceState" : "pushState"](null, "", path);
+  window.history[replace ? "replaceState" : "pushState"](
+    focusHeading ? { focusHeading: true } : null,
+    "",
+    path,
+  );
   window.dispatchEvent(new Event(EVENT));
   if (!replace) window.scrollTo?.({ top: 0 });
 }
@@ -125,6 +130,7 @@ export const paths = {
   newResearch: (fromTask?: string) =>
     `/research/new${fromTask ? `?from=${encode(fromTask)}` : ""}`,
   forwardRegistrations: () => "/forward-registrations",
+  newForwardRegistration: () => "/forward-registrations/new",
   forwardRegistration: (id: string) => `/forward-registrations/${encode(id)}`,
   tasks: (focus?: string) => `/tasks${focus ? `?focus=${encode(focus)}` : ""}`,
   backtests: () => "/backtests",
