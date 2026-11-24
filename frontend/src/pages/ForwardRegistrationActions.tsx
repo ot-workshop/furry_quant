@@ -2,15 +2,13 @@ import { Button } from "antd";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   forwardRegistrationsApi,
-  type ForwardActionReceipt,
-  type ForwardActionRequest,
   type ForwardDetail,
   type ForwardPhase,
 } from "../api/forwardRegistrations";
 import { paths } from "../app/routes";
 import { AppLink, Section } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
-import { useForwardSubmission } from "../hooks/useForwardSubmission";
+import type { ForwardActionSubmission } from "../hooks/useForwardActionSubmission";
 
 const phases = { score: "评分", verify: "到期验证" } as const;
 
@@ -27,11 +25,6 @@ const rejectionMessages: Record<string, string> = {
   "invalid-score-capture-time": "该快照的采集时间不在允许时窗内。",
 };
 
-interface ActionSubmission {
-  action: ForwardActionRequest;
-  previousIds: string[];
-}
-
 interface ActionsProps {
   detail: ForwardDetail;
   earliest: string | null;
@@ -46,35 +39,17 @@ function PhaseAction({
   earliest,
   readFailed,
   refreshing,
-  refresh,
-}: ActionsProps & { phase: ForwardPhase }) {
+  submission,
+}: Omit<ActionsProps, "refresh"> & {
+  phase: ForwardPhase;
+  submission: ForwardActionSubmission;
+}) {
   const label = phases[phase];
   const allowed = detail.available_actions?.[phase] === true;
   const [chosen, setChosen] = useState("");
   const feedback = useRef<HTMLDivElement>(null);
-  const { state, submit, retry, clearRejection } = useForwardSubmission<
-    ActionSubmission,
-    ForwardActionReceipt
-  >({
-    prefix: "forward-" + phase,
-    send: async ({ action, previousIds }, key, signal) => {
-      const result = await forwardRegistrationsApi.submitAction(
-        detail.id,
-        action,
-        key,
-        signal,
-      );
-      if (
-        result.status === "accepted" &&
-        (previousIds.includes(result.task_id) ||
-          previousIds.includes(result.attempt_id))
-      ) {
-        throw new Error("Receipt refers to an earlier attempt");
-      }
-      return result;
-    },
-    onReceived: refresh,
-  });
+  const { state, submit, retry, clearRejection } = submission;
+  const previousFeedbackState = useRef(state);
   const waiting = state.kind === "waiting";
   const unconfirmed = state.kind === "unconfirmed";
   const locked = waiting || unconfirmed;
@@ -127,12 +102,16 @@ function PhaseAction({
       Boolean(snapshot && (bound || (!options.error && !options.refreshing))));
 
   useEffect(() => {
-    if (state.kind !== "idle" && state.kind !== "waiting") {
+    if (
+      state !== previousFeedbackState.current &&
+      state.kind !== "idle" &&
+      state.kind !== "waiting"
+    ) {
       feedback.current?.focus({ preventScroll: true });
       feedback.current?.scrollIntoView({ block: "nearest" });
     }
-    if (state.kind === "rejected") refresh();
-  }, [state, refresh]);
+    previousFeedbackState.current = state;
+  }, [state]);
 
   useLayoutEffect(() => {
     const element = feedback.current;
@@ -270,6 +249,7 @@ function PhaseAction({
       {state.kind !== "idle" && (
         <div
           ref={feedback}
+          id={"forward-action-feedback-" + phase}
           className="forward-action-feedback"
           tabIndex={-1}
           role={state.kind === "rejected" || unconfirmed ? "alert" : "status"}
@@ -327,7 +307,12 @@ function PhaseAction({
   );
 }
 
-export function ForwardRegistrationActions(props: ActionsProps) {
+export function ForwardRegistrationActions({
+  submissions,
+  ...props
+}: ActionsProps & {
+  submissions: Record<ForwardPhase, ForwardActionSubmission>;
+}) {
   return (
     <Section
       title={
@@ -342,8 +327,12 @@ export function ForwardRegistrationActions(props: ActionsProps) {
       }
     >
       <div className="forward-action-grid">
-        <PhaseAction {...props} phase="score" />
-        <PhaseAction {...props} phase="verify" />
+        <PhaseAction {...props} phase="score" submission={submissions.score} />
+        <PhaseAction
+          {...props}
+          phase="verify"
+          submission={submissions.verify}
+        />
       </div>
     </Section>
   );

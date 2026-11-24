@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
@@ -26,7 +27,9 @@ from test_postgres_runtime import engine as engine  # noqa: E402
 from finance_quant.application.forward_label_capture import publish_forward_label_snapshot  # noqa: E402
 from finance_quant.application.forward_score_capture import publish_forward_score_snapshot  # noqa: E402
 from finance_quant.application.research_requests import lookup_snapshot_meta  # noqa: E402
+from finance_quant.persistence.forward import registration_evidence_digest  # noqa: E402
 from finance_quant.persistence.maintenance import write_gate  # noqa: E402
+from finance_quant.persistence.schema import forward_registration  # noqa: E402
 from finance_quant.persistence.tasks import PgTaskStore  # noqa: E402
 
 pytestmark = pytest.mark.skipif(os.environ.get("FINANCE_QUANT_TEST_POSTGRES") != "1", reason="requires isolated PG")
@@ -87,6 +90,23 @@ def visit_task(page, link, origin, detail_path, row, result, stage, mobile):
     page.wait_for_url(origin + detail_path)
     accept = page.locator("#forward-receipt-" + result["attempt_id"])
     expect_restored(page, accept)
+
+
+def deny_detail_once(page, api_path):
+    def deny(route):
+        assert route.request.method == "GET"
+        route.fulfill(status=403, json={"detail": "private access error"})
+
+    page.route("**" + api_path, deny, times=1)
+
+
+def assert_detail_hidden(page, row):
+    expect(page.get_by_text("详情不可用", exact=True)).to_be_visible()
+    expect(page.get_by_text("private access error", exact=True)).to_have_count(0)
+    expect(page.get_by_role("heading", name=row["request"]["name"], exact=True)).to_have_count(0)
+    expect(page.get_by_text("冻结参数", exact=True)).to_have_count(0)
+    expect(page.locator(".forward-action-feedback")).to_have_count(0)
+    expect(page.locator('a[href*="/tasks?focus="]')).to_have_count(0)
 
 
 @pytest.mark.parametrize("width", (1440, 1366, 1024, 390, 320))
@@ -257,6 +277,9 @@ def test_manual_actions_unconfirmed_replay_during_maintenance(
                     receipts.append(response.json())
                 if len(sent) > 1:
                     route.fulfill(response=response)
+                else:
+                    assert response.status == 202
+                    route.abort("connectionreset")
 
             page.route("**" + endpoint, pending)
             page.goto(origin + path)
@@ -265,21 +288,35 @@ def test_manual_actions_unconfirmed_replay_during_maintenance(
             before = _queue_rows(engine)
             submit(panel, phase).click()
             feedback = panel.locator(".forward-action-feedback")
-            expect(feedback).to_contain_text("正在提交")
-            assert len(sent) == 1
-            page.clock.fast_forward(31_000)
+            if not delivered:
+                expect(feedback).to_contain_text("正在提交")
+                page.clock.fast_forward(31_000)
             expect(feedback).to_contain_text("尚未确认是否已入队")
+            assert len(sent) == 1
             assert_feedback_focus(page, feedback)
             assert len(_queue_rows(engine)[0]) == len(before[0]) + int(delivered)
-            refresh(page)
             retry = feedback.get_by_role("button", name="按原参数重试")
-            expect(retry).to_be_enabled()
             if delivered:
+                deny_detail_once(page, api_path)
+                refresh(page)
+                assert_detail_hidden(page, row)
+                screen(page, f"actions-{phase}-403", full_page=False)
+                with page.expect_response(lambda response: response.url == origin + api_path) as recovered:
+                    page.get_by_role("button", name=re.compile(r"^重\s*试$")).click()
+                assert recovered.value.status == 200
+                expect(feedback).to_contain_text("尚未确认是否已入队")
+                assert_feedback_focus(page, feedback)
+                page.keyboard.press("Tab")
+                expect(retry).to_be_focused()
+                screen(page, f"actions-{phase}-403-recovered", full_page=False)
                 expect(panel.get_by_text("尝试已排队或正在运行", exact=False)).to_be_visible()
                 if phase == "score":
                     expect(feedback.get_by_text(score_version, exact=True)).to_be_visible()
                     relative, _, _ = lookup_snapshot_meta(root, score_version, allow_score=True)
                     (root / relative / "manifest.json").unlink()
+            else:
+                refresh(page)
+            expect(retry).to_be_enabled()
             with write_gate(engine, exclusive=True):
                 with page.expect_response(
                     lambda response: response.url.endswith(endpoint) and response.request.method == "POST"
@@ -364,7 +401,41 @@ def test_score_rejection_refresh_failure_and_bound_retry(engine, tmp_path, brows
         first = submitted.value.json()
         expect(page.get_by_text("详情加载失败", exact=True)).to_be_visible()
         expect(feedback).to_contain_text("评分已入队")
-        expect(feedback.get_by_role("link")).to_have_attribute("href", "/tasks?focus=" + first["task_id"])
+        task_href = "/tasks?focus=" + first["task_id"]
+        expect(feedback.get_by_role("link")).to_have_attribute("href", task_href)
+
+        deny_detail_once(page, api_path)
+        page.get_by_role("button", name=re.compile(r"^重\s*试$")).click()
+        assert_detail_hidden(page, row)
+        page.route("**" + api_path, lambda route: route.fulfill(status=503, json={"detail": "详情暂不可读"}), times=1)
+        page.get_by_role("button", name=re.compile(r"^重\s*试$")).click()
+        expect(page.get_by_text("详情加载失败", exact=True)).to_be_visible()
+        expect(feedback).to_have_count(0)
+        expect(page.locator(f'a[href="{task_href}"]')).to_have_count(0)
+        page.get_by_role("button", name=re.compile(r"^重\s*试$")).click()
+        expect(feedback).to_contain_text(first["attempt_id"])
+        expect(feedback.get_by_role("link")).to_have_attribute("href", task_href)
+        assert_feedback_focus(page, feedback)
+        screen(page, "actions-receipt-recovered-390", full_page=False)
+
+        # Keep the same SPA mounted while changing the registration route.
+        other = dict(row, id="fwd-other", idempotency_key="browser-other", name="另一条前瞻登记")
+        other["request"] = dict(row["request"], name=other["name"])
+        other["confirmed_evidence_sha256"] = registration_evidence_digest(other)
+        with engine.begin() as connection:
+            connection.execute(forward_registration.insert().values(**other))
+        page.evaluate(
+            """path => {
+                history.pushState(null, "", path);
+                window.dispatchEvent(new PopStateEvent("popstate"));
+            }""",
+            REGISTRATIONS + "/" + other["id"],
+        )
+        expect(page.get_by_role("heading", name="另一条前瞻登记")).to_be_visible()
+        expect(page.locator(".forward-action-feedback")).to_have_count(0)
+        expect(page.locator(f'a[href="{task_href}"]')).to_have_count(0)
+        page.go_back()
+        expect(page.get_by_role("heading", name=row["request"]["name"])).to_be_visible()
 
         manifest.unlink()
         assert _execute(store, root, first)[1]["status"] == "failed"

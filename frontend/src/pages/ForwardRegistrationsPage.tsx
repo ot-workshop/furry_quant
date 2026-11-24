@@ -217,7 +217,7 @@ export default function ForwardRegistrationsPage({
   id?: string;
   page: string | null;
 }) {
-  if (id) return <ForwardRegistrationDetail id={id} />;
+  if (id) return <ForwardRegistrationDetail key={id} id={id} />;
   const number = Number(page);
   return (
     <ForwardRegistrationList

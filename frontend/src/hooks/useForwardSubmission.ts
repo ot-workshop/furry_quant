@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { ApiError, newIdempotencyKey } from "../api/http";
 
 const WAIT_MS = 30_000;
-const REJECTIONS = new Set([403, 404, 409, 413, 415, 422]);
+const REJECTIONS = new Set([403, 409, 413, 415, 422]);
 
 interface Submission<Request> {
   request: Request;
@@ -18,11 +18,13 @@ type State<Request, Receipt> =
 export function useForwardSubmission<Request, Receipt>({
   prefix,
   reuseKey = false,
+  rejectNotFound = false,
   send,
   onReceived,
 }: {
   prefix: string;
   reuseKey?: boolean;
+  rejectNotFound?: boolean;
   send: (
     request: Request,
     key: string,
@@ -64,14 +66,19 @@ export function useForwardSubmission<Request, Receipt>({
     } catch (error) {
       if (current.current !== controller) return;
       current.current = null;
-      if (error instanceof ApiError && REJECTIONS.has(error.status)) {
-        // The maintenance gate can reject the retry before looking up the original key.
+      if (
+        error instanceof ApiError &&
+        (REJECTIONS.has(error.status) ||
+          (rejectNotFound && error.status === 404))
+      ) {
+        // These failures can occur before the server looks up the original key.
         const maintenance =
           error.status === 409 &&
           (error.code === "maintenance" ||
             error.message === "数据维护期间暂停写入，请稍后重试");
         setState(
-          retrying && (maintenance || [403, 413, 415].includes(error.status))
+          retrying &&
+            (maintenance || [403, 404, 413, 415].includes(error.status))
             ? { kind: "unconfirmed", submission, detail: error.message }
             : { kind: "rejected", detail: error.message },
         );

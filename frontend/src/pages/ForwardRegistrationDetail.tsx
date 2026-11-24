@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { Alert, Button, Tag } from "antd";
 import {
@@ -18,6 +18,7 @@ import {
   StatusTag,
 } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
+import { useForwardActionSubmission } from "../hooks/useForwardActionSubmission";
 
 import { ForwardRegistrationActions } from "./ForwardRegistrationActions";
 
@@ -386,9 +387,22 @@ export function ForwardRegistrationDetail({ id }: { id: string }) {
   const state = useApiResource(
     (signal) => forwardRegistrationsApi.detail(id, signal),
     [id],
+    { discardUnavailableData: true },
   );
-  const detail =
-    state.errorStatus === 403 || state.errorStatus === 404 ? null : state.data;
+  const detail = state.data;
+  const canRefresh = useRef(Boolean(detail));
+  const restoreOnSuccess = useRef(false);
+
+  useLayoutEffect(() => {
+    canRefresh.current = Boolean(detail);
+  }, [detail]);
+
+  const refreshAfterAction = useCallback(() => {
+    if (canRefresh.current) state.reload();
+  }, [state.reload]);
+  const score = useForwardActionSubmission(id, "score", refreshAfterAction);
+  const verify = useForwardActionSubmission(id, "verify", refreshAfterAction);
+
   useReturnFocus(Boolean(detail), id, actionReturnFocus);
   const headingRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -396,6 +410,26 @@ export function ForwardRegistrationDetail({ id }: { id: string }) {
     headingRef.current?.focus();
     window.history.replaceState(null, "");
   }, [detail]);
+  useEffect(() => {
+    if (!detail || state.error || !restoreOnSuccess.current) return;
+    restoreOnSuccess.current = false;
+    const statuses = { score: score.state.kind, verify: verify.state.kind };
+    const phases = ["verify", "score"] as const;
+    const phase =
+      phases.find((item) => statuses[item] === "unconfirmed") ??
+      phases.find((item) => statuses[item] === "received");
+    const target = phase
+      ? document.getElementById("forward-action-feedback-" + phase)
+      : headingRef.current;
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "nearest" });
+  }, [detail, state.error, score.state.kind, verify.state.kind]);
+
+  function retryDetail() {
+    if (state.errorStatus === 403) restoreOnSuccess.current = true;
+    state.reload();
+  }
+
   return (
     <div className="forward-page">
       <PageHeader
@@ -406,10 +440,10 @@ export function ForwardRegistrationDetail({ id }: { id: string }) {
       {state.error && state.errorStatus !== 404 && (
         <Alert
           type="warning"
-          title="详情加载失败"
-          description={state.error}
+          title={state.errorStatus === 403 ? "详情不可用" : "详情加载失败"}
+          description={state.errorStatus === 403 ? undefined : state.error}
           action={
-            <Button onClick={state.reload} loading={state.refreshing}>
+            <Button onClick={retryDetail} loading={state.refreshing}>
               重试
             </Button>
           }
@@ -427,8 +461,8 @@ export function ForwardRegistrationDetail({ id }: { id: string }) {
         <>
           <Outcome detail={detail} />
           <ForwardRegistrationActions
-            key={id}
             detail={detail}
+            submissions={{ score, verify }}
             earliest={moment(detail.matures_at)}
             readFailed={Boolean(state.error)}
             refreshing={state.refreshing}
