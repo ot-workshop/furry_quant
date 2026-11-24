@@ -104,6 +104,10 @@ export const forwardRegistrationsApi = {
       ROOT + "/sources" + query({ offset, limit }),
       { signal },
     ),
+  source: (id: string, signal: AbortSignal) =>
+    request<ForwardSource>(ROOT + "/sources/" + encodeURIComponent(id), {
+      signal,
+    }),
   create: (
     body: ForwardRegistrationRequest,
     key: string,

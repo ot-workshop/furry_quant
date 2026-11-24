@@ -16,7 +16,27 @@ interface Submission {
 type State =
   | { kind: "idle" | "waiting" }
   | { kind: "rejected"; detail: string }
-  | { kind: "unconfirmed"; submission: Submission };
+  | { kind: "unconfirmed"; submission: Submission; detail?: string };
+
+function validConfirmationTime(value: unknown): boolean {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(
+      value,
+    ) ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    return false;
+  }
+  // JavaScript can parse dates such as February 30 by advancing into March.
+  const day = value.slice(0, 10);
+  const utcDay = new Date(day);
+  return (
+    !day.startsWith("0000") &&
+    Number.isFinite(utcDay.getTime()) &&
+    utcDay.toISOString().slice(0, 10) === day
+  );
+}
 
 export function useForwardRegistrationSubmission(
   onConfirmed: (id: string) => void,
@@ -33,7 +53,7 @@ export function useForwardRegistrationSubmission(
     [],
   );
 
-  async function send(submission: Submission) {
+  async function send(submission: Submission, retrying = false) {
     if (current.current) return;
     const controller = new AbortController();
     current.current = controller;
@@ -56,11 +76,7 @@ export function useForwardRegistrationSubmission(
       if (
         typeof receipt?.registration_id !== "string" ||
         !/^fwd-[0-9a-f]{32}$/.test(receipt.registration_id) ||
-        typeof receipt.confirmed_at !== "string" ||
-        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(
-          receipt.confirmed_at,
-        ) ||
-        !Number.isFinite(Date.parse(receipt.confirmed_at))
+        !validConfirmationTime(receipt.confirmed_at)
       ) {
         throw new Error("Invalid registration receipt");
       }
@@ -68,11 +84,21 @@ export function useForwardRegistrationSubmission(
     } catch (error) {
       if (current.current !== controller) return;
       current.current = null;
-      setState(
-        error instanceof ApiError && REJECTIONS.has(error.status)
-          ? { kind: "rejected", detail: error.message }
-          : { kind: "unconfirmed", submission },
-      );
+      if (error instanceof ApiError && REJECTIONS.has(error.status)) {
+        // Maintenance blocks the replay before the server looks up the original key.
+        const replayBlocked =
+          retrying &&
+          error.status === 409 &&
+          (error.code === "maintenance" ||
+            error.message === "数据维护期间暂停写入，请稍后重试");
+        setState(
+          replayBlocked
+            ? { kind: "unconfirmed", submission, detail: error.message }
+            : { kind: "rejected", detail: error.message },
+        );
+      } else {
+        setState({ kind: "unconfirmed", submission });
+      }
       return;
     } finally {
       clearTimeout(timer);
@@ -96,7 +122,7 @@ export function useForwardRegistrationSubmission(
       void send(submission);
     },
     retry() {
-      if (state.kind === "unconfirmed") void send(state.submission);
+      if (state.kind === "unconfirmed") void send(state.submission, true);
     },
     clearRejection() {
       if (state.kind === "rejected") setState({ kind: "idle" });

@@ -188,6 +188,50 @@ def test_create_form_sources_loading_empty_and_selection_refresh(engine, tmp_pat
     assert _rows(engine, forward_registration) == []
 
 
+def test_create_form_keeps_source_when_it_moves_to_another_page(engine, tmp_path, browser, setup_registration):
+    _, document, signal, sessions, calendar, source, _ = setup_registration
+    for index in range(5):
+        source(calendar, name=f"recent-{index}")
+    chosen_id = document["dataset_id"]
+    with serve(engine, tmp_path) as origin, browser.new_context(viewport={"width": 320, "height": 840}) as context:
+        page = context.new_page()
+        open_source(page, origin)
+        fill(page, "移页后原来源", signal)
+        expect(form(page)).to_be_enabled()
+        source(calendar, name="latest")
+        page.get_by_role("button", name="刷新来源").click()
+        expect(page.get_by_role("radio", name="latest")).to_be_visible()
+        expect(page.get_by_role("radio", name="fixed-source")).to_have_count(0)
+        expect(page.get_by_text(f"已选来源 fixed-source · 尾号 {chosen_id[-8:]}")).to_be_visible()
+        expect(page.get_by_text("所选来源已不可用，请重新选择。")).to_have_count(0)
+        expect(form(page)).to_be_enabled()
+        screen(page, "source-selection-moves-320")
+        page.route(
+            f"**{API}/sources/{chosen_id}",
+            lambda route: route.fulfill(status=503, json={"detail": "暂时无法读取来源"}),
+            times=1,
+        )
+        page.get_by_role("button", name="刷新来源").click()
+        expect(page.get_by_text("暂时无法复核所选来源。暂时无法读取来源")).to_be_visible()
+        expect(page.get_by_text(f"已选来源 fixed-source · 尾号 {chosen_id[-8:]}")).to_be_visible()
+        expect(page.get_by_text("所选来源已不可用，请重新选择。")).to_have_count(0)
+        expect(form(page)).to_be_disabled()
+        page.get_by_role("button", name="重试加载来源").click()
+        expect(form(page)).to_be_enabled()
+        page.get_by_role("button", name="下一页来源").click()
+        expect(page.get_by_role("radio", name="fixed-source")).to_be_checked()
+        page.get_by_role("button", name="上一页来源").click()
+        expect(page.get_by_role("radio", name="fixed-source")).to_have_count(0)
+        with page.expect_response(lambda r: r.url.endswith(API) and r.request.method == "POST") as received:
+            form(page).click()
+        assert received.value.ok
+        assert received.value.request.post_data_json["dataset_id"] == chosen_id
+        open_detail(page, origin, received.value.json(), "移页后原来源", sessions, chosen_id)
+    (saved,) = _rows(engine, forward_registration)
+    assert registration_row_confirmed(saved) and saved["dataset_id"] == chosen_id
+    assert _rows(engine, forward_attempt) == _rows(engine, research_task) == []
+
+
 def test_create_form_local_validation(engine, tmp_path, browser, setup_registration):
     _, _, signal, _, _, _, _ = setup_registration
     with serve(engine, tmp_path) as origin, browser.new_context(viewport={"width": 320, "height": 840}) as context:
@@ -280,11 +324,29 @@ def test_create_form_shows_real_rejections(engine, tmp_path, browser, setup_regi
     assert _rows(engine, forward_attempt) == _rows(engine, research_task) == []
 
 
+INVALID_RECEIPTS = {
+    "invalid-receipt": "unknown",
+    "invalid-calendar-day": "2026-02-30T12:00:00+08:00",
+    "missing-time-zone": "2026-02-28T12:00:00",
+    "invalid-time-zone": "2026-02-28T12:00:00+24:00",
+    "invalid-time-of-day": "2026-02-28T24:00:00+08:00",
+}
+
+
 @pytest.mark.parametrize(
-    "first", ("loss-after-seal", "timeout-before-receipt", "unavailable", "invalid-receipt", "offline")
+    "first",
+    (
+        "loss-after-seal",
+        "loss-after-seal-then-maintenance",
+        "timeout-before-receipt",
+        "unavailable",
+        "offline",
+        *INVALID_RECEIPTS,
+    ),
 )
 def test_create_form_retries_exact_request(engine, tmp_path, browser, setup_registration, first):
     _, document, signal, sessions, _, _, _ = setup_registration
+    lost = first.startswith("loss-after-seal")
     with serve(engine, tmp_path) as origin, browser.new_context(viewport={"width": 390, "height": 840}) as context:
         page = context.new_page()
         page.clock.install()
@@ -294,16 +356,19 @@ def test_create_form_retries_exact_request(engine, tmp_path, browser, setup_regi
             sent.append((route.request.header_value("idempotency-key"), route.request.post_data))
             if len(sent) > 1:
                 response = route.fetch()
-                receipts.append(response.json())
+                if response.ok:
+                    receipts.append(response.json())
                 route.fulfill(response=response)
-            elif first == "loss-after-seal":
+            elif lost:
                 response = route.fetch()
                 assert response.ok
                 receipts.append(response.json())
             elif first == "unavailable":
                 route.fulfill(status=503, json={"detail": "前瞻登记服务暂不可用"})
-            elif first == "invalid-receipt":
-                route.fulfill(status=200, json={"registration_id": "fwd-" + "a" * 32, "confirmed_at": "unknown"})
+            elif first in INVALID_RECEIPTS:
+                route.fulfill(
+                    status=200, json={"registration_id": "fwd-" + "a" * 32, "confirmed_at": INVALID_RECEIPTS[first]}
+                )
             elif first == "offline":
                 route.abort("internetdisconnected")
 
@@ -311,30 +376,50 @@ def test_create_form_retries_exact_request(engine, tmp_path, browser, setup_regi
         open_source(page, origin)
         fill(page, "原参数重试", signal)
         form(page).click()
-        if first in ("loss-after-seal", "timeout-before-receipt"):
-            expect(page.locator(".forward-create-feedback")).to_contain_text("正在确认登记")
+        feedback = page.locator(".forward-create-feedback")
+        retry = page.get_by_role("button", name="按原参数重试")
+        if lost or first == "timeout-before-receipt":
+            expect(feedback).to_contain_text("正在确认登记")
             assert len(sent) == 1
             page.clock.fast_forward(31_000)
-        expect(page.locator(".forward-create-feedback")).to_contain_text("尚未确认登记是否成功")
-        expect(page.locator(".forward-create-feedback")).to_be_focused()
+        expect(feedback).to_contain_text("尚未确认登记是否成功")
+        expect(feedback).to_be_focused()
         expect(page.get_by_label("登记名称")).to_have_value("原参数重试")
         expect(page.get_by_label("登记名称")).to_be_disabled()
-        assert len(sent) == 1
-        if first == "loss-after-seal":
+        assert page.url == origin + NEW and len(sent) == 1
+        if first == "loss-after-seal-then-maintenance":
+            (saved,) = _rows(engine, forward_registration)
+            assert registration_row_confirmed(saved)
+            with write_gate(engine, exclusive=True):
+                with page.expect_response(lambda r: r.url.endswith(API) and r.request.method == "POST") as blocked:
+                    retry.click()
+                assert blocked.value.status == 409
+                expect(feedback).to_contain_text("数据维护期间暂停写入")
+                expect(feedback).to_contain_text("尚未确认登记是否成功")
+                expect(feedback).to_be_focused()
+                expect(retry).to_be_enabled()
+                expect(page.get_by_label("登记名称")).to_have_value("原参数重试")
+                expect(page.get_by_label("登记名称")).to_be_disabled()
+                assert sent[1] == sent[0]
+                assert _rows(engine, forward_registration) == [saved]
+                assert _rows(engine, forward_attempt) == _rows(engine, research_task) == []
+                screen(page, "unconfirmed-maintenance-390")
+        elif lost:
             (saved,) = _rows(engine, forward_registration)
             assert registration_row_confirmed(saved)
             with engine.begin() as connection:
                 connection.execute(update(dataset).values(status="failed"))
             page.get_by_role("button", name="刷新来源").click()
-            expect(page.get_by_text("原受管来源已不在当前选项中", exact=False)).to_be_visible()
+            expect(page.get_by_text("原受管来源已不可用", exact=False)).to_be_visible()
         else:
             assert _rows(engine, forward_registration) == []
         screen(page, f"unconfirmed-{first}-390")
-        page.get_by_role("button", name="按原参数重试").click()
+        retry.click()
         page.wait_for_url("**/forward-registrations/fwd-*")
         open_detail(page, origin, receipts[-1], "原参数重试", sessions, document["dataset_id"])
-        assert sent[0] == sent[1] and sent[0][0]
-        assert len(set(receipt["registration_id"] for receipt in receipts)) == 1
+        assert len(sent) == (3 if first == "loss-after-seal-then-maintenance" else 2)
+        assert sent[0][0] and all(attempt == sent[0] for attempt in sent)
+        assert all(receipt == receipts[0] for receipt in receipts)
     (saved,) = _rows(engine, forward_registration)
     assert registration_row_confirmed(saved) and saved["id"] == receipts[-1]["registration_id"]
     assert _rows(engine, forward_attempt) == _rows(engine, research_task) == []

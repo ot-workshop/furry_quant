@@ -17,8 +17,8 @@ from finance_quant.persistence.forward import AttemptActive
 from finance_quant.task_contracts import TaskConflict
 from finance_quant.web.forward_actions import submit_forward_score, submit_forward_verification
 from finance_quant.web.forward_reads import registration_detail, registration_page
-from finance_quant.web.forward_writes import registration_sources, submit_forward_registration
-from finance_quant.web.write_requests import research_json
+from finance_quant.web.forward_writes import registration_source, registration_sources, submit_forward_registration
+from finance_quant.web.write_requests import ResearchMaintenanceRejected, research_json
 
 
 def forward_registration_router(
@@ -55,6 +55,15 @@ def forward_registration_router(
             raise HTTPException(503, "受管来源暂不可读")
         return registration_sources(connection, storage_root, offset=offset, limit=limit)
 
+    @router.get("/sources/{dataset_id}")
+    def source(dataset_id: str, connection: Connection = Depends(read_connection)):
+        if storage_root is None:
+            raise HTTPException(503, "受管来源暂不可读")
+        option = registration_source(connection, storage_root, dataset_id)
+        if option is None:
+            raise HTTPException(404, "所选来源已不可用")
+        return option
+
     @router.get("/{registration_id}")
     def registration(registration_id: str, connection: Connection = Depends(read_connection)):
         detail = registration_detail(connection, registration_id)
@@ -70,6 +79,8 @@ def forward_registration_router(
         key = request.headers.get("idempotency-key", "")
         try:
             return await run_in_threadpool(submit_forward_registration, engine, storage_root, document, key)
+        except ResearchMaintenanceRejected as error:
+            return JSONResponse({"code": "maintenance", "detail": error.detail}, status_code=error.status_code)
         except TaskConflict as error:
             raise HTTPException(409, str(error)) from None
         except ValueError as error:

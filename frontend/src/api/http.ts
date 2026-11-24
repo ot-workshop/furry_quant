@@ -3,7 +3,11 @@ export const API_BASE = "/api/v1";
 export class ApiError extends Error {
   readonly status: number;
 
-  constructor(message: string, status: number) {
+  constructor(
+    message: string,
+    status: number,
+    readonly code?: string,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -67,14 +71,19 @@ export async function request<T>(
   }
   if (!response.ok) {
     let detail = `请求失败（HTTP ${response.status}）`;
+    let code: string | undefined;
     try {
-      const payload = (await response.json()) as { detail?: unknown };
+      const payload = (await response.json()) as {
+        detail?: unknown;
+        code?: unknown;
+      };
+      if (typeof payload.code === "string") code = payload.code;
       if (typeof payload.detail === "string" && payload.detail.trim())
         detail = payload.detail;
     } catch {
       /* non-JSON error bodies keep the generic message */
     }
-    throw new ApiError(detail, response.status);
+    throw new ApiError(detail, response.status, code);
   }
   try {
     return (await response.json()) as T;

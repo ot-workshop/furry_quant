@@ -88,7 +88,7 @@ def test_source_options_project_only_ready_managed_metadata(engine, setup_regist
     rejected, rejected_path = source(calendar, name="removed")
     (rejected_path / "rejected.json").write_text("{}", encoding="utf-8")
     failed, _ = source(calendar, name="not-ready")
-    _, mismatched_path = source(calendar, name="wrong-digest")
+    mismatched, mismatched_path = source(calendar, name="wrong-digest")
     (mismatched_path / "manifest.json").write_text("{}", encoding="utf-8")
     source(calendar, name="not-managed", provider="external")
     with engine.begin() as connection:
@@ -110,7 +110,13 @@ def test_source_options_project_only_ready_managed_metadata(engine, setup_regist
         ],
         "has_more": False,
     }
-    assert all(rejected not in item.values() for item in result.json()["items"])
+    by_id = client.get(f"{URL}/sources/{continued}")
+    assert by_id.status_code == 200
+    assert by_id.json() == result.json()["items"][0]
+    for unavailable in (failed, rejected, mismatched, "snapshot-" + "f" * 64):
+        missing = client.get(f"{URL}/sources/{unavailable}")
+        assert missing.status_code == 404
+        assert missing.json() == {"detail": "所选来源已不可用"}
     assert client.get(f"{URL}/sources?limit=26").status_code == 422
     scanned = [client.get(f"{URL}/sources?offset={offset}&limit=1").json() for offset in range(5)]
     assert [item for page in scanned for item in page["items"]] == result.json()["items"]
@@ -280,6 +286,7 @@ def test_maintenance_blocks_post_while_get_stays_available(engine, setup_registr
     with write_gate(engine, exclusive=True):
         response = client.post(URL, json=document, headers=KEY)
         assert response.status_code == 409 and "维护" in response.json()["detail"]
+        assert response.json()["code"] == "maintenance"
         assert client.get(URL).status_code == 200
     assert _rows(engine, forward_registration) == _rows(engine, research_task) == []
     assert client.post(URL, json=document, headers=KEY).status_code == 200

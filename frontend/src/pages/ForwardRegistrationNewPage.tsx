@@ -91,11 +91,13 @@ export default function ForwardRegistrationNewPage() {
       forwardRegistrationsApi.sources(sourceOffset, SOURCE_PAGE_SIZE, signal),
     [sourceOffset],
   );
-  const [chosen, setChosen] = useState<{
-    source: ForwardSource;
-    offset: number;
-    available: boolean;
-  }>();
+  const [chosen, setChosen] = useState<ForwardSource>();
+  const selection = useApiResource(
+    chosen
+      ? (signal) => forwardRegistrationsApi.source(chosen.id, signal)
+      : null,
+    [chosen?.id],
+  );
   const [name, setName] = useState("");
   const [signalDate, setSignalDate] = useState("");
   const [pool, setPool] = useState("");
@@ -118,18 +120,9 @@ export default function ForwardRegistrationNewPage() {
   const locked = waiting || unconfirmed;
 
   const items = sources.data?.items;
-  const choiceMissing = Boolean(
-    chosen &&
-      chosen.offset === sourceOffset &&
-      items &&
-      !items.some((item) => item.id === chosen.source.id),
-  );
-  const sourceLost = choiceMissing || chosen?.available === false;
-  useEffect(() => {
-    if (choiceMissing && chosen?.available) {
-      setChosen({ ...chosen, available: false });
-    }
-  }, [choiceMissing, chosen]);
+  const sourceLost = selection.errorStatus === 404;
+  const selectedVisible = items?.some((item) => item.id === chosen?.id);
+  const selectedOption = selection.data ?? chosen;
   const entries = pool
     .split(/[\s,，;；、]+/)
     .filter(Boolean)
@@ -172,7 +165,11 @@ export default function ForwardRegistrationNewPage() {
     !sources.loading &&
     !sources.refreshing &&
     !sources.error &&
-    Boolean(chosen ? !sourceLost : items?.length);
+    (chosen
+      ? selection.data?.id === chosen.id &&
+        !selection.error &&
+        !selection.refreshing
+      : Boolean(items?.length));
 
   useEffect(() => {
     heading.current?.focus();
@@ -197,7 +194,7 @@ export default function ForwardRegistrationNewPage() {
       top_k: Number(topK),
       factor_window: Number(window),
       factor_direction: direction,
-      dataset_id: chosen.source.id,
+      dataset_id: chosen.id,
     });
   }
 
@@ -209,8 +206,14 @@ export default function ForwardRegistrationNewPage() {
         : undefined;
   }
 
-  function selectSource(source: ForwardSource) {
-    setChosen({ source, offset: sourceOffset, available: true });
+  function refreshSources() {
+    sources.reload();
+    if (chosen) selection.reload();
+  }
+
+  function changeSourcePage(offset: number) {
+    setSourceOffset(offset);
+    if (chosen) selection.reload();
   }
 
   function removeStock(position: number) {
@@ -239,6 +242,7 @@ export default function ForwardRegistrationNewPage() {
             ) : unconfirmed ? (
               <>
                 <p>尚未确认登记是否成功。原参数已保留，可按原参数重试。</p>
+                {state.detail && <p>{state.detail}</p>}
                 <Button type="primary" onClick={retry}>
                   按原参数重试
                 </Button>
@@ -269,20 +273,21 @@ export default function ForwardRegistrationNewPage() {
                 : "暂无可用受管来源"}
             </p>
           ) : null}
-          {chosen && (sourceLost || chosen.offset !== sourceOffset) && (
-            <p role={sourceLost && !locked ? "alert" : "status"}>
-              {sourceLost ? (
-                locked ? (
-                  "原受管来源已不在当前选项中，仍保留原参数供重试。"
-                ) : (
-                  "所选来源已不可用，请重新选择。"
-                )
-              ) : (
-                <>
-                  已选来源 {chosen.source.name} · {chosen.source.id.slice(-8)}
-                </>
-              )}
+          {selectedOption && (!selectedVisible || sourceLost) && (
+            <p>
+              已选来源 {selectedOption.name} · 尾号{" "}
+              {selectedOption.id.slice(-8)}
             </p>
+          )}
+          {sourceLost && (
+            <p role={locked ? "status" : "alert"}>
+              {locked
+                ? "原受管来源已不可用，仍保留原参数供重试。"
+                : "所选来源已不可用，请重新选择。"}
+            </p>
+          )}
+          {selection.error && !sourceLost && !sources.error && (
+            <p role="alert">暂时无法复核所选来源。{selection.error}</p>
           )}
           {problem("source") && (
             <p id="forward-source-error" className="forward-create-error">
@@ -304,8 +309,8 @@ export default function ForwardRegistrationNewPage() {
                       <input
                         type="radio"
                         name="source"
-                        checked={!sourceLost && chosen?.source.id === source.id}
-                        onChange={() => selectSource(source)}
+                        checked={!sourceLost && chosen?.id === source.id}
+                        onChange={() => setChosen(source)}
                       />
                       <span>
                         <strong>{source.name}</strong>
@@ -327,19 +332,28 @@ export default function ForwardRegistrationNewPage() {
             </fieldset>
           )}
           <div className="forward-create-tools">
-            <Button onClick={sources.reload} loading={sources.refreshing}>
-              {sources.error ? "重试加载来源" : "刷新来源"}
+            <Button
+              onClick={refreshSources}
+              loading={sources.refreshing || selection.refreshing}
+            >
+              {sources.error || (selection.error && !sourceLost)
+                ? "重试加载来源"
+                : "刷新来源"}
             </Button>
             {sourceOffset > 0 && (
               <Button
-                onClick={() => setSourceOffset(sourceOffset - SOURCE_PAGE_SIZE)}
+                onClick={() =>
+                  changeSourcePage(sourceOffset - SOURCE_PAGE_SIZE)
+                }
               >
                 上一页来源
               </Button>
             )}
             {sources.data?.has_more && (
               <Button
-                onClick={() => setSourceOffset(sourceOffset + SOURCE_PAGE_SIZE)}
+                onClick={() =>
+                  changeSourcePage(sourceOffset + SOURCE_PAGE_SIZE)
+                }
               >
                 下一页来源
               </Button>

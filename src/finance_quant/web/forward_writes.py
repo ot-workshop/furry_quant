@@ -10,7 +10,7 @@ from pathlib import Path
 from stat import S_ISREG
 
 import pandas as pd
-from sqlalchemy import Connection, Engine, select
+from sqlalchemy import Connection, Engine, RowMapping, select
 
 from finance_quant.application.forward_registration import ForwardCalendar, _freeze_registration
 from finance_quant.application.forward_score import _market_dates
@@ -110,50 +110,54 @@ def _coverage(manifest: dict) -> tuple[str | None, str | None]:
     return (start.isoformat(), end.isoformat()) if start <= end else (None, None)
 
 
+def _source_projection():
+    manifest = dataset.c.manifest
+    return select(
+        dataset.c.id,
+        dataset.c.relative_path,
+        manifest["source_manifest_sha256"].astext.label("digest"),
+        manifest["source_id"].astext.label("name"),
+    ).where(
+        dataset.c.status == "ready",
+        manifest["kind"].astext == "market_snapshot",
+        manifest["schema_version"].astext.in_(_SOURCE_SCHEMAS),
+        dataset.c.id.op("~")(f"^{_DATASET_ID}$"),
+    )
+
+
+def _source_option(root: Path, row: RowMapping) -> dict | None:
+    try:
+        _, raw, source = _managed_manifest(root, row["relative_path"], max_bytes=128 * 1024)
+    except (OSError, RecursionError, TypeError, ValueError):
+        return None
+    digest = sha256_bytes(raw)
+    if digest != row["digest"] or row["id"] != "snapshot-" + digest:
+        return None
+    name = source.get("id")
+    if not isinstance(name, str) or name != row["name"] or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}", name):
+        name = "行情快照"
+    start, end = _coverage(source)
+    return {"id": row["id"], "name": name, "start": start, "end": end}
+
+
 def registration_sources(connection: Connection, storage_root: Path, *, offset: int, limit: int) -> dict:
     """Project ready registrations, reading only bounded manifest metadata and file attributes."""
-    manifest = dataset.c.manifest
     rows = (
         connection.execute(
-            select(
-                dataset.c.id,
-                dataset.c.relative_path,
-                manifest["source_manifest_sha256"].astext.label("digest"),
-                manifest["source_id"].astext.label("name"),
-            )
-            .where(
-                dataset.c.status == "ready",
-                manifest["kind"].astext == "market_snapshot",
-                manifest["schema_version"].astext.in_(_SOURCE_SCHEMAS),
-                dataset.c.id.op("~")(f"^{_DATASET_ID}$"),
-            )
-            .order_by(dataset.c.created_at.desc(), dataset.c.id)
-            .offset(offset)
-            .limit(limit + 1)
+            _source_projection().order_by(dataset.c.created_at.desc(), dataset.c.id).offset(offset).limit(limit + 1)
         )
         .mappings()
         .all()
     )
-    items = []
     root = storage_root.resolve()
-    for row in rows[:limit]:
-        try:
-            _, raw, source = _managed_manifest(root, row["relative_path"], max_bytes=128 * 1024)
-        except (OSError, RecursionError, TypeError, ValueError):
-            continue
-        digest = sha256_bytes(raw)
-        if digest != row["digest"] or row["id"] != "snapshot-" + digest:
-            continue
-        name = source.get("id")
-        if (
-            not isinstance(name, str)
-            or name != row["name"]
-            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}", name)
-        ):
-            name = "行情快照"
-        start, end = _coverage(source)
-        items.append({"id": row["id"], "name": name, "start": start, "end": end})
+    items = [item for row in rows[:limit] if (item := _source_option(root, row)) is not None]
     return {"items": items, "has_more": len(rows) > limit}
+
+
+def registration_source(connection: Connection, storage_root: Path, dataset_id: str) -> dict | None:
+    """Recheck one selection independently of its position in the catalog."""
+    row = connection.execute(_source_projection().where(dataset.c.id == dataset_id)).mappings().one_or_none()
+    return _source_option(storage_root.resolve(), row) if row is not None else None
 
 
 def _source_calendar(connection: Connection, storage_root: Path, dataset_id: str) -> tuple[bytes, str]:

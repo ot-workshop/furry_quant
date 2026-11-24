@@ -10,13 +10,18 @@ from fastapi import HTTPException, Request
 from finance_quant.persistence.maintenance import MaintenanceBusy, write_gate
 
 
+class ResearchMaintenanceRejected(HTTPException):
+    def __init__(self):
+        super().__init__(409, "数据维护期间暂停写入，请稍后重试")
+
+
 @contextmanager
 def research_write_gate(engine):
     try:
         with write_gate(engine) if engine is not None else nullcontext() as connection:
             yield connection
     except MaintenanceBusy as error:
-        raise HTTPException(409, "数据维护期间暂停写入，请稍后重试") from error
+        raise ResearchMaintenanceRejected() from error
 
 
 async def research_json(request: Request):
