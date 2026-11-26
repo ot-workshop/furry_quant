@@ -15,6 +15,7 @@ from sqlalchemy import select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 
 from finance_quant.checksums import file_sha256, sha256_bytes
+from finance_quant.data.warehouse_files import warehouse_files
 
 from .database import make_engine
 from .schema import MARKET_TABLES, data_release, data_revision, dataset, source_check
@@ -374,20 +375,9 @@ def _historical_manifest(root):
 
 
 def _historical_files(root, manifest):
-    declared = []
-    for name, expected in sorted(manifest.get("reference_files", {}).items()):
-        declared.append((Path("reference") / name, expected))
-    for asset in manifest["assets"].values():
-        declared.append((Path(asset["file"]), asset["sha256"]))
     files = []
-    seen = set()
-    for relative, expected in declared:
-        path = (root / relative).resolve()
-        key = relative.as_posix()
-        if relative.is_absolute() or not path.is_relative_to(root) or key in seen or not path.is_file():
-            raise ValueError("Historical warehouse contains an invalid file path")
+    for path, relative, expected in warehouse_files(root, manifest):
         if file_digest(path) != expected:
-            raise ValueError(f"Historical warehouse checksum mismatch: {key}")
-        seen.add(key)
+            raise ValueError(f"Historical warehouse checksum mismatch: {relative.as_posix()}")
         files.append((path, relative, expected))
     return files

@@ -29,6 +29,7 @@ from finance_quant.application.selection_experiments import (
     verify_queued_selection,
 )
 from finance_quant.application.task_context import attach_outputs, prepare_snapshot, prepare_warehouse
+from finance_quant.application.warehouse_comparison_limits import WAREHOUSE_SCHEMAS, check_submission, check_warehouse
 from finance_quant.checksums import file_sha256
 from finance_quant.configuration import BacktestConfig, DataConfig, EvaluationConfig, _normalize_codes
 from finance_quant.data.execution_universe import validate_execution_universe
@@ -161,6 +162,8 @@ def validate_experiment_submission_fields(document: dict, plan: ExperimentPlan) 
                 raise ValueError("目标持股不能超过所选股票数")
     if "filters" in data:
         parse_filters(data["filters"])
+    if mode in WAREHOUSE_SCHEMAS:
+        check_submission(data, plan)
 
 
 def validate_selection_reference(document: dict, plan: ExperimentPlan) -> None:
@@ -203,6 +206,11 @@ def validate_experiment_inputs(
     """Validate the experiment without publishing any research artefacts."""
 
     plan = validate_experiment_document(document)
+    data = document["data"]
+    mode = data.get("mode") if isinstance(data, dict) else None
+    warehouse_source = (
+        check_warehouse(data_root, data, plan) if isinstance(mode, str) and mode in WAREHOUSE_SCHEMAS else None
+    )
     references_frozen = reference_versions is not None
     bound = selection_validation(
         result_store,
@@ -212,6 +220,7 @@ def validate_experiment_inputs(
         runs_root,
         frozen_snapshot=frozen_snapshot,
         references_frozen=references_frozen,
+        warehouse_source=warehouse_source,
     )
     research_document = _research_document(document, plan)
     binding = bound["context"]["financials"] if bound else None
@@ -242,6 +251,7 @@ def validate_experiment_inputs(
         financials=binding,
         references_frozen=references_frozen,
         frozen_snapshot=frozen_snapshot,
+        warehouse_source=warehouse_source,
     )
     validate_selection_inputs(bound, research)
     if reference_versions is not None:
@@ -392,6 +402,10 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
         raise ValueError("准备结果已记录，任务不应重复执行准备阶段")
 
     plan = _plan(request)
+    if not pending:
+        context.stage("prepare", "准备股票池并检查各候选方案的历史预热", 0)
+        if request["data"]["mode"] in WAREHOUSE_SCHEMAS:
+            check_warehouse(context.data_root, request["data"], plan, execution=execution)
     evidence = execution.get("factor_selection")
     verify_queued_selection(context.result_store_factory(None), evidence)
     if pending:
@@ -426,8 +440,6 @@ def run_experiment_task(context, request: dict, execution: dict) -> dict:
         saved = {**execution, "prepare_state": "prepared"}
         context.store.save_prepared(context.identifier, saved)
         execution = saved
-    if not pending:
-        context.stage("prepare", "准备股票池并检查各候选方案的历史预热", 0)
     dynamic = request["data"]["mode"] != "snapshot" or "filters" in request["data"]
     if execution["mode"] != "snapshot":
         root, dataset_record = prepare_warehouse(context, request, execution)
