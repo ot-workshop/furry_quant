@@ -84,11 +84,14 @@ def test_warehouse_budget_failure_preserves_postgres_inventory_and_queue_row(eng
     store = PgResultStore(runs, engine=engine, storage_root=tmp_path)
     client = TestClient(create_app(result_store=store, task_service=service), base_url="http://127.0.0.1")
     key = {"Idempotency-Key": "pg-warehouse-budget"}
+    worker_lock = (runs / "tasks" / "execution.lock").relative_to(tmp_path)
 
     def inventory():
         with engine.connect() as connection:
             counts = [connection.scalar(select(func.count()).select_from(table)) for table in (dataset, research_run)]
-        return counts, {path.relative_to(tmp_path) for path in tmp_path.rglob("*") if path.is_file()}
+        # UnixFileLock keeps this coordination file after release.
+        files = {path.relative_to(tmp_path) for path in tmp_path.rglob("*") if path.is_file()}
+        return counts, files - {worker_lock}
 
     response = client.post("/api/v1/research/experiments", json=document, headers=key)
     assert response.status_code == 202, response.text
