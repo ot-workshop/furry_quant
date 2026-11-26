@@ -50,7 +50,7 @@ def test_http_limits_fail_before_warehouse_resolution(tmp_path, monkeypatch, dim
     service = make_service(tmp_path / "runs", data)
     client = TestClient(make_app(service.runs_root, data, service=service), base_url="http://127.0.0.1")
     monkeypatch.setattr(limits, "_pinned_manifest", lambda *args: pytest.fail("HTTP opened the warehouse"))
-    response = client.post(URL, json=document, headers={"Idempotency-Key": dimension})
+    response = client.post(URL, json=document, headers={"Idempotency-Key": f"warehouse-http-{dimension}"})
     assert response.status_code == 422 and expected in response.text
     assert service.store.list()["total"] == 0
 
@@ -189,11 +189,11 @@ def test_original_key_skips_the_new_http_limit_for_old_task(tmp_path, monkeypatc
     document["data"]["codes"] = sorted(json.loads((root / "manifest.json").read_bytes())["assets"])
     service = make_service(tmp_path / "runs", data)
     client = TestClient(make_app(service.runs_root, data, service=service), base_url="http://127.0.0.1")
-    original = client.post(URL, json=document, headers={"Idempotency-Key": "old"})
+    original = client.post(URL, json=document, headers={"Idempotency-Key": "warehouse-old-key"})
     assert original.status_code == 202, original.text
     monkeypatch.setattr(limits, "MAX_STOCKS", 4)
-    retry = client.post(URL, json=document, headers={"Idempotency-Key": "old"})
+    retry = client.post(URL, json=document, headers={"Idempotency-Key": "warehouse-old-key"})
     assert retry.status_code == 202 and retry.json()["id"] == original.json()["id"]
-    rejected = client.post(URL, json=document, headers={"Idempotency-Key": "new"})
+    rejected = client.post(URL, json=document, headers={"Idempotency-Key": "warehouse-new-key"})
     assert rejected.status_code == 422 and "显式股票数" in rejected.text
     assert service.store.list()["total"] == 1
