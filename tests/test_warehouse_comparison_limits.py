@@ -197,3 +197,25 @@ def test_original_key_skips_the_new_http_limit_for_old_task(tmp_path, monkeypatc
     rejected = client.post(URL, json=document, headers={"Idempotency-Key": "warehouse-new-key"})
     assert rejected.status_code == 422 and "显式股票数" in rejected.text
     assert service.store.list()["total"] == 1
+
+
+def test_selected_oversized_manifest_has_its_own_reason(tmp_path):
+    data, root, document = pool(tmp_path, "market_warehouse")
+    oversized = root.parent.with_name("large")
+    shutil.copytree(root.parent, oversized)
+    manifest = oversized / root.name / "manifest.json"
+    raw = manifest.read_bytes()
+    oversized_bytes = limits.MAX_MANIFEST_BYTES + 1
+    manifest.write_bytes(raw + b" " * (oversized_bytes - len(raw)))
+    plan = experiment_tasks._plan(document)
+    assert limits.check_warehouse(data, document["data"], plan)[0] == root.resolve()
+
+    digest = sha256_bytes(manifest.read_bytes())
+    selected = {**document["data"], "warehouse_id": "market-" + digest[:20]}
+    with pytest.raises(ValueError, match=rf"清单字节数超限（{oversized_bytes}，上限 {limits.MAX_MANIFEST_BYTES}）"):
+        limits.check_warehouse(data, selected, plan)
+    legacy = {"mode": "market_warehouse", "warehouse_dir": str(manifest.parent), "manifest_sha256": digest}
+    with pytest.raises(ValueError, match="清单字节数超限"):
+        limits.check_warehouse(data, selected, plan, execution=legacy)
+    with pytest.raises(ValueError, match="版本不存在或已变化"):
+        limits.check_warehouse(data, {**selected, "warehouse_id": "market-" + "0" * 20}, plan)

@@ -1,6 +1,7 @@
 """Bound queued warehouse experiments before reading stock quotes or publishing results."""
 
 import json
+import os
 from datetime import date
 from pathlib import Path
 
@@ -26,6 +27,7 @@ MAX_PLAN_WEIGHT = 60
 # 128 stocks, 240 trading days and three warmup days, two one-factor candidates in common mode.
 MAX_WEIGHTED_SESSIONS = 622_080
 MAX_MANIFEST_BYTES = 4 * 2**20
+MAX_OVERSIZED_MANIFEST_PROBE_BYTES = 32 * 2**20
 MAX_WAREHOUSE_FILES = 10_000
 MAX_WAREHOUSE_BYTES = 512 * 2**20
 MAX_INPUT_ROWS = 1_000_000
@@ -72,9 +74,23 @@ def _pinned_manifest(data_root: Path, data: dict, execution: dict | None):
         if pinned not in roots or execution["mode"] != mode:
             raise ValueError("已排队任务的历史仓库已不可用，请刷新数据后重新提交")
         roots = [pinned]
+    probe_budget = MAX_OVERSIZED_MANIFEST_PROBE_BYTES
     for root in roots:
         try:
             with (root / "manifest.json").open("rb") as source:
+                size = os.fstat(source.fileno()).st_size
+                if size > MAX_MANIFEST_BYTES:
+                    if execution is not None:
+                        _limit("清单字节数", size, MAX_MANIFEST_BYTES, "选择清单较小的仓库")
+                    # Compare an oversized leaf by identity without decoding it. Never let
+                    # an unrelated oversized leaf prevent a later normal leaf from matching.
+                    if size >= probe_budget:
+                        continue
+                    probe_budget -= size + 1
+                    oversized = source.read(size + 1)
+                    if len(oversized) == size and data["warehouse_id"] == f"{prefix}-{sha256_bytes(oversized)[:20]}":
+                        _limit("清单字节数", size, MAX_MANIFEST_BYTES, "选择清单较小的仓库")
+                    continue
                 raw = source.read(MAX_MANIFEST_BYTES + 1)
         except OSError:
             continue
@@ -86,7 +102,7 @@ def _pinned_manifest(data_root: Path, data: dict, execution: dict | None):
         if execution is not None and digest != execution["manifest_sha256"]:
             break
         return root, digest, raw, schema
-    raise ValueError("所选仓库版本不存在或已变化，请刷新数据列表并选择清单不超过 4 MiB 的仓库")
+    raise ValueError("所选仓库版本不存在或已变化，请刷新数据列表后重新提交")
 
 
 def _parquet_size(paths, *, initial=(0, 0)):
