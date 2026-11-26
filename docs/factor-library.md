@@ -66,6 +66,39 @@
 
 至少两只股票符合条件才发布评分。原始缺失值保留为空，不自动删除因子或重新分配权重。结果保存全股票池、可评分数量、各因子的真实有效/缺失/填补数量、原始值和排除原因。除盈利收益率外的因子继续采用严格缺失规则。
 
+## 本地手动公式
+
+在仓库根目录执行 `uv sync --locked` 后，可以从 JSON 登记固定股票池的价格收益率。公式只接受下面两个字段，`window` 为 2–252 的整数。计算使用复权收盘价 `P[t] / P[t-window] - 1`，沿用动量的交易日日历、缺失剔除及排序。回测使用信号日后下一交易日的开盘价。
+
+```json
+{"operator": "price_return", "window": 2}
+```
+
+```sh
+uv run --locked python -m finance_quant.manual_formula --runs-dir ./runs register ./formula.json
+uv run --locked python -m finance_quant.manual_formula --runs-dir ./runs run --data-root ./storage/data --config ./manual-research.json --formula-id FORMULA_ID
+uv run --locked python -m finance_quant.manual_formula --runs-dir ./runs replay --data-root ./storage/data --evaluation-id EVALUATION_ID --output ./replayed-v1
+```
+
+把前一个命令输出的 ID 填入下一步。配置示例中的日期和股票须与所选行情一致，并为信号日留出窗口和下一交易日。
+
+```json
+{
+  "data": {
+    "root": "./storage/data/research/downloads/three-stock-batch",
+    "start": "2025-01-02",
+    "end": "2025-01-10",
+    "codes": ["600000.SH", "000001.SZ", "600519.SH"]
+  },
+  "backtest": {"start": "2025-01-08", "end": "2025-01-10", "topk": 1},
+  "evaluation": {"horizons": [1], "groups": 3, "min_cross_section": 3}
+}
+```
+
+`data.root` 相对配置文件解析，可以指向已发布批次或其具体行情叶。命令把公式设为唯一因子，权重为 1。数据使用受管固定池、随行情叶保存的基准和交易日历。适用范围为本地离线研究，含回测和上述区间的因子评估。
+
+内容相同的公式返回同一个完整 SHA-256 标识；调整窗口后登记新版本。原评估在来源中保存规范公式、运算版本、行情叶相对路径、清单及三个文件的摘要、股票池与运行参数。重放从指定评估恢复原设置，校验原公式记录、计算代码、依赖锁、Python 版本及冻结文件，然后在新目录实际重算评分、回测与评估。保留原运行目录、所选行情叶以及生成结果时的仓库版本和锁文件，便于以后重放。失败退出码为 1，原运行目录的 `formula_failures` 下有失败阶段和错误码。
+
 ## 时间边界
 
 - 因子只读取信号日及此前数据。

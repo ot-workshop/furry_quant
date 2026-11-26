@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from finance_quant.research.financial_features import GROSS_MARGIN_VERSION, STANDARD_FACTOR_VERSION
+from finance_quant.research.manual_formula import MANUAL_FORMULA, PRICE_RETURN_VERSION
 
 FILLABLE_FACTORS = {"value", "gross_margin_ttm"}
 
@@ -27,11 +28,15 @@ def _positive(series):
     return series.where(np.isfinite(series) & series.gt(0))
 
 
-def _momentum(frame, spec):
+def _price_return(frame, window, skip=0):
     def one(s):
-        return s.shift(spec.skip) / s.shift(spec.window) - 1
+        return s.shift(skip) / s.shift(window) - 1
 
     return frame.groupby("instrument").adjusted_close.transform(one)
+
+
+def _momentum(frame, spec):
+    return _price_return(frame, spec.window, spec.skip)
 
 
 def _volatility(frame, spec):
@@ -129,7 +134,9 @@ class FactorDefinition:
             "default_window": self.default_window,
             "default_skip": self.default_skip,
             "default_baseline_window": self.default_baseline_window,
-            "version": GROSS_MARGIN_VERSION
+            "version": PRICE_RETURN_VERSION
+            if self.name == MANUAL_FORMULA
+            else GROSS_MARGIN_VERSION
             if self.name == "gross_margin_ttm"
             else STANDARD_FACTOR_VERSION
             if self.fundamental
@@ -154,6 +161,15 @@ _DEFINITIONS = (
         _momentum,
         20,
         0,
+    ),
+    FactorDefinition(
+        MANUAL_FORMULA,
+        "手动价格收益率",
+        "momentum",
+        "higher",
+        ("close", "adj_factor"),
+        "P[t] / P[t-window] - 1",
+        lambda frame, spec: _price_return(frame, spec.window),
     ),
     FactorDefinition(
         "value",

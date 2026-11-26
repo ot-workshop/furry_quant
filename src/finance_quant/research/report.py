@@ -41,8 +41,9 @@ def evaluation_markdown(result: dict) -> str:
         "| --- | ---: | ---: | ---: | ---: |",
     ]
     for spec in meta["factor_config"]:
+        window = (spec.get("formula_version") or spec).get("window")
         lines.append(
-            f"| {spec.get('id', spec['name'])} / {spec['name']} | {spec['weight']:.1%} | {spec['window'] or '—'} | {spec.get('skip', 0)} | {spec.get('baseline_window', '—')} |"
+            f"| {spec.get('id', spec['name'])} / {spec['name']} | {spec['weight']:.1%} | {window or '—'} | {spec.get('skip', 0)} | {spec.get('baseline_window', '—')} |"
         )
     if meta.get("cross_validation"):
         lines += ["", "## 联合数据来源", "", "| 股票 | 核验结果 | 价格来源 | 复权来源 |", "| --- | --- | --- | --- |"]

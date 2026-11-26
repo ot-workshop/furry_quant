@@ -19,8 +19,8 @@ from finance_quant.research.report import evaluation_markdown
 from finance_quant.storage import ResultStore
 
 
-def evaluate_configured(config, *, result_store=None) -> dict:
-    market, _, calendar, manifest = load_configured_snapshot(config)
+def evaluate_configured(config, *, result_store=None, frozen_snapshot=None, replay_recipe=None) -> dict:
+    market, _, calendar, manifest = load_configured_snapshot(config, frozen_snapshot=frozen_snapshot)
     factors = publish_factor_run(
         market,
         manifest,
@@ -29,6 +29,7 @@ def evaluate_configured(config, *, result_store=None) -> dict:
         config.neutralization,
         result_store=result_store,
         financials=config.financials,
+        frozen_snapshot=frozen_snapshot,
     )
     provenance = {
         **source_provenance(),
@@ -40,6 +41,8 @@ def evaluate_configured(config, *, result_store=None) -> dict:
         "end": config.backtest.end,
         **financial_provenance(config.financials, config.factors),
     }
+    if replay_recipe is not None:
+        provenance["manual_formula_replay"] = replay_recipe
     run_id = "factor-eval-" + fingerprint(provenance)
     store = result_store or ResultStore(config.runs_dir)
     lock = config.runs_dir / ".locks" / (run_id + ".lock")
