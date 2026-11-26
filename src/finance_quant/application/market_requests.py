@@ -52,21 +52,24 @@ def pool_industry_display(data, neutral_extra, neutralization):
     return neutral_extra
 
 
-def validate_market_request(document, data_root, backtest, factors, evaluation):
+def validate_market_request(document, data_root, backtest, factors, evaluation, *, warehouse_source=None):
     if not {"mode", "warehouse_id"}.issubset(document) or set(document) - {"mode", "warehouse_id", "filters", "codes"}:
         raise ValueError("动态股票池须选择行情版本并配置筛选条件")
-    root = next(
-        (
-            path
-            for path in market_roots(data_root)
-            if (option := market_option(path)) and option["id"] == document["warehouse_id"]
+    root, expected_sha = warehouse_source or (
+        next(
+            (
+                path
+                for path in market_roots(data_root)
+                if (option := market_option(path)) and option["id"] == document["warehouse_id"]
+            ),
+            None,
         ),
         None,
     )
-    if root is None:
+    option = market_option(root, expected_sha=expected_sha) if root is not None else None
+    if root is None or option is None or option["id"] != document["warehouse_id"]:
         raise ValueError("股票池行情版本不存在或已变化，请刷新数据列表")
-    option = market_option(root)
-    _, calendar, digest = market_header(root)
+    _, calendar, digest = market_header(root, expected_sha=expected_sha)
     codes = document.get("codes")
     if codes is not None:
         if (

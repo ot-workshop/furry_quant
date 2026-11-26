@@ -17,10 +17,13 @@ from finance_quant.data.symbols import to_qlib
 from finance_quant.data.temporal_audit import restore_valuation_dates
 
 
-def warehouse_header(root):
+def warehouse_header(root, *, expected_sha=None):
     root = Path(root).resolve()
     path = root / "manifest.json"
     raw = path.read_bytes()
+    digest = sha256_bytes(raw)
+    if expected_sha is not None and digest != expected_sha:
+        raise ValueError("排队期间历史仓库版本已变化，请重新提交")
     manifest = json.loads(raw)
     if manifest.get("schema_version") != "historical-index-warehouse-v1" or not manifest.get("assets"):
         raise ValueError("历史成分数据仓尚未完整发布")
@@ -28,13 +31,12 @@ def warehouse_header(root):
     if file_sha256(calendar_path) != manifest["reference_files"]["calendar.parquet"]:
         raise ValueError("历史仓库交易日历校验失败")
     calendar = pd.read_parquet(calendar_path)
-    digest = sha256_bytes(raw)
     return manifest, calendar, digest
 
 
-def warehouse_option(root):
+def warehouse_option(root, *, expected_sha=None):
     try:
-        manifest, calendar, digest = warehouse_header(root)
+        manifest, calendar, digest = warehouse_header(root, expected_sha=expected_sha)
     except (OSError, ValueError, KeyError):
         return None
     dates = calendar.loc[
@@ -61,9 +63,7 @@ def warehouse_option(root):
 
 def load_historical_input(root, start, end, lookback, *, expected_sha=None):
     root = Path(root).resolve()
-    manifest, calendar, digest = warehouse_header(root)
-    if expected_sha and expected_sha != digest:
-        raise ValueError("排队期间历史仓库版本已变化，请重新提交")
+    manifest, calendar, digest = warehouse_header(root, expected_sha=expected_sha)
     sessions = pd.DatetimeIndex(calendar.loc[calendar.is_open, "date"])
     begin, finish = pd.Timestamp(start), pd.Timestamp(end)
     if (
