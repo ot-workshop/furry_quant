@@ -7,7 +7,8 @@ cannot reconstruct missing revision history from a vendor's latest-only values.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -21,6 +22,11 @@ def _aware_timestamp(value, name: str) -> pd.Timestamp:
 
 EXCHANGE_TZ = "Asia/Shanghai"
 SESSION_OPEN = pd.Timedelta(hours=9, minutes=30)
+
+
+def daily_label_maturity(exit_date: date) -> datetime:
+    """The earliest availability of a completed daily exit observation."""
+    return datetime.combine(exit_date, time(15), tzinfo=ZoneInfo(EXCHANGE_TZ))
 
 
 def _sessions(trading_sessions: Sequence) -> pd.DatetimeIndex:

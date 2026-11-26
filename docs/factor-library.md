@@ -99,6 +99,30 @@ uv run --locked python -m finance_quant.manual_formula --runs-dir ./runs replay 
 
 内容相同的公式返回同一个完整 SHA-256 标识；调整窗口后登记新版本。原评估在来源中保存规范公式、运算版本、行情叶相对路径、清单及三个文件的摘要、股票池与运行参数。重放从指定评估恢复原设置，校验原公式记录、计算代码、依赖锁、Python 版本及冻结文件，然后在新目录实际重算评分、回测与评估。保留原运行目录、所选行情叶以及生成结果时的仓库版本和锁文件，便于以后重放。失败退出码为 1，原运行目录的 `formula_failures` 下有失败阶段和错误码。
 
+### 本地滚动验证
+
+先登记两个不同窗口的公式，然后依次固定计划、运行和重放。把命令中的 `ROLLING_ID` 替换为固定计划输出的 ID。
+
+```sh
+uv run --locked python -m finance_quant.manual_formula --runs-dir ./runs rolling-plan --data-root ./storage/data --plan ./rolling.json
+uv run --locked python -m finance_quant.manual_formula --runs-dir ./runs rolling-run --data-root ./storage/data --rolling-id ROLLING_ID
+uv run --locked python -m finance_quant.manual_formula --runs-dir ./runs rolling-replay --data-root ./storage/data --rolling-id ROLLING_ID --output ./replayed-rolling
+```
+
+`rolling.json` 包含以下字段。
+
+- `research` 使用上节的研究配置。回测起止日期覆盖两折测试的实际入场日，交易参数由两折共用。评估固定为一日持有、三组及每天至少三股，省略 `evaluation` 即采用该设置。
+- `formula_ids` 是两个已登记的完整公式 ID。
+- `folds` 是两个对象，每个对象含 `train`、`validation`、`test` 三个字段。每个字段写成 `["起始信号日", "结束信号日"]`，两端均纳入。使用冻结交易日历的日期，分别保持两折对应区段等长，并按时间排列两折互不重叠的测试段。
+- `report_cutoff` 是带时区偏移的 ISO 8601 时间，供测试标签判断是否可得，例如 `"2025-03-07T18:00:00+08:00"`。
+- `evidence` 指向数据根目录下的可得时刻 JSON。该文件包含 `schema_version: 1`、行情清单的 `data_version` 和 `market_sha256`（`market.parquet` 的 SHA-256）、`certification`（`synthetic` 或 `unverified`）及 `rows`。每行记录 `date`、`instrument`（如 `SH600000`）、`open_available_at` 和 `adjustment_available_at`。后两个字段使用带时区偏移的时刻，未知时填 `null`。该证据仅表示计划采用的可得时间，结果保留未认证状态。
+
+信号日 T 对应 T+1 复权开盘入场、T+2 复权开盘退出。标签在退出日北京时间 15:00 和两端行情、复权证据均已可得时成熟。训练和验证以后一段之前一交易日 18:00 截止，依次排除退出落入后段、退出落在紧邻后段的交易日，以及截止时尚不可得的标签。已有回测链对成交所需行情执行原有校验。
+
+训练段记录覆盖和缺失。验证段在两候选都能评分的共同股日上比较 Rank IC，两候选都有效的每日至少有三只股票，且至少有两日。以每日 Rank IC 均值选赢家，同分按公式 ID 升序。每折先将逐股筛选证据和选择封存在 `selection.json`，再仅测试赢家。样本不足的折记录原因。
+
+结果在 `runs/experiments/ROLLING_ID/`，包含 `plan.json`、`selection.json` 和 `result.json`，测试工件引用指向评分、回测及使用报告截止时点的评估。保留原行情叶、证据文件、公式仓库、计划和运行环境。重放在新目录复算，核对封存选择及各折结果后发布滚动结果。
+
 ## 时间边界
 
 - 因子只读取信号日及此前数据。

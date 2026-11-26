@@ -197,6 +197,11 @@ class ResultStore:
             destination, json.dumps(document, ensure_ascii=False, allow_nan=False, indent=2), json_document=True
         )
 
+    def read_experiment_record(self, run_id: str, name: str) -> dict[str, Any]:
+        if name not in {"plan", "selection"}:
+            raise ValueError("Unsupported experiment record")
+        return json.loads(self.path("experiments", run_id).with_name(name + ".json").read_text(encoding="utf-8"))
+
     def _publish_text(self, destination: Path, encoded: str, *, json_document: bool = False) -> Path:
         def matches() -> bool:
             existing = destination.read_text(encoding="utf-8")
