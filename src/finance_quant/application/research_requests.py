@@ -49,6 +49,7 @@ from finance_quant.data.symbols import to_qlib
 from finance_quant.data.validation_config import CrosscheckConfig
 from finance_quant.research.factor_library import FACTOR_LIBRARY, requires_financials, uses_financials
 from finance_quant.research.fundamentals import fundamentals_for
+from finance_quant.research.manual_formula import MANUAL_FORMULA
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.neutralization import industry_context, parse_neutralization
 from finance_quant.research.registry import EvaluationConfig, FactorConfig, FactorSpec
@@ -63,7 +64,9 @@ BENCHMARKS = [
     {"code": "399001.SZ", "name": "深证成指"},
     {"code": "399006.SZ", "name": "创业板指"},
 ]
-FACTOR_DEFINITIONS = [definition.public() for definition in FACTOR_LIBRARY.values()]
+FACTOR_DEFINITIONS = [
+    definition.public() for definition in FACTOR_LIBRARY.values() if definition.name != MANUAL_FORMULA
+]
 
 
 def _fields(value, required, optional=(), label="配置"):

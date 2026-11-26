@@ -11,6 +11,7 @@ from typing import Any
 
 from finance_quant.checksums import sha256_text
 from finance_quant.research.factor_library import FACTOR_LIBRARY, FILLABLE_FACTORS
+from finance_quant.research.manual_formula import MANUAL_FORMULA, FormulaVersion
 
 __all__ = [
     "FactorSpec",
@@ -55,6 +56,7 @@ class FactorSpec:
     baseline_window: int | None = None
     id: str | None = None
     missing_policy: str | None = None
+    formula_version: FormulaVersion | dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or self.name not in FACTOR_NAMES:
@@ -73,7 +75,17 @@ class FactorSpec:
             )
         object.__setattr__(self, "missing_policy", policy)
         weight = _weight(self.weight)
-        if definition.default_window is None:
+        if self.name == MANUAL_FORMULA:
+            if self.window is not None:
+                raise ValueError("Manual formula window belongs to the immutable formula version")
+            version = self.formula_version
+            if not isinstance(version, FormulaVersion):
+                version = FormulaVersion.from_record(version)
+            object.__setattr__(self, "formula_version", version)
+            window = version.window
+        elif self.formula_version is not None:
+            raise ValueError("Only manual formulas accept a formula version")
+        elif definition.default_window is None:
             if self.window is not None:
                 raise ValueError(f"{self.name} factor does not accept a window")
             window = None
@@ -146,6 +158,9 @@ class FactorSpec:
 
     def as_dict(self):
         result = {"name": self.name, "weight": self.weight, "window": self.window}
+        if isinstance(self.formula_version, FormulaVersion):
+            del result["window"]
+            result["formula_version"] = self.formula_version.as_dict()
         if self.name in FILLABLE_FACTORS:
             result["missing_policy"] = self.missing_policy
         if self.skip is not None and (self.name != "momentum" or self.skip != 0):

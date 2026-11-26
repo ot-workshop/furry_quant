@@ -44,7 +44,9 @@ _DATE_PATTERNS = (
 _BENCHMARKS = frozenset({"000300.SH", "000905.SH", "000852.SH", "000001.SH", "399001.SZ", "399006.SZ"})
 _TOP_LEVEL_FIELDS = frozenset({"data", "backtest", "runs_dir", "factors", "evaluation", "neutralization", "financials"})
 _DATA_FIELDS = frozenset({"root", "start", "end", "codes", "benchmark", "validation"})
-_FACTOR_FIELDS = frozenset({"name", "weight", "window", "skip", "baseline_window", "id", "missing_policy"})
+_FACTOR_FIELDS = frozenset(
+    {"name", "weight", "window", "skip", "baseline_window", "id", "missing_policy", "formula_version"}
+)
 _EVALUATION_FIELDS = frozenset({"horizons", "groups", "min_cross_section"})
 _BACKTEST_FIELDS = frozenset(
     {
@@ -377,6 +379,15 @@ def _evaluation_config(document: dict[str, Any]) -> EvaluationConfig:
     return EvaluationConfig(**{key: value[key] for key in _EVALUATION_FIELDS if key in value})
 
 
+def unique_json_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Configuration contains duplicate fields")
+        result[key] = value
+    return result
+
+
 def load_config(path: Path) -> ResearchConfig:
     """Load JSON without evaluation; relative paths are based at the config file."""
     try:
@@ -390,18 +401,14 @@ def load_config(path: Path) -> ResearchConfig:
         raise ValueError("Unable to read configuration file") from None
 
     try:
-
-        def unique_fields(pairs):
-            result = {}
-            for key, value in pairs:
-                if key in result:
-                    raise ValueError("Configuration contains duplicate fields")
-                result[key] = value
-            return result
-
-        document = json.loads(text, object_pairs_hook=unique_fields)
+        document = json.loads(text, object_pairs_hook=unique_json_fields)
     except json.JSONDecodeError:
         raise ValueError("Configuration file contains malformed JSON") from None
+    return parse_config(document, config_path.parent.resolve())
+
+
+def parse_config(document: Any, base: Path) -> ResearchConfig:
+    """Validate a research configuration document relative to an explicit directory."""
     if not isinstance(document, dict):
         raise ValueError("Configuration must be a JSON object")
 
@@ -418,7 +425,6 @@ def load_config(path: Path) -> ResearchConfig:
     _reject_unknown(backtest_obj, _BACKTEST_FIELDS, "backtest configuration")
     _require_fields(backtest_obj, ("start", "end"), "backtest configuration")
 
-    base = config_path.parent.resolve()
     data = DataConfig(
         root=_resolve_path(data_obj["root"], base, "data.root"),
         start=data_obj["start"],

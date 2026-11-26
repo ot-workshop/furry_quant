@@ -98,7 +98,14 @@ class ResultStore:
         self.root = (root or runs_root()).resolve()
 
     def path(self, category: str, run_id: str) -> Path:
-        if category not in {"backtests", "factors", "evaluations", "experiments"} or not ID_PATTERN.fullmatch(run_id):
+        if category not in {
+            "backtests",
+            "factors",
+            "evaluations",
+            "experiments",
+            "formulas",
+            "formula_failures",
+        } or not ID_PATTERN.fullmatch(run_id):
             raise ValueError("Invalid artifact identifier")
         result = (self.root / category / run_id / "result.json").resolve()
         if not result.is_relative_to(self.root):

@@ -192,6 +192,53 @@ class FrozenMarketSnapshot:
     root: Path
     manifest_sha256: str
     inputs: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]
+    relative_path: Path
+
+    def binding(self) -> dict:
+        manifest = self.inputs[3]
+        return {
+            "snapshot_dir": self.relative_path.as_posix(),
+            "manifest_sha256": self.manifest_sha256,
+            "data_version": manifest["id"],
+            "files": dict(manifest["files"]),
+        }
+
+
+def _frozen_file(path: Path) -> Path:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        raise ValueError("提交时的数据快照文件已不可用，请重新提交") from None
+    if not S_ISREG(mode) or path.resolve(strict=True) != path:
+        raise ValueError("冻结的数据快照文件路径不合法")
+    return path
+
+
+def _frozen_manifest_bytes(directory: Path) -> bytes:
+    with _frozen_file(directory / "manifest.json").open("rb") as stream:
+        return stream.read(1024 * 1024 + 1)
+
+
+def freeze_market_snapshot(data_root: Path, selection: Path) -> FrozenMarketSnapshot:
+    """Pin the selected managed batch's current leaf or an explicitly selected leaf."""
+    root = data_root.resolve()
+    if not selection.is_absolute():
+        selection = root / selection
+    if not selection.is_relative_to(root):
+        raise ValueError("Snapshot selection must be inside the managed data root")
+    parts = selection.relative_to(root).parts
+    if len(parts) == 3 and parts[:2] == ("research", "downloads") and not parts[-1].startswith("."):
+        if selection.resolve(strict=True) != selection:
+            raise ValueError("Snapshot batch path is not canonical")
+        payload = _frozen_manifest_bytes(selection)
+        if len(payload) > 1024 * 1024:
+            raise ValueError("Snapshot batch manifest is too large")
+        pointer = json.loads(payload)
+        path = pointer.get("snapshot_path") if isinstance(pointer, dict) else None
+        if not isinstance(path, str) or not re.fullmatch(r"snapshots/[^./\\][^/\\]*", path):
+            raise ValueError("Snapshot batch has no managed current leaf")
+        selection = selection / path
+    return _load_frozen_leaf(root, selection, None, allow_score=False, allow_label=False)
 
 
 def load_frozen_snapshot(
@@ -203,7 +250,12 @@ def load_frozen_snapshot(
         raise ValueError("提交时未冻结数据快照")
     root = data_root.resolve()
     # Accept absolute paths from earlier pending payloads, but require the same topology.
-    directory = root / raw
+    return _load_frozen_leaf(root, root / raw, execution, allow_score=allow_score, allow_label=allow_label)
+
+
+def _load_frozen_leaf(
+    root: Path, directory: Path, execution: dict | None, *, allow_score: bool, allow_label: bool
+) -> FrozenMarketSnapshot:
     if not directory.is_relative_to(root):
         raise ValueError("冻结的数据快照路径不在受控目录内")
     parts = directory.relative_to(root).parts
@@ -222,34 +274,25 @@ def load_frozen_snapshot(
     if resolved != directory:
         raise ValueError("冻结的数据快照路径不在受控目录内")
 
-    def regular_file(name):
-        path = directory / name
-        try:
-            mode = path.lstat().st_mode
-        except FileNotFoundError:
-            raise ValueError("提交时的数据快照文件已不可用，请重新提交") from None
-        if not S_ISREG(mode) or path.resolve(strict=True) != path:
-            raise ValueError("冻结的数据快照文件路径不合法")
-        return path
-
     try:
         (directory / "rejected.json").lstat()
     except FileNotFoundError:
         pass
     else:
         raise ValueError("提交时的数据快照已被隔离，请重新提交")
-    with regular_file("manifest.json").open("rb") as stream:
-        payload = stream.read(1024 * 1024 + 1)
+    payload = _frozen_manifest_bytes(directory)
     digest = sha256_bytes(payload)
-    if len(payload) > 1024 * 1024 or digest != execution.get("manifest_sha256"):
+    if len(payload) > 1024 * 1024 or (execution is not None and digest != execution.get("manifest_sha256")):
         raise ValueError("排队期间股票池历史状态发生变化，请重新提交")
     manifest = json.loads(payload)
     if (
         not isinstance(manifest, dict)
         or not isinstance(manifest.get("id"), str)
-        or manifest["id"] != execution.get("data_version")
         or not isinstance(manifest.get("files"), dict)
-        or manifest["files"] != execution.get("files")
+        or (
+            execution is not None
+            and (manifest["id"] != execution.get("data_version") or manifest["files"] != execution.get("files"))
+        )
     ):
         raise ValueError("排队期间数据版本发生变化，请重新提交")
     validate_score_snapshot_identity(directory.relative_to(root), manifest)
@@ -258,8 +301,8 @@ def load_frozen_snapshot(
         raise ValueError("冻结的数据快照清单指向其他路径")
     # Check physical paths before the normal leaf loader hashes and decodes the three files.
     for name in ("market.parquet", "benchmark.parquet", "calendar.parquet"):
-        regular_file(name)
-    return FrozenMarketSnapshot(directory, digest, _load_leaf(directory, manifest))
+        _frozen_file(directory / name)
+    return FrozenMarketSnapshot(directory, digest, _load_leaf(directory, manifest), directory.relative_to(root))
 
 
 def _load_leaf(root, manifest):

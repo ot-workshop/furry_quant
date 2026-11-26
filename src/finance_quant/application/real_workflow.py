@@ -14,7 +14,7 @@ from finance_quant.checksums import sha256_text
 from finance_quant.data.benchmarks import normalize_benchmark
 from finance_quant.data.execution_universe import validate_execution_universe
 from finance_quant.data.industries import load_industries
-from finance_quant.data.market import load_market
+from finance_quant.data.market import FrozenMarketSnapshot, load_market
 from finance_quant.data.symbols import to_qlib
 from finance_quant.integrations.qlib_runner import run_qlib
 from finance_quant.provenance import source_provenance
@@ -74,10 +74,13 @@ def _run_real_execution(
     neutralization=None,
     result_store=None,
     financials=None,
+    frozen_snapshot: FrozenMarketSnapshot | None = None,
 ) -> dict:
     """Parameters come from a validated :class:`BacktestConfig`; there are no hidden defaults."""
     execution_options = {key: locals_value for key, locals_value in locals().copy().items() if key in EXECUTION_FIELDS}
-    market, benchmark, calendar_frame, manifest = load_market(snapshot_dir)
+    market, benchmark, calendar_frame, manifest = (
+        frozen_snapshot.inputs if frozen_snapshot is not None else load_market(snapshot_dir)
+    )
     validate_execution_universe(manifest["codes"])
     sessions = pd.DatetimeIndex(calendar_frame.loc[calendar_frame["is_open"], "date"])
     if pd.Timestamp(start) not in sessions or pd.Timestamp(end) not in sessions:
@@ -96,6 +99,7 @@ def _run_real_execution(
         neutralization,
         result_store=result_store,
         financials=financials,
+        frozen_snapshot=frozen_snapshot,
     )
     if not any(row["date"] == initial_date for row in factors["history"]):
         raise ValueError("Warm-up does not provide prior-day factor scores")
@@ -121,6 +125,9 @@ def _run_real_execution(
         **execution_options,
         **financial_provenance(financials, factor_config or FactorConfig()),
     }
+    if frozen_snapshot is not None:
+        provenance["frozen_snapshot"] = frozen_snapshot.binding()
+        provenance["factors"] = factors["metadata"]["factor_config"]
     fingerprint = sha256_text(json.dumps(provenance, sort_keys=True))[:12]
     run_id, factor_id = f"real-qlib-{fingerprint}", factors["metadata"]["id"]
     store = result_store or ResultStore(runs_dir)
@@ -225,7 +232,8 @@ def run_real(
     if benchmark is None:
         return execution
 
-    calendar = load_market(snapshot_dir)[2]
+    frozen_snapshot = kwargs.get("frozen_snapshot")
+    calendar = frozen_snapshot.inputs[2] if frozen_snapshot is not None else load_market(snapshot_dir)[2]
     view = publish_benchmark_view(
         runs_dir,
         execution["run_id"],
@@ -244,10 +252,10 @@ def run_real(
     }
 
 
-def run_configured(config, *, result_store=None) -> dict:
+def run_configured(config, *, result_store=None, frozen_snapshot: FrozenMarketSnapshot | None = None) -> dict:
     """A config must match the frozen data selection, including the scoring universe."""
 
-    load_configured_snapshot(config)
+    load_configured_snapshot(config, frozen_snapshot=frozen_snapshot)
     return run_real(
         config.data.root,
         config.runs_dir,
@@ -256,4 +264,5 @@ def run_configured(config, *, result_store=None) -> dict:
         neutralization=config.neutralization,
         result_store=result_store,
         financials=config.financials,
+        frozen_snapshot=frozen_snapshot,
     )

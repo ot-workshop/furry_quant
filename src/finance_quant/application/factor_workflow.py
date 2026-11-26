@@ -8,9 +8,10 @@ from pathlib import Path
 from filelock import FileLock, Timeout
 
 from finance_quant.data.financials import FinancialBinding
-from finance_quant.data.market import load_market
+from finance_quant.data.market import FrozenMarketSnapshot, load_market
 from finance_quant.provenance import fingerprint, source_provenance
 from finance_quant.research.fundamentals import financial_provenance, fundamentals_for
+from finance_quant.research.manual_formula import MANUAL_FORMULA
 from finance_quant.research.market_factors import market_factors
 from finance_quant.research.neutralization import NeutralizationConfig, industry_context
 from finance_quant.research.registry import FactorConfig
@@ -19,8 +20,10 @@ from finance_quant.storage import ResultStore
 __all__ = ["fingerprint", "load_configured_snapshot", "publish_factor_run", "source_provenance"]
 
 
-def load_configured_snapshot(config):
-    snapshot = load_market(config.data.root)
+def load_configured_snapshot(config, *, frozen_snapshot: FrozenMarketSnapshot | None = None):
+    if frozen_snapshot is not None and config.data.root != frozen_snapshot.root:
+        raise ValueError("Configured data must name the frozen leaf")
+    snapshot = frozen_snapshot.inputs if frozen_snapshot is not None else load_market(config.data.root)
     manifest = snapshot[3]
     if (
         set(manifest["codes"]) != set(config.data.codes)
@@ -44,8 +47,11 @@ def publish_factor_run(
     *,
     result_store=None,
     financials: FinancialBinding | None = None,
+    frozen_snapshot: FrozenMarketSnapshot | None = None,
 ) -> dict:
     config = config or FactorConfig()
+    if frozen_snapshot is None and any(spec.name == MANUAL_FORMULA for spec in config.specs):
+        raise ValueError("Manual formulas require the local workflow with a verified snapshot")
 
     neutralization = neutralization or NeutralizationConfig()
     industry = industry_context(neutralization)
@@ -58,6 +64,8 @@ def publish_factor_run(
     }
     if industry:
         provenance["industry_version"] = industry.manifest["id"]
+    if frozen_snapshot is not None:
+        provenance["frozen_snapshot"] = frozen_snapshot.binding()
     run_id = "real-factors-" + fingerprint(provenance)
     store = result_store or ResultStore(runs_dir)
     locks = runs_dir / ".locks"
@@ -76,6 +84,11 @@ def publish_factor_run(
                 neutralization=neutralization,
                 industry_history=industry,
                 financials=fundamentals_for(financials, config, market),
+                exchange_calendar=(
+                    frozen_snapshot.inputs[2].loc[lambda frame: frame["is_open"], "date"]
+                    if frozen_snapshot is not None
+                    else None
+                ),
             )
             result["metadata"].update(
                 id=run_id, provenance=provenance, created_at=datetime.now(timezone.utc).isoformat()
