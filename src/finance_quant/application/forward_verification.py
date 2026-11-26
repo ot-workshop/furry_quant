@@ -15,6 +15,7 @@ from sqlalchemy import Connection, select, text
 from finance_quant.application.forward_score import ScoreInputError, _frozen_schedule, _market_dates
 from finance_quant.application.research_requests import lookup_label_snapshot_metas
 from finance_quant.data.market import LABEL_SNAPSHOT_TYPE, load_frozen_snapshot
+from finance_quant.data.point_in_time import daily_label_maturity
 from finance_quant.data.symbols import to_qlib
 from finance_quant.persistence.forward import (
     SHANGHAI,
@@ -40,7 +41,7 @@ class VerificationInputError(ValueError):
 
 
 def _maturity(row: dict) -> datetime:
-    mature_at = datetime.combine(row["exit_date"], time(15), tzinfo=SHANGHAI)
+    mature_at = daily_label_maturity(row["exit_date"])
     rules = row["data_rules"]
     if rules.get("label_capture_after") != mature_at.isoformat() or rules.get("label_snapshot") != "first_eligible":
         raise VerificationInputError("frozen-label-rules-mismatch")

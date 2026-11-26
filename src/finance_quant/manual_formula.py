@@ -20,6 +20,7 @@ from finance_quant.application.manual_formula import (
     replay_formula,
     run_formula,
 )
+from finance_quant.application.rolling_validation import ROLLING_ID, plan_rolling, run_rolling
 from finance_quant.configuration import load_config
 from finance_quant.storage import ResultStore
 
@@ -38,6 +39,16 @@ def main(argv: list[str] | None = None) -> int:
     replay.add_argument("--data-root", type=Path, required=True)
     replay.add_argument("--evaluation-id", required=True)
     replay.add_argument("--output", type=Path, required=True)
+    rolling_plan = commands.add_parser("rolling-plan", help="Freeze a two-fold rolling plan")
+    rolling_plan.add_argument("--data-root", type=Path, required=True)
+    rolling_plan.add_argument("--plan", type=Path, required=True)
+    rolling_run = commands.add_parser("rolling-run", help="Select and test winners of a frozen plan")
+    rolling_run.add_argument("--data-root", type=Path, required=True)
+    rolling_run.add_argument("--rolling-id", required=True)
+    rolling_replay = commands.add_parser("rolling-replay", help="Recompute a completed rolling validation")
+    rolling_replay.add_argument("--data-root", type=Path, required=True)
+    rolling_replay.add_argument("--rolling-id", required=True)
+    rolling_replay.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     store = ResultStore(args.runs_dir)
     try:
@@ -50,8 +61,14 @@ def main(argv: list[str] | None = None) -> int:
                 ):
                     config = replace(load_config(args.config), runs_dir=store.root)
                 result = run_formula(config, args.formula_id, data_root=args.data_root)
-            else:
+            elif args.operation == "replay":
                 result = replay_formula(args.evaluation_id, store=store, data_root=args.data_root, output=args.output)
+            elif args.operation == "rolling-plan":
+                result = plan_rolling(args.plan, store=store, data_root=args.data_root)
+            else:
+                result = run_rolling(
+                    args.rolling_id, store=store, data_root=args.data_root, output=getattr(args, "output", None)
+                )
     except ManualFormulaError as error:
         record = {
             "status": "failed",
@@ -60,7 +77,11 @@ def main(argv: list[str] | None = None) -> int:
             "code": error.code,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
-        for field, pattern in (("formula_id", FORMULA_ID), ("evaluation_id", EVALUATION_ID)):
+        for field, pattern in (
+            ("formula_id", FORMULA_ID),
+            ("evaluation_id", EVALUATION_ID),
+            ("rolling_id", ROLLING_ID),
+        ):
             if pattern.fullmatch(value := getattr(args, field, "")):
                 record[field] = value
         receipt_id = f"formula-failure-{uuid4().hex}"

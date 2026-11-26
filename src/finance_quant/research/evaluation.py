@@ -32,7 +32,7 @@ def _sessions(calendar) -> pd.DatetimeIndex:
     return dates
 
 
-def forward_open_labels(market: pd.DataFrame, calendar, horizon: int, end: str) -> pd.DataFrame:
+def forward_open_labels(market: pd.DataFrame, calendar, horizon: int, end: str, *, instruments=None) -> pd.DataFrame:
     """T score -> T+1 open entry -> T+1+h open exit, on the official calendar.
 
     Reindexing BEFORE shifting is essential: an absent session must not shorten
@@ -41,7 +41,7 @@ def forward_open_labels(market: pd.DataFrame, calendar, horizon: int, end: str) 
     if isinstance(horizon, bool) or not isinstance(horizon, int) or not 1 <= horizon <= 252:
         raise ValueError("horizon must be an integer in [1, 252]")
     sessions = _sessions(calendar)
-    if market.empty or market.duplicated(["date", "instrument"]).any():
+    if (market.empty and instruments is None) or market.duplicated(["date", "instrument"]).any():
         raise ValueError("Evaluation quotes must be nonempty and unique")
     dates = pd.DatetimeIndex(market["date"])
     if not dates.isin(sessions).all():
@@ -56,10 +56,12 @@ def forward_open_labels(market: pd.DataFrame, calendar, horizon: int, end: str) 
     if not np.isfinite(frame["adjusted_open"].to_numpy(dtype=float)).all():
         raise ValueError("Adjusted opens must be finite")
     grid = frame.pivot(index="date", columns="instrument", values="adjusted_open").reindex(sessions)
+    if instruments is not None:
+        grid = grid.reindex(columns=sorted(instruments))
     halted = (
         frame.assign(is_suspended=frame.get("is_suspended", False))
         .pivot(index="date", columns="instrument", values="is_suspended")
-        .reindex(sessions)
+        .reindex(index=sessions, columns=grid.columns)
         .fillna(False)
     )
     entry_halted, exit_halted = halted.shift(-1), halted.shift(-horizon - 1)
