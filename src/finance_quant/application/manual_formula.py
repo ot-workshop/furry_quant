@@ -102,13 +102,15 @@ def _recipe(config: ResearchConfig, snapshot: FrozenMarketSnapshot) -> dict:
 
 def _execute(config: ResearchConfig, frozen: FrozenMarketSnapshot, version: FormulaVersion) -> dict:
     store = ResultStore(config.runs_dir)
+    # The local recipe uses the frozen market leaf as its only data source.
+    execution = replace(config, neutralization=NeutralizationConfig(allow_latest=False))
     with formula_stage(
         "backtest", "backtest_failed", "Backtest failed. Check the frozen range, warm-up and trade inputs."
     ):
-        backtest = run_configured(config, result_store=store, frozen_snapshot=frozen)
+        backtest = run_configured(execution, result_store=store, frozen_snapshot=frozen)
     with formula_stage("evaluation", "evaluation_failed", "Evaluation failed on the frozen inputs."):
         evaluation = evaluate_configured(
-            config, result_store=store, frozen_snapshot=frozen, replay_recipe=_recipe(config, frozen)
+            execution, result_store=store, frozen_snapshot=frozen, replay_recipe=_recipe(config, frozen)
         )
     return {
         "formula_id": version.id,

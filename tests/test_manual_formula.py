@@ -3,6 +3,7 @@ from dataclasses import replace
 
 import pandas as pd
 import pytest
+from test_industry_neutralization import history
 from test_real_workflow import sample_market
 
 from finance_quant.application import manual_formula
@@ -10,6 +11,7 @@ from finance_quant.application.evaluation_workflow import evaluate_configured
 from finance_quant.application.real_workflow import run_configured
 from finance_quant.checksums import canonical_json_sha256, file_sha256
 from finance_quant.configuration import BacktestConfig, DataConfig, ResearchConfig
+from finance_quant.data.industries import load_industries, publish_industries
 from finance_quant.data.managed import atomic_json
 from finance_quant.data.market import write_market_snapshot_files
 from finance_quant.manual_formula import main
@@ -221,6 +223,52 @@ def test_manual_formula_cli_parity_version_change_frozen_replay_and_tamper(tmp_p
         "evaluation_record",
     }
     assert all(receipt["status"] == "failed" and receipt["operation"] == "replay" for receipt in receipts)
+
+
+def test_manual_formula_ignores_published_industry_versions_on_run_and_replay(tmp_path):
+    data = tmp_path / "data"
+    batch = data / "research" / "downloads" / "three"
+    leaf, manifest = _publish(batch, "original", 7)
+    store = ResultStore(tmp_path / "runs")
+    config = ResearchConfig(
+        DataConfig(batch, manifest["start"], manifest["end"], CODES),
+        BacktestConfig(ENTRY, END, topk=1),
+        store.root,
+        evaluation=EvaluationConfig(horizons=(1,)),
+    )
+    formula = tmp_path / "formula.json"
+    atomic_json(formula, {"operator": "price_return", "window": 2})
+    formula_id = manual_formula.register_formula(formula, store)["formula_id"]
+    first = manual_formula.run_formula(config, formula_id, data_root=data)
+    artifacts = {"factors": "factor_run_id", "backtests": "backtest_id", "evaluations": "evaluation_id"}
+    digests = {category: store.digest(category, first[key]) for category, key in artifacts.items()}
+    snapshot = store.get("factors", first["factor_run_id"])["metadata"]["provenance"]["frozen_snapshot"]
+
+    classifications = history([A, B, C]).frame
+    initial_industry = publish_industries(classifications, data_asof="2025-01-10")
+    fresh = ResultStore(tmp_path / "fresh")
+    manual_formula.register_formula(formula, fresh)
+    fresh_run = manual_formula.run_formula(replace(config, runs_dir=fresh.root), formula_id, data_root=data)
+    updated_industry = publish_industries(classifications.assign(industry_name="更新行业"), data_asof="2025-01-13")
+    assert load_industries().manifest["id"] == updated_industry.manifest["id"] != initial_industry.manifest["id"]
+
+    output = tmp_path / "replay"
+    assert manual_formula.replay_formula(first["evaluation_id"], store=store, data_root=data, output=output) == first
+    assert fresh_run == first
+    assert file_sha256(leaf / "manifest.json") == snapshot["manifest_sha256"]
+    assert {name: file_sha256(leaf / name) for name in snapshot["files"]} == snapshot["files"]
+    assert {category: store.digest(category, first[key]) for category, key in artifacts.items()} == digests
+    for result_store in (store, fresh, ResultStore(output)):
+        factor = result_store.get("factors", first["factor_run_id"])["metadata"]
+        assert factor["factor_config"][0]["formula_version"] == store.get("formulas", formula_id)
+        assert factor["provenance"]["frozen_snapshot"] == snapshot
+        assert "industry_version" not in factor["provenance"] and "industry_data" not in factor
+        assert "industry_exposure" not in result_store.get("backtests", first["backtest_id"])
+
+    momentum = replace(config, factors=FactorConfig((FactorSpec("momentum", 1, 2),)))
+    ordinary = evaluate_configured(momentum)
+    diagnostic = store.get("factors", ordinary["factor_run_id"])["metadata"]
+    assert diagnostic["provenance"]["industry_version"] == updated_industry.manifest["id"]
 
 
 @pytest.mark.parametrize(
