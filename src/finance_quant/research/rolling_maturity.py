@@ -120,27 +120,35 @@ def gated_labels(labels, days, evidence, cutoff, *, next_start=None, previous_da
     rows = []
     for row in labels.loc[labels["date"].isin(days)].itertuples(index=False):
         entry, exit_ = row.entry_date, row.exit_date
-        entry_seen = evidence.get((entry, row.instrument))
-        exit_seen = evidence.get((exit_, row.instrument))
-        available_at = (
-            max(pd.Timestamp(daily_label_maturity(date.fromisoformat(exit_))), entry_seen, exit_seen)
-            if exit_ is not None and entry_seen is not None and exit_seen is not None
-            else None
-        )
+        available_at = None
         if exit_ is None:
             reason = "tail_unmatured"
         elif next_start is not None and exit_ >= next_start:
             reason = "purged_cross_boundary"
         elif previous_day is not None and exit_ == previous_day:
             reason = "embargo_previous_session"
-        elif row.exclusion is not None:
-            reason = row.exclusion
-        elif available_at is None:
-            reason = "missing_availability_evidence"
-        elif available_at > cutoff:
-            reason = "not_available_at_cutoff"
         else:
-            reason = None
+            entry_seen = evidence.get((entry, row.instrument))
+            exit_seen = evidence.get((exit_, row.instrument))
+            available_at = (
+                max(pd.Timestamp(daily_label_maturity(date.fromisoformat(exit_))), entry_seen, exit_seen)
+                if entry_seen is not None and exit_seen is not None
+                else None
+            )
+            unseen = available_at is None or available_at > cutoff
+            if next_start is not None and unseen:
+                # A decision cannot distinguish missing evidence from a later arrival.
+                reason = "availability_unproven_at_cutoff"
+            elif row.exclusion is not None:
+                reason = row.exclusion
+            elif available_at is None:
+                reason = "missing_availability_evidence"
+            elif unseen:
+                reason = "not_available_at_cutoff"
+            else:
+                reason = None
+            if unseen:
+                available_at = None
         rows.append(
             {
                 "date": row.date,

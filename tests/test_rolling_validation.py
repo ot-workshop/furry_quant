@@ -8,7 +8,7 @@ from test_manual_formula import CODES, A, B, C
 from test_real_workflow import sample_market
 
 from finance_quant.application import rolling_validation
-from finance_quant.checksums import file_sha256
+from finance_quant.checksums import canonical_json_sha256, file_sha256
 from finance_quant.data.industries import publish_industries
 from finance_quant.data.managed import atomic_json
 from finance_quant.data.market import write_market_snapshot_files
@@ -77,12 +77,52 @@ def test_exact_decision_cutoff_purge_embargo_and_insufficient_common_dates():
     rows = gated_labels(labels, days[3:6], evidence, cutoff, next_start=days[7], previous_day=days[6])
     by_key = {(row["date"], row["instrument"]): row for row in rows}
     assert by_key[days[3], A]["label_exclusion"] is None
-    assert by_key[days[3], B]["label_exclusion"] == "not_available_at_cutoff"
-    assert by_key[days[3], C]["label_exclusion"] == "missing_availability_evidence"
+    assert (
+        by_key[days[3], B]["label_exclusion"]
+        == by_key[days[3], C]["label_exclusion"]
+        == "availability_unproven_at_cutoff"
+    )
+    assert by_key[days[3], B]["label_available_at"] is None
     assert {row["label_exclusion"] for row in rows if row["date"] == days[4]} == {"embargo_previous_session"}
     assert {row["label_exclusion"] for row in rows if row["date"] == days[5]} == {"purged_cross_boundary"}
     observed = with_scores(rows, {"a": {(days[3], A): 2.0}, "b": {(days[3], A): 3.0}})
     assert choose(observed, ("a", "b"))["reason"] == "insufficient_common_rank_ic_dates"
+
+
+def test_decision_rows_are_stable_when_excluded_observations_change():
+    sessions = pd.bdate_range("2025-01-06", periods=8)
+    days = sessions.strftime("%Y-%m-%d").tolist()
+    frame = pd.DataFrame(
+        [
+            {"date": day, "instrument": A, "open": 10.0 + index / 10, "adj_factor": 1.0}
+            for index, day in enumerate(sessions)
+        ]
+    )
+    cutoff = aware(f"{days[6]}T18:00:00+08:00")
+    evidence = {(day, A): aware(f"{day}T15:00:00+08:00") for day in days}
+    evidence[days[5], A] = cutoff + pd.Timedelta(seconds=1)
+
+    def seal(quotes, clocks):
+        return gated_labels(
+            labels_for_pool(quotes, sessions, (A,)),
+            days[3:6],
+            clocks,
+            cutoff,
+            next_start=days[7],
+            previous_day=days[6],
+        )
+
+    original = seal(frame, evidence)
+    changed = {
+        **evidence,
+        (days[5], A): cutoff + pd.Timedelta(seconds=2),
+        (days[6], A): cutoff + pd.Timedelta(hours=1),
+        (days[7], A): cutoff + pd.Timedelta(days=1),
+    }
+    assert seal(frame.loc[frame["date"].ne(sessions[5])], changed) == original
+    del changed[days[5], A]
+    assert seal(frame, changed) == original
+    assert all(row["label_available_at"] is None and row["forward_return"] is None for row in original)
 
 
 def test_evidence_requires_both_timestamped_inputs_and_the_frozen_market_digest():
@@ -185,9 +225,9 @@ def test_rolling_cli_seals_selection_and_replays_original_inputs(tmp_path, capsy
     formula = tmp_path / "formula.json"
     plan_path = tmp_path / "plan.json"
 
-    def command(*args, error=None):
+    def command(*args, error=None, source=store):
         capsys.readouterr()
-        status = main(["--runs-dir", str(store.root), *args])
+        status = main(["--runs-dir", str(source.root), *args])
         captured = capsys.readouterr()
         if error is not None:
             assert status == 1 and error in captured.err and not captured.out
@@ -218,7 +258,9 @@ def test_rolling_cli_seals_selection_and_replays_original_inputs(tmp_path, capsy
                         "date": day,
                         "instrument": stock,
                         "open_available_at": f"{day}T09:30:00+08:00",
-                        "adjustment_available_at": f"{day}T15:00:00+08:00",
+                        "adjustment_available_at": (
+                            f"{ds[6]}T18:00:01+08:00" if (day, stock) == (ds[5], A) else f"{day}T15:00:00+08:00"
+                        ),
                     }
                     for day in ds
                     for stock in (A, B, C)
@@ -250,8 +292,11 @@ def test_rolling_cli_seals_selection_and_replays_original_inputs(tmp_path, capsy
     calls = []
     run_configured = rolling_validation.run_configured
     expected_id = original
+    final_output = None
 
     def observed(config, *, result_store, frozen_snapshot):
+        if final_output is not None:
+            assert not final_output.exists()
         chosen = result_store.read_experiment_record(expected_id, "selection")
         position = len(calls) % 2
         formula_id = config.factors.specs[0].formula_version.id
@@ -288,9 +333,38 @@ def test_rolling_cli_seals_selection_and_replays_original_inputs(tmp_path, capsy
     assert run(insufficient)["folds"] == [{"winner": None, "reason": "insufficient_common_rank_ic_dates"}] * 2
     assert len(calls) == count
     assert all(
-        fold["validation"]["summary"]["exclusions"]["missing_availability_evidence"] > 0
+        fold["validation"]["summary"]["exclusions"]["availability_unproven_at_cutoff"] > 0
         for fold in store.read_experiment_record(insufficient, "selection")["folds"]
     )
+
+    changed_evidence = json.loads(evidence.read_text(encoding="utf-8"))
+    timestamps = {
+        ds[5]: f"{ds[6]}T18:00:02+08:00",
+        ds[23]: f"{ds[23]}T16:00:00+08:00",
+        ds[24]: f"{ds[24]}T16:00:00+08:00",
+    }
+    for row in changed_evidence["rows"]:
+        if row["instrument"] == A and row["date"] in timestamps:
+            row["adjustment_available_at"] = timestamps[row["date"]]
+    evidence_variant = data / "changed-evidence.json"
+    atomic_json(evidence_variant, changed_evidence)
+    original_plan = store.read_experiment_record(original, "plan")
+    research = original_plan["research"]
+    research["data"]["root"] = str(leaf)
+    atomic_json(
+        plan_path,
+        {
+            "research": research,
+            "formula_ids": [v1, v2],
+            "folds": original_plan["folds"],
+            "report_cutoff": original_plan["report_cutoff"],
+            "evidence": evidence_variant.name,
+        },
+    )
+    expected_id = command("rolling-plan", "--data-root", str(data), "--plan", str(plan_path))["rolling_id"]
+    assert expected_id != original
+    assert run(expected_id)["selection_sha256"] == first["selection_sha256"]
+    assert store.read_experiment_record(expected_id, "selection") == choice
 
     register(4)
     publish_industries(history([A, B, C]).frame)
@@ -312,10 +386,41 @@ def test_rolling_cli_seals_selection_and_replays_original_inputs(tmp_path, capsy
     replay = ("rolling-replay", "--data-root", str(data), "--rolling-id", original)
     expected_id = original
     output = tmp_path / "replay"
+    final_output = output
     restored = command(*replay, "--output", str(output))
     assert restored["folds"] == first["folds"] and calls[-2:] == [v1, v1]
     assert ResultStore(output).read_experiment_record(original, "selection") == choice
     assert {path: file_sha256(path) for path in paths} == digests
+    replayed_sha = ResultStore(output).digest("experiments", original)
+    count = len(calls)
+    command(*replay, "--output", str(output), error="output_unavailable")
+    assert len(calls) == count and ResultStore(output).digest("experiments", original) == replayed_sha
+
+    # Change a second-fold result while making the enclosing digest internally consistent.
+    # This bypasses record preflight and fails only after both tests have run.
+    forged = ResultStore(tmp_path / "forged")
+    for version_id in (v1, v2):
+        forged.publish("formulas", version_id, store.get("formulas", version_id))
+    for name in ("plan", "selection"):
+        forged.publish_experiment_record(original, name, store.read_experiment_record(original, name))
+    altered_result = store.get("experiments", original)
+    altered_result["folds"][1]["evaluation_sha256"] = "0" * 64
+    altered_result["result_sha256"] = canonical_json_sha256(altered_result["folds"])
+    forged.publish("experiments", original, altered_result)
+    forged_sha = forged.digest("experiments", original)
+    mismatch = tmp_path / "mismatch"
+    final_output = mismatch
+    count = len(calls)
+    command(*replay, "--output", str(mismatch), error="rolling_test_failed", source=forged)
+    assert calls[count:] == [v1, v1]
+    assert not mismatch.exists()
+    assert not list(tmp_path.glob(".rolling-stage-*"))
+    assert forged.digest("experiments", original) == forged_sha
+    assert {path: file_sha256(path) for path in paths} == digests
+    receipt_paths = list(forged.root.glob("formula_failures/*/result.json"))
+    assert len(receipt_paths) == 1
+    failure = json.loads(receipt_paths[0].read_text(encoding="utf-8"))
+    assert (failure["code"], failure["rolling_id"]) == ("rolling_test_failed", original)
 
     failed = tmp_path / "failed"
     for path, error in (
@@ -339,4 +444,4 @@ def test_rolling_cli_seals_selection_and_replays_original_inputs(tmp_path, capsy
     receipts = [
         json.loads(path.read_text(encoding="utf-8")) for path in store.root.glob("formula_failures/*/result.json")
     ]
-    assert len(receipts) == 11 and all(row["rolling_id"] == original for row in receipts)
+    assert len(receipts) == 12 and all(row["rolling_id"] == original for row in receipts)

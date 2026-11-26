@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from stat import S_ISREG
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pandas as pd
@@ -310,56 +311,78 @@ def run_rolling(identifier: str, *, store: ResultStore, data_root: Path, output:
         if original_selection is not None and original_selection != selected:
             raise ValueError("Replay selection differs from the original")
         selection_sha = canonical_json_sha256(selected)
-    with formula_stage("output", "output_unavailable", "Replay requires a new output directory."):
-        if output is not None:
-            target.root.mkdir(parents=True, exist_ok=False)
-        locks = target.root / ".locks"
-        locks.mkdir(parents=True, exist_ok=True)
-    with formula_stage("test", "rolling_test_failed", "Unable to test the sealed winners or reproduce their results."):
-        with FileLock(locks / f"{identifier}.lock", timeout=0):
-            target.publish_experiment_record(identifier, "plan", plan)
-            target.publish_experiment_record(identifier, "selection", selected)
-            if target.exists("experiments", identifier):
-                existing = target.get("experiments", identifier)
-                _check_result(existing, identifier, selection_sha)
-                return existing
-            results = []
-            for index, (fold, selection) in enumerate(zip(folds, selected["folds"], strict=True), 1):
-                winner = selection["choice"]["winner"]
-                results.append(
-                    _test_fold(
-                        identifier,
-                        index,
-                        plan,
-                        fold,
-                        winner,
-                        config,
-                        frozen,
-                        sessions,
-                        instruments,
-                        versions[winner],
-                        evidence,
-                        target,
+
+    def execute(destination: ResultStore) -> dict:
+        with formula_stage(
+            "test", "rolling_test_failed", "Unable to test the sealed winners or reproduce their results."
+        ):
+            locks = destination.root / ".locks"
+            locks.mkdir(parents=True, exist_ok=True)
+            execution = replace(config, runs_dir=destination.root)
+            with FileLock(locks / f"{identifier}.lock", timeout=0):
+                destination.publish_experiment_record(identifier, "plan", plan)
+                destination.publish_experiment_record(identifier, "selection", selected)
+                if destination.exists("experiments", identifier):
+                    existing = destination.get("experiments", identifier)
+                    _check_result(existing, identifier, selection_sha)
+                    return existing
+                results = []
+                for index, (fold, selection) in enumerate(zip(folds, selected["folds"], strict=True), 1):
+                    winner = selection["choice"]["winner"]
+                    results.append(
+                        _test_fold(
+                            identifier,
+                            index,
+                            plan,
+                            fold,
+                            winner,
+                            execution,
+                            frozen,
+                            sessions,
+                            instruments,
+                            versions[winner],
+                            evidence,
+                            destination,
+                        )
+                        if winner
+                        else {"winner": None, "reason": selection["choice"]["reason"]}
                     )
-                    if winner
-                    else {"winner": None, "reason": selection["choice"]["reason"]}
-                )
-            result_sha = canonical_json_sha256(results)
-            if expected is not None and (expected["folds"] != results or expected["result_sha256"] != result_sha):
-                raise ValueError("Replayed winner artifacts differ from the original")
-            document = {
-                "metadata": {
-                    "id": identifier,
-                    "name": "本地滚动验证",
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "is_synthetic": plan["evidence"]["certification"] == "synthetic",
-                    "point_in_time_certified": False,
-                    "data_version": plan["snapshot"]["data_version"],
-                    "status": "completed",
-                },
-                "selection_sha256": selection_sha,
-                "result_sha256": result_sha,
-                "folds": results,
-            }
-            target.publish("experiments", identifier, document)
-            return document
+                result_sha = canonical_json_sha256(results)
+                if expected is not None and (expected["folds"] != results or expected["result_sha256"] != result_sha):
+                    raise ValueError("Replayed winner artifacts differ from the original")
+                document = {
+                    "metadata": {
+                        "id": identifier,
+                        "name": "本地滚动验证",
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "is_synthetic": plan["evidence"]["certification"] == "synthetic",
+                        "point_in_time_certified": False,
+                        "data_version": plan["snapshot"]["data_version"],
+                        "status": "completed",
+                    },
+                    "selection_sha256": selection_sha,
+                    "result_sha256": result_sha,
+                    "folds": results,
+                }
+                destination.publish("experiments", identifier, document)
+                return document
+
+    if output is None:
+        return execute(target)
+
+    # A replay becomes visible only after its complete tree has passed comparison.
+    # Staging beside the destination keeps the final rename on the same filesystem.
+    with formula_stage("output", "output_unavailable", "Replay requires a new output directory."):
+        parent = target.root.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        lock_id = canonical_json_sha256({"output": str(target.root)})[:16]
+        with FileLock(parent / f".rolling-replay-{lock_id}.lock", timeout=0):
+            if target.root.exists() or target.root.is_symlink():
+                raise FileExistsError(target.root)
+            with TemporaryDirectory(dir=parent, prefix=".rolling-stage-") as temporary:
+                staged = ResultStore(Path(temporary) / "result")
+                document = execute(staged)
+                if target.root.exists() or target.root.is_symlink():
+                    raise FileExistsError(target.root)
+                staged.root.rename(target.root)
+                return document
