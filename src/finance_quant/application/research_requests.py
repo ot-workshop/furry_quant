@@ -457,6 +457,7 @@ def validate_request(
     financials=None,
     references_frozen=False,
     frozen_snapshot: FrozenMarketSnapshot | None = None,
+    warehouse_source: tuple[Path, str] | None = None,
 ) -> tuple[dict, dict]:
     _fields(
         document,
@@ -514,7 +515,9 @@ def validate_request(
     if not isinstance(obj, dict) or obj.get("mode") not in {"snapshot", "index_warehouse", "market_warehouse"}:
         raise ValueError("请选择数据集：固定股票池快照或沪深300历史成分仓库")
     if obj["mode"] == "market_warehouse":
-        selected, pins, option = validate_market_request(obj, data_root, backtest, factors, evaluation)
+        selected, pins, option = validate_market_request(
+            obj, data_root, backtest, factors, evaluation, warehouse_source=warehouse_source
+        )
         neutral_extra = pool_industry_display(selected, neutral_extra, neutralization)
         require_financial_coverage(binding, option["codes"], factors)
         if binding:
@@ -531,18 +534,21 @@ def validate_request(
     if obj["mode"] == "index_warehouse":
         _fields(obj, ("mode", "warehouse_id"), ("filters",), label="历史成分仓库")
 
-        root = next(
-            (
-                r
-                for r in market_download.warehouse_roots(data_root)
-                if (o := warehouse_option(r)) and o["id"] == obj["warehouse_id"]
+        root, expected_sha = warehouse_source or (
+            next(
+                (
+                    r
+                    for r in market_download.warehouse_roots(data_root)
+                    if (o := warehouse_option(r)) and o["id"] == obj["warehouse_id"]
+                ),
+                None,
             ),
             None,
         )
-        option = warehouse_option(root) if root is not None else None
+        option = warehouse_option(root, expected_sha=expected_sha) if root is not None else None
         if option is None or obj["warehouse_id"] != option["id"]:
             raise ValueError("沪深300历史成分版本不存在或已变化，请刷新数据列表")
-        _, calendar, digest = warehouse_header(root)
+        _, calendar, digest = warehouse_header(root, expected_sha=expected_sha)
         if not option["start"] <= backtest.start <= backtest.end <= option["end"]:
             raise ValueError("回测区间超出历史仓库研究范围")
         sessions = pd.DatetimeIndex(calendar.loc[calendar.is_open, "date"])

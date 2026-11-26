@@ -29,21 +29,24 @@ def market_roots(data_root):
     )
 
 
-def market_header(root):
+def market_header(root, *, expected_sha=None):
     root = Path(root)
     raw = (root / "manifest.json").read_bytes()
+    digest = sha256_bytes(raw)
+    if expected_sha is not None and digest != expected_sha:
+        raise ValueError("排队期间股票池行情版本已变化，请重新提交")
     manifest = json.loads(raw)
     if manifest.get("schema_version") != SCHEMA or not manifest.get("assets"):
         raise ValueError("股票池行情版本尚未完整发布")
     calendar_path = root / "reference/calendar.parquet"
     if file_sha256(calendar_path) != manifest["reference_files"]["calendar.parquet"]:
         raise ValueError("股票池交易日历校验失败")
-    return manifest, pd.read_parquet(calendar_path), sha256_bytes(raw)
+    return manifest, pd.read_parquet(calendar_path), digest
 
 
-def market_option(root):
+def market_option(root, *, expected_sha=None):
     try:
-        manifest, calendar, digest = market_header(root)
+        manifest, calendar, digest = market_header(root, expected_sha=expected_sha)
     except (OSError, ValueError, KeyError):
         return None
     complete = manifest.get("scope") == "all_market" and not manifest.get("restricted")
@@ -73,9 +76,7 @@ def market_option(root):
 
 def load_market_input(root, start, end, lookback, *, filters, industry=None, expected_sha=None, codes=None):
     root = Path(root).resolve()
-    manifest, calendar, digest = market_header(root)
-    if expected_sha and digest != expected_sha:
-        raise ValueError("排队期间股票池行情版本已变化，请重新提交")
+    manifest, calendar, digest = market_header(root, expected_sha=expected_sha)
     sessions = pd.DatetimeIndex(calendar.loc[calendar.is_open, "date"])
     begin, finish = pd.Timestamp(start), pd.Timestamp(end)
     if (
@@ -154,7 +155,7 @@ def load_market_input(root, start, end, lookback, *, filters, industry=None, exp
     names_path = root / "reference/name_history.parquet"
     names = (
         pd.read_parquet(names_path)
-        if names_path.exists()
+        if "name_history.parquet" in manifest["reference_files"]
         else pd.DataFrame(columns=["instrument", "name", "start_date", "end_date", "ann_date"])
     )
     market, pool = select_universe(market, sessions, start, end, filters, names, industry=industry)
