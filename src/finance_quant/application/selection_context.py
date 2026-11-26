@@ -80,6 +80,15 @@ def factor_configs(evaluation, selection):
     return baseline, selected
 
 
+def _warehouse_data(provenance, mode, identifier):
+    data = {"mode": mode, "warehouse_id": identifier}
+    if "universe_filters" in provenance:
+        data["filters"] = provenance["universe_filters"]
+    if mode == "market_warehouse" and provenance.get("pool_codes") is not None:
+        data["codes"] = provenance["pool_codes"]
+    return data
+
+
 def _source_data(evaluation, options):
     metadata = evaluation["metadata"]
     provenance = metadata.get("provenance", {})
@@ -87,12 +96,7 @@ def _source_data(evaluation, options):
     for key, mode in (("historical_indices", "index_warehouse"), ("market_universes", "market_warehouse")):
         for option in options.get(key, []):
             if digest and option.get("manifest_sha256") == digest:
-                data = {"mode": mode, "warehouse_id": option["id"]}
-                if "universe_filters" in provenance:
-                    data["filters"] = provenance["universe_filters"]
-                if mode == "market_warehouse" and provenance.get("pool_codes") is not None:
-                    data["codes"] = provenance["pool_codes"]
-                return data, option
+                return _warehouse_data(provenance, mode, option["id"]), option
     for option in options["snapshots"]:
         if option["id"] == metadata.get("data_version"):
             data = {
@@ -132,20 +136,11 @@ def _source_backtest(store, evaluation, start, end):
     return asdict(BacktestConfig(start, end, **values))
 
 
-def source_context(store, evaluation_id, data_root, runs_root, *, frozen_snapshot=None, references_frozen=False):
+def _source_references(store, evaluation_id, data_root):
     evaluation = store.get("evaluations", evaluation_id, hydrate=False)
     metadata = evaluation["metadata"]
     factor = store.get("factors", metadata["factor_run_id"], hydrate=False)
     provenance = factor["metadata"].get("provenance", {})
-    options = research_options(
-        data_root,
-        runs_root,
-        industry_version=provenance.get("industry_version"),
-        financial_version=metadata.get("provenance", {}).get("financial_version"),
-        allow_latest_references=not references_frozen,
-        frozen_snapshot=frozen_snapshot,
-    )
-    data, option = _source_data(evaluation, options)
     neutralization = dict(provenance.get("neutralization", {"mode": "off"}))
     if provenance.get("industry_version"):
         neutralization["industry_version"] = provenance["industry_version"]
@@ -160,11 +155,38 @@ def source_context(store, evaluation_id, data_root, runs_root, *, frozen_snapsho
         financials = FinancialBinding.from_dict(financial_root(data_root), values)
     return {
         "evaluation": evaluation,
+        "neutralization": neutralization,
+        "financials": financials,
+    }, provenance
+
+
+def warehouse_source_context(store, evaluation_id, data_root, data, expected_sha):
+    """Use only the stored source references and the manifest digest already checked by the worker."""
+    context, _ = _source_references(store, evaluation_id, data_root)
+    source = context["evaluation"]["metadata"].get("provenance", {})
+    if source.get("manifest_sha256") != expected_sha:
+        raise ValueError("筛选来源行情版本与所选仓库不一致，请恢复原版本或重新筛选")
+    return {**context, "data": _warehouse_data(source, data["mode"], data["warehouse_id"])}
+
+
+def source_context(store, evaluation_id, data_root, runs_root, *, frozen_snapshot=None, references_frozen=False):
+    context, provenance = _source_references(store, evaluation_id, data_root)
+    evaluation = context["evaluation"]
+    metadata = evaluation["metadata"]
+    options = research_options(
+        data_root,
+        runs_root,
+        industry_version=provenance.get("industry_version"),
+        financial_version=metadata.get("provenance", {}).get("financial_version"),
+        allow_latest_references=not references_frozen,
+        frozen_snapshot=frozen_snapshot,
+    )
+    data, option = _source_data(evaluation, options)
+    return {
+        **context,
         "data": data,
         "option": option,
         "financial_data": options["financial_data"],
         "industry_data": options["industry_data"],
-        "neutralization": neutralization,
-        "financials": financials,
         "backtest": _source_backtest(store, evaluation, metadata["start"], metadata["end"]),
     }

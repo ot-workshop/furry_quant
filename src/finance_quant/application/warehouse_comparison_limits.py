@@ -86,7 +86,7 @@ def _pinned_manifest(data_root: Path, data: dict, execution: dict | None):
         if execution is not None and digest != execution["manifest_sha256"]:
             break
         return root, digest, raw, schema
-    raise ValueError("所选仓库版本已变化、不可用或清单超过 4 MiB，请刷新数据并选择较小的仓库")
+    raise ValueError("所选仓库版本不存在或已变化，请刷新数据列表并选择清单不超过 4 MiB 的仓库")
 
 
 def _parquet_size(paths, *, initial=(0, 0)):

@@ -2,6 +2,8 @@
 
 import copy
 import json
+import shutil
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -16,6 +18,7 @@ from test_managed_data import Provider
 from finance_quant.application import experiment_tasks, research_requests, selection_context, selection_experiments
 from finance_quant.application.selection_context import selection_result, source_context
 from finance_quant.application.selection_experiments import verify_queued_selection
+from finance_quant.checksums import file_sha256
 from finance_quant.data import historical_warehouse, market_universe, pool_inputs
 from finance_quant.data.financials import financial_root
 from finance_quant.data.historical_warehouse import warehouse_option
@@ -126,17 +129,62 @@ def test_selection_api_readonly_and_thresholds_change_results(tmp_path):
 
 
 @pytest.mark.parametrize("mode,size", [("index_warehouse", 5), ("market_warehouse", 17)])
-def test_selection_handoff_runs_post_cutoff_native_comparison_without_modifying_old_results(tmp_path, mode, size):
+def test_selection_handoff_runs_post_cutoff_native_comparison_without_modifying_old_results(
+    tmp_path, monkeypatch, mode, size
+):
     client, service, store, evaluation_id, request, root = source(tmp_path, mode, size)
+    unrelated = publish_fixture_snapshot(
+        service.data_root,
+        ("600000.SH", "000001.SZ", "600519.SH"),
+        "20241202",
+        "20250228",
+        provider=Provider(),
+        name="unrelated-selection-pool",
+    )
+    unrelated_quotes = (
+        service.data_root
+        / "research/downloads/unrelated-selection-pool"
+        / unrelated["snapshot_path"]
+        / "market.parquet"
+    ).resolve(strict=True)
+    other_version = root.parent.with_name("unrelated-warehouse-version")
+    shutil.copytree(root.parent, other_version)
+    other_root = other_version / root.name
+    other_manifest = other_root / "manifest.json"
+    other_manifest.write_bytes(other_manifest.read_bytes() + b"\n")
+    assert (old_digest := file_sha256(root / "manifest.json")) != (other_digest := file_sha256(other_manifest))
+    blocked_reads = []
+    path_open, read_parquet = Path.open, pd.read_parquet
+
+    def observe(path):
+        if isinstance(path, (str, Path)) and (
+            Path(path).resolve() == unrelated_quotes
+            or ("assets" in Path(path).parts and Path(path).resolve().is_relative_to(other_root))
+        ):
+            blocked_reads.append(path)
+
+    def open_file(path, *args, **kwargs):
+        observe(path)
+        return path_open(path, *args, **kwargs)
+
+    def read_frame(path, *args, **kwargs):
+        observe(path)
+        return read_parquet(path, *args, **kwargs)
+
     originals = {path: path.read_bytes() for path in store.root.glob("*/*/result.json")}
     manifest = (root / "manifest.json").read_bytes()
-    response = client.post(
-        "/api/v1/research/experiments", json=request, headers={"Idempotency-Key": "milp-native-comparison"}
-    )
+    url = "/api/v1/research/experiments"
+    key = {"Idempotency-Key": "milp-native-comparison"}
+    monkeypatch.setattr(Path, "open", open_file)
+    monkeypatch.setattr(pd, "read_parquet", read_frame)
+    response = client.post(url, json=request, headers=key)
     assert response.status_code == 202, response.text
+    assert not blocked_reads, blocked_reads
     assert service.store.claim() == response.json()["id"]
     task = run_claimed(service, response.json()["id"])
     assert task["status"] == "succeeded", task["error"]
+    assert not blocked_reads, blocked_reads
+    assert service.store.get(task["id"], private=True)["execution"]["manifest_sha256"] == old_digest
     result = store.get("experiments", task["result"]["experiment_run_id"])
     assert result["metadata"]["factor_selection"]["evaluation_id"] == evaluation_id
     assert result["metadata"]["factor_selection"]["source_sha256"] == store.digest("evaluations", evaluation_id)
@@ -147,6 +195,23 @@ def test_selection_handoff_runs_post_cutoff_native_comparison_without_modifying_
     assert (root / "manifest.json").read_bytes() == manifest
     report = client.get(f"/api/v1/experiments/{result['metadata']['id']}/report")
     assert report.status_code == 200 and "推荐截止日：2024-01-23" in report.text
+    replay = client.post(url, json=request, headers=key)
+    assert replay.status_code == 202 and replay.json()["id"] == task["id"]
+    assert client.get(f"/api/v1/research/tasks/{task['id']}").json() == task
+
+    alternate = copy.deepcopy(request)
+    alternate["data"]["warehouse_id"] = request["data"]["warehouse_id"].rsplit("-", 1)[0] + "-" + other_digest[:20]
+    assert client.post(url, json=alternate, headers=key).status_code == 409
+    submitted = client.post(url, json=alternate, headers={"Idempotency-Key": "milp-different-warehouse"})
+    assert submitted.status_code == 202, submitted.text
+    identifier = submitted.json()["id"]
+    pending = service.store.get(identifier, private=True)["execution"]
+    assert service.store.claim() == identifier
+    failed = run_claimed(service, identifier)
+    assert failed["status"] == "failed" and failed["error_details"]["stage"] == "prepare"
+    assert "来源行情版本与所选仓库不一致" in failed["error"]
+    assert service.store.get(identifier, private=True)["execution"] == pending
+    assert not blocked_reads, blocked_reads
 
 
 def test_handoff_rejects_references_the_request_settles_alone(tmp_path):

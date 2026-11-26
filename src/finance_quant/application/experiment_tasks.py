@@ -220,6 +220,7 @@ def validate_experiment_inputs(
         runs_root,
         frozen_snapshot=frozen_snapshot,
         references_frozen=references_frozen,
+        warehouse_source=warehouse_source,
     )
     research_document = _research_document(document, plan)
     binding = bound["context"]["financials"] if bound else None

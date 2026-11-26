@@ -180,7 +180,7 @@ def test_pending_warehouse_uses_submitted_id_and_rejects_rewritten_manifest(tmp_
     assert_no_heavy_input(monkeypatch)
     assert service.store.claim() == queued["id"]
     failed = run_claimed(service, queued["id"])
-    assert failed["status"] == "failed" and "版本已变化" in failed["error"]
+    assert failed["status"] == "failed" and "版本不存在或已变化" in failed["error"]
     assert service.submit_experiment(copy.deepcopy(document), "frozen-warehouse")["id"] == queued["id"]
 
 
